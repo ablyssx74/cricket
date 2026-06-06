@@ -1,5 +1,6 @@
 # cricket - A lightweight, multi-server IRC client.
-<img align="left" width="64" height="64" alt="Image" src="https://github.com/user-attachments/assets/6f2964c9-97a7-4d50-8070-88149aac4393" />
+<p> <img align="left" width="64" height="64" alt="Image" src="https://github.com/user-attachments/assets/6f2964c9-97a7-4d50-8070-88149aac4393" /></p>
+
 ### Build x86_64
 ```make release
 ```
