@@ -1,6 +1,6 @@
 
 ![App Icon](https://github.com/user-attachments/assets/2c1377ea-27d6-4b01-bd1d-fdda59530fe3) 
-# cricket - A lightweight, multi-server IRC client.
+# cricket - A lightweight, multi-server IRC client for Haiku OS.
 
 ### Build x86_64
 ```
