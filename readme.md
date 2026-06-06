@@ -1,6 +1,6 @@
 
 <h1>
-  <img src="https://github.com/user-attachments/assets/2c1377ea-27d6-4b01-bd1d-fdda59530fe3" width="64" height="64" align="top" alt="App Icon">
+  <img src="https://github.com/user-attachments/assets/2c1377ea-27d6-4b01-bd1d-fdda59530fe3" width="48" height="48" align="top" alt="App Icon">
   cricket
 </h1>
 
