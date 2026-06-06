@@ -18,7 +18,10 @@ requires {
 	haiku
 	nlohmann_json	
 }
+conflicts {
+	hirc	
+}
 	
 urls {
-	"https://github.com/ablyssx74/hirc"
+	"https://github.com/ablyssx74/cricket"
 }
