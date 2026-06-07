@@ -60,7 +60,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.13 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.14 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -300,7 +300,7 @@ void load_config() {
         oftc.altNick = BString(dynamicNick).Append("+").String();  
         oftc.altNick2 = BString(dynamicNick).Append("__").String();
         oftc.pass = "";
-        oftc.autojoin = {""};
+        oftc.autojoin = {"#haiku"};
         oftc.autoConnect = false;
         oftc.autoReconnect = false;
         oftc.hideStatusMessages = false;
