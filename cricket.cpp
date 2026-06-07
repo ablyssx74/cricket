@@ -59,7 +59,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.10 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.11 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -1845,24 +1845,9 @@ public:
         fBgOpacitySlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
         fBgOpacitySlider->SetHashMarkCount(11); // Marks every 10%
 
-        fBgPathInput = new BTextControl("bg_path", "Background Image:", srv.backgroundImagePath.c_str(), nullptr);
-        fBrowseBgBtn = new BButton("browse_bg", "Browse…", new BMessage('adbg'));
-        fFilePanel = new BFilePanel(B_OPEN_PANEL, new BMessenger(this), nullptr, B_FILE_NODE, false);
-
         // Instantiate the toggle checkbox right below the background settings layout items
         fEnableEmoticonsCheck = new BCheckBox("enable_emotes", "Enable custom inline emoticons for this server", nullptr);
         fEnableEmoticonsCheck->SetValue(srv.enableEmoticons ? B_CONTROL_ON : B_CONTROL_OFF);
-
-
-        // Instantiate the text field tracking path locations
-        fBgPathInput = new BTextControl("bg_path", "Background Image:", srv.backgroundImagePath.c_str(), nullptr);
-        
-        // Instantiate the file panel trigger button firing message identifier 'adbg'
-        fBrowseBgBtn = new BButton("browse_bg", "Browse…", new BMessage('adbg'));
-        
-        // Modal file panel targeting this specific window instance context handler
-        fFilePanel = new BFilePanel(B_OPEN_PANEL, new BMessenger(this), nullptr, B_FILE_NODE, false);
-
 
         fNickInput = new BTextControl("nick", "Nickname:", srv.nick.c_str(), nullptr);
         
@@ -2090,7 +2075,7 @@ private:
     }
 
     BMenuField* CreateFontMenu(const char* label, int32 currentSize) {
-        BPopUpMenu* menu = new BPopUpMenu(label);
+        BPopUpMenu* menu = new BPopUpMenu("font_popup");
         int32 sizes[] = {9, 10, 11, 12, 14, 16, 18, 20, 24};
         
         for (int i = 0; i < 9; i++) {
@@ -2106,7 +2091,7 @@ private:
             }
             menu->AddItem(item);
         }
-        return new BMenuField(label, label, menu);
+        return new BMenuField("font_field", label, menu);
     }
 };
 
@@ -5905,7 +5890,7 @@ private:
 
 class Cricket : public BApplication {
 public:
-    Cricket() : BApplication("application/x-vnd.Cricket") {}
+    Cricket() : BApplication("application/x-vnd.cricket") {}
     void ReadyToRun() override {
         CricketWindow* window = new CricketWindow();
         window->Show();
