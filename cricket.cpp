@@ -11,10 +11,7 @@
 #include <OS.h>
 #include <SupportKit.h>
 #include <Roster.h>
-#include <TranslationUtils.h> 
 #include <Slider.h> 
-#include <app/MessageRunner.h>
-
 
 // Storage, Path Finder & System File Kits
 #include <Directory.h>
@@ -28,6 +25,8 @@
 #include <IconUtils.h>   
 #include "icons.h"
 #include <Bitmap.h>   
+#include <TranslationUtils.h> 
+#include <MessageRunner.h>  
 
 // Interface Controls & Layout Managers
 #include <Button.h>
@@ -360,6 +359,8 @@ enum {
     MSG_CONTEXT_KICK_SUBMIT = 'mKCS',
     MSG_CONTEXT_SHOW_BANS   = 'mSBN',
     MSG_CONTEXT_UNBAN_SUBMIT = 'mUBS', 
+    MSG_TOGGLE_ICON_POPUP = 'tICP',
+    MSG_POPUP_WAS_DESTROYED = 'mPWD',
 
 };
 
@@ -988,21 +989,94 @@ void CustomChatView::Draw(BRect updateRect) {
 
         // --- NEW: HIGH-PERFORMANCE DIMMING OVERLAY PASS ---
         if (fBackgroundDimmingLevel > 0) {
-            // Calculate alpha value (0 to 255) based on the slider percentage scale
             uint8 alphaIntensity = (uint8)((fBackgroundDimmingLevel / 100.0f) * 255.0f);
-            
-            // Generate a transparent black tint color overlay layout block
             rgb_color dimColor = { 0, 0, 0, alphaIntensity };
             
             SetHighColor(dimColor);
-            SetDrawingMode(B_OP_ALPHA); // Enforce hardware transparency blending pass
+            SetDrawingMode(B_OP_ALPHA); 
             FillRect(Bounds());
-            SetDrawingMode(B_OP_COPY);  // Revert drawing mode safely
+            SetDrawingMode(B_OP_COPY);  
         }
     } else {
         SetHighColor(systemBgColor); 
         FillRect(updateRect); 
     }
+
+
+    // --- NEW ELEMENT: INITIAL APP BOOT EMPTY STATE OVERLAY ---
+    if (fActiveChannelNode == nullptr) {
+        BRect bounds = Bounds();
+        float centerX = bounds.Width() / 2.0f;
+        float centerY = bounds.Height() / 2.0f;
+
+        // 1. Draw your custom kIconCricket data asset dynamically via BMemoryIO
+        float iconDimension = 64.0f;
+        BBitmap* customIcon = new BBitmap(BRect(0, 0, iconDimension - 1.0f, iconDimension - 1.0f), B_RGBA32);
+
+        if (customIcon != nullptr && customIcon->InitCheck() == B_OK) {
+            status_t err = BIconUtils::GetVectorIcon(kIconCricket, kIconkIconCricketSize, customIcon);
+            if (err == B_OK) {
+                BPoint iconDrawPoint(centerX - (iconDimension / 2.0f), centerY - (iconDimension / 2.0f) - 45.0f);
+                SetDrawingMode(B_OP_ALPHA);
+                DrawBitmap(customIcon, iconDrawPoint);
+                SetDrawingMode(B_OP_COPY);
+            }
+        }
+        delete customIcon;
+
+        // 2. Draw "Welcome to Cricket IRC Client" Main Heading
+        BString welcomeText = "Welcome to Cricket IRC Client";
+        BFont titleFont;
+        GetFont(&titleFont);
+        titleFont.SetSize(15.0f);
+        titleFont.SetFace(B_BOLD_FACE);
+        SetFont(&titleFont);
+        SetHighColor(220, 220, 220, 255); // Brighter text color for prominence
+
+        float titleWidth = titleFont.StringWidth(welcomeText.String());
+        font_height tfh;
+        titleFont.GetHeight(&tfh);
+        
+        BPoint titleDrawPoint(centerX - (titleWidth / 2.0f), centerY + 15.0f);
+        SetDrawingMode(B_OP_ALPHA);
+        DrawString(welcomeText.String(), titleDrawPoint);
+
+        // 3. Draw Subtitle Note About Icons Panel
+        BString infoText = "Dum Vivimus Vivamus";
+        BFont infoFont;
+        GetFont(&infoFont);
+        infoFont.SetSize(12.0f); // Muted, smaller font size for layout contrast
+        infoFont.SetFace(B_BOLD_FACE | B_ITALIC_FACE);
+        SetFont(&infoFont);
+        SetHighColor(140, 140, 140, 255); // Softer gray tone
+
+        float infoWidth = infoFont.StringWidth(infoText.String());
+        font_height ifh;
+        infoFont.GetHeight(&ifh);
+
+        BPoint infoDrawPoint(centerX - (infoWidth / 2.0f), centerY + 40.0f);
+        DrawString(infoText.String(), infoDrawPoint);
+
+        // 4. Draw Centered Link Action Prompt String "Join #Haiku"
+        BString promptText = "Join #Haiku";
+        BFont promptFont;
+        GetFont(&promptFont);
+        promptFont.SetSize(13.0f);
+        promptFont.SetFace(B_BOLD_FACE);
+        SetFont(&promptFont);
+        SetHighColor(114, 172, 230, 255); // Subtle link blue for visibility contrast
+
+        float stringWidth = promptFont.StringWidth(promptText.String());
+        font_height pfh;
+        promptFont.GetHeight(&pfh);
+
+        BPoint textDrawPoint(centerX - (stringWidth / 2.0f), centerY + 75.0f);
+        DrawString(promptText.String(), textDrawPoint);
+        SetDrawingMode(B_OP_COPY);
+
+        return; // Terminate execution layout loops early
+    }
+
 
 
     // --- BRANCH B: INLINE CHAT RENDERING ---
@@ -1065,6 +1139,7 @@ void CustomChatView::Draw(BRect updateRect) {
 
 
 
+
 // Scoped layout mouse hover tracking engine for dynamic cursor feedback
 void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dragMessage) {
     // 1. Handle clean exit trajectories right away to prevent stuck cursors
@@ -1073,6 +1148,32 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
         SetViewCursor(&defaultCursor);
         BView::MouseMoved(point, transit, dragMessage);
         return;
+    }
+
+    // =========================================================================
+    // NEW: INITIAL APP BOOT HOVER CURSOR TRACKER CHECK
+    // =========================================================================
+    if (fActiveChannelNode == nullptr) {
+        BRect bounds = Bounds();
+        float centerX = bounds.Width() / 2.0f;
+        float centerY = bounds.Height() / 2.0f;
+        float iconDimension = 64.0f;
+
+        // Map out the exact combined interactive box wrapping both the icon and text fields
+        BRect clickTargetBox(
+            centerX - 60.0f,
+            centerY + 60.0f, // Narrowed precisely over the new Blue Link location
+            centerX + 60.0f,
+            centerY + 95.0f
+        );
+
+
+        if (clickTargetBox.Contains(point)) {
+            BCursor linkCursor(B_CURSOR_ID_FOLLOW_LINK);
+            SetViewCursor(&linkCursor);
+            BView::MouseMoved(point, transit, dragMessage);
+            return;
+        }
     }
 
     bool isHoveringOverLink = false;
@@ -1136,6 +1237,40 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
 // Scoped layout mouse click tracker logic implementation with Channel Filtering Isolation
 void CustomChatView::MouseDown(BPoint point) {
     if (Window() == nullptr) return;
+
+    // =========================================================================
+    // NEW: INITIAL APP BOOT HOVER CLICK TARGET CHECK
+    // =========================================================================
+    if (fActiveChannelNode == nullptr) {
+        BRect bounds = Bounds();
+        float centerX = bounds.Width() / 2.0f;
+        float centerY = bounds.Height() / 2.0f;
+        float iconDimension = 64.0f;
+
+        // Map out the exact combined interactive box wrapping both the icon and text fields
+        BRect clickTargetBox(
+            centerX - 60.0f,
+            centerY + 60.0f, // Narrowed precisely over the new Blue Link location
+            centerX + 60.0f,
+            centerY + 95.0f
+        );
+
+
+        if (clickTargetBox.Contains(point)) {
+            int32 buttons = 0;
+            Window()->CurrentMessage()->FindInt32("buttons", &buttons);
+            
+            // Only fire the initialization routine on primary left clicks
+            if (buttons == B_PRIMARY_MOUSE_BUTTON) {
+                BWindow* parentWindow = Window();
+                if (parentWindow != nullptr) {
+                    BMessage joinNotice(MSG_START_SIRC);
+                    parentWindow->PostMessage(&joinNotice);
+                }
+            }
+            return; // Terminate early so context menus don't intercept this empty-state zone
+        }
+    }
     
     int32 buttons = 0;
     Window()->CurrentMessage()->FindInt32("buttons", &buttons);
@@ -1633,8 +1768,8 @@ public:
     bool IsAutoJoin() const { return fAutoJoin; }
     size_t GetServerIndex() const { return fServerIndex; }
     bool   IsCustom() const { return fIsCustom; } 
-    void SetTopic(const char* topic) { fChannelTopic = topic; }
-    BString GetTopic() const { return fChannelTopic; }
+   // void SetTopic(const char* topic) { fChannelTopic = topic; }
+   //  BString GetTopic() const { return fChannelTopic; }
 
     // Override the native drawing framework loop
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
@@ -1846,12 +1981,12 @@ public:
 
         ServerConfig& srv = GetActiveConfig();
 
-        fBgPathInput = new BTextControl("bg_path", "Background Image:", srv.backgroundImagePath.c_str(), nullptr);
+        fBgPathInput = new BTextControl("bg_path", "Wallpaper Image:", srv.backgroundImagePath.c_str(), nullptr);
         fBrowseBgBtn = new BButton("browse_bg", "Browse…", new BMessage('adbg'));
         fFilePanel = new BFilePanel(B_OPEN_PANEL, new BMessenger(this), nullptr, B_FILE_NODE, false);
 
-        fEnableEmoticonsCheck = new BCheckBox("enable_emotes", "Enable custom inline emoticons for this server", nullptr);
-        fEnableEmoticonsCheck->SetValue(srv.enableEmoticons ? B_CONTROL_ON : B_CONTROL_OFF);
+       // fEnableEmoticonsCheck = new BCheckBox("enable_emotes", "Enable custom inline emoticons", nullptr);
+       // fEnableEmoticonsCheck->SetValue(srv.enableEmoticons ? B_CONTROL_ON : B_CONTROL_OFF);
 
         // Instantiate the dimming slider control
         fBgOpacitySlider = new BSlider("bg_opacity_sld", "Wallpaper Dimming Level:", nullptr, 0, 100, B_HORIZONTAL);
@@ -1859,9 +1994,6 @@ public:
         fBgOpacitySlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
         fBgOpacitySlider->SetHashMarkCount(11); // Marks every 10%
 
-        // Instantiate the toggle checkbox right below the background settings layout items
-        fEnableEmoticonsCheck = new BCheckBox("enable_emotes", "Enable custom inline emoticons for this server", nullptr);
-        fEnableEmoticonsCheck->SetValue(srv.enableEmoticons ? B_CONTROL_ON : B_CONTROL_OFF);
 
         fNickInput = new BTextControl("nick", "Nickname:", srv.nick.c_str(), nullptr);
         
@@ -1949,12 +2081,13 @@ public:
                     .Add(fBrowseBgBtn, 0.0)
                 .End()
             .End()
-            .Add(fAutoConnectCheck)
-            .Add(fAutoReconnectCheck)
-            .Add(fHideStatusCheck)
-            .Add(fDebugEnableCheck)      
-            .Add(fEnableEmoticonsCheck) 
             .Add(fBgOpacitySlider) 
+            // .Add(fAutoConnectCheck)
+            // .Add(fAutoReconnectCheck)
+            // .Add(fHideStatusCheck)  
+            // .Add(fEnableEmoticonsCheck) 
+            // .Add(fDebugEnableCheck)    
+           
             .AddGlue()
             .AddGroup(B_HORIZONTAL, 10)
                 .AddGlue()
@@ -2148,6 +2281,108 @@ static int SortUsersByRank(const void* first, const void* second) {
 
 
 
+// ==================== NATIVE HAIKU ICON POPUP CANVAS ====================
+class EmotePopupWindow : public BWindow {
+public:
+    EmotePopupWindow(BPoint screenPos, BMessenger targetWindowMessenger)
+        : BWindow(BRect(0, 0, 100, 50), "", B_NO_BORDER_WINDOW_LOOK, B_MODAL_APP_WINDOW_FEEL, 
+                  B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS),
+          fTargetMessenger(targetWindowMessenger)
+    {
+        BView* bgPanel = new BView(Bounds(), "popBg", B_FOLLOW_ALL, B_WILL_DRAW);
+        bgPanel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        bgPanel->SetLowColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        AddChild(bgPanel);
+
+        BGridView* grid = new BGridView();
+        BGridLayout* gridLayout = grid->GridLayout();
+        gridLayout->SetHorizontalSpacing(2.0f);
+        gridLayout->SetVerticalSpacing(2.0f);
+        gridLayout->SetInsets(4, 4, 4, 4);
+
+        struct EmoteButtonMap { const char* trigger; const uint8* iconData; const char* tooltip; };
+        EmoteButtonMap barEmotes[] = {
+            {":)", kIconSmile, "Smile"},       {":(", kIconFrown, "Frown"},
+            {";)", kIconWink, "Wink"},         {":P", kIconTongue, "Tongue"},
+            {"lol", kIconLaughing, "Laughing"},{":O", kIconAstonished, "Shocked"},
+            {"<3", kIconHeart, "Heart"},       {":|", kIconConfused, "Confused"}
+        };
+
+        for (int32 i = 0; i < 8; i++) {
+            BMessage* clickMsg = new BMessage('emcl');
+            clickMsg->AddString("trigger", barEmotes[i].trigger);
+            clickMsg->AddPointer("popup_window_ref", this);
+
+            BButton* btn = new BButton(barEmotes[i].trigger, "", clickMsg);
+            
+            BBitmap* btnIcon = new BBitmap(BRect(0, 0, 15, 15), B_RGBA32);
+            if (BIconUtils::GetVectorIcon(barEmotes[i].iconData, 1024, btnIcon) == B_OK) {
+                btn->SetIcon(btnIcon);
+            }
+            delete btnIcon;
+
+            btn->SetFlat(true);
+            btn->SetToolTip(barEmotes[i].tooltip);
+            btn->SetExplicitPreferredSize(BSize(22, 22));
+            btn->SetTarget(fTargetMessenger);
+
+            int32 column = i % 4;
+            int32 row = i / 4;
+            gridLayout->AddView(btn, column, row, 1, 1);
+        }
+
+        BButton* closeBtn = new BButton("closeBtn", "[Close]", new BMessage(B_QUIT_REQUESTED));
+        closeBtn->SetFlat(true);
+        closeBtn->SetTarget(this); 
+        
+        closeBtn->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        closeBtn->SetLowColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        
+        BFont themeFont;
+        bgPanel->GetFont(&themeFont);
+        closeBtn->SetFont(&themeFont);
+        
+        rgb_color panelTextColor = ui_color(B_PANEL_TEXT_COLOR);
+        closeBtn->SetHighColor(panelTextColor);
+
+        closeBtn->SetExplicitPreferredSize(BSize(96, 20));
+        closeBtn->SetExplicitAlignment(BAlignment(B_ALIGN_CENTER, B_ALIGN_TOP));
+
+        BLayoutBuilder::Group<>(bgPanel, B_VERTICAL, 2)
+            .SetInsets(4) 
+            .Add(grid)
+            .Add(closeBtn)
+            .End();
+        
+        BSize optimalSize = bgPanel->MinSize();
+        ResizeTo(optimalSize.width, optimalSize.height);
+        MoveTo(screenPos.x, screenPos.y - Bounds().Height() - 5.0f);
+    }
+
+    virtual void WindowActivated(bool active) {
+        BWindow::WindowActivated(active);
+        if (!active) {
+            PostMessage(B_QUIT_REQUESTED);
+        }
+    }
+
+    // CRITICAL BUG FIX: Fires right before the window closes to alert our parent window thread
+    virtual void Quit() {
+        // Send a notification message thread-safely across the boundary 
+        fTargetMessenger.SendMessage(MSG_POPUP_WAS_DESTROYED);
+        BWindow::Quit();
+    }
+
+private:
+    BMessenger fTargetMessenger;
+};
+
+
+
+
+
+
+
 
 class CricketWindow : public BWindow {
 public:
@@ -2162,7 +2397,7 @@ public:
         BString windowTitle;
         windowTitle << AppInfo::VERSION_STRING;
         SetTitle(windowTitle.String());
-
+		fActiveIconPopup = nullptr;
 
 
         
@@ -2170,53 +2405,21 @@ public:
         fChannelTree = new BOutlineListView("channel_tree");
         BScrollView* channelScroll = new BScrollView("scroll_channels", fChannelTree, 0, false, true);
         
-        // --- NEW COMPACT 4x4 EMOTICON GRID CONTAINER ---
-        // UPDATE: Store the instance address directly into your class member pointer
-        fEmoticonGrid = new BGridView();
-        BGridLayout* gridLayout = fEmoticonGrid->GridLayout();
         
-        gridLayout->SetHorizontalSpacing(2.0f);
-        gridLayout->SetVerticalSpacing(2.0f);
-        gridLayout->SetInsets(2, 2, 2, 2);
-        struct EmoteButtonMap { const char* trigger; const uint8* iconData; const char* tooltip; };
-        EmoteButtonMap barEmotes[] = {
-            // Row 1: First 4 emoticons
-            {":)", kIconSmile, "Smile"},       {":(", kIconFrown, "Frown"},
-            {";)", kIconWink, "Wink"},         {":P", kIconTongue, "Tongue"},
-            // Row 2: Next 4 emoticons
-            {"lol", kIconLaughing, "Laughing"},{":O", kIconAstonished, "Shocked"},
-            {"<3", kIconHeart, "Heart"},       {":|", kIconConfused, "Confused"}
-        };
-
-        // Loop through and position each button precisely inside the grid coordinates
-        for (int32 i = 0; i < 8; i++) {
-            BMessage* clickMsg = new BMessage('emcl');
-            clickMsg->AddString("trigger", barEmotes[i].trigger);
-
-            BButton* btn = new BButton(barEmotes[i].trigger, "", clickMsg);
-            
-            // Render the vector graphic directly onto the button face
-            BBitmap* btnIcon = new BBitmap(BRect(0, 0, 15, 15), B_RGBA32);
-            if (BIconUtils::GetVectorIcon(barEmotes[i].iconData, 1024, btnIcon) == B_OK) {
-                btn->SetIcon(btnIcon);
-            }
-            delete btnIcon;
-
-            btn->SetFlat(true);
-            btn->SetToolTip(barEmotes[i].tooltip);
-            
-            // Fixed cell sizing matches standard flat square layout specs
-            btn->SetExplicitPreferredSize(BSize(22, 22));
-            btn->SetTarget(this);
-
-            // Matrix Mapping: Row calculation = (i / 4), Column calculation = (i % 4)
-            int32 column = i % 4;
-            int32 row = i / 4;
-            
-            // AddView(view, column, row, columnSpan, rowSpan)
-            gridLayout->AddView(btn, column, row, 1, 1);
-        }
+        
+        
+        // --- NEW COMPACT ICON DROPDOWN LAUNCHER CONTROLS ---
+        fIconToggleButton = new BButton("iconToggleBtn", "Icons ▾", new BMessage(MSG_TOGGLE_ICON_POPUP));
+        fIconToggleButton->SetExplicitAlignment(BAlignment(B_ALIGN_LEFT, B_ALIGN_VERTICAL_CENTER));
+        fIconToggleButton->SetTarget(this);
         // --- END OF GRID SELECTION SETUP ---
+
+
+
+
+
+
+
 
         
         // 2. Load Config and Populate Servers Tree ONCE
@@ -2272,7 +2475,7 @@ public:
 
 
         fInputControl = new BTextControl("input", "", "", new BMessage(MSG_SEND_MESSAGE));
-        fConnectButton = new BButton("connect", "Join #Haiku!", new BMessage(MSG_START_SIRC));
+      //  fConnectButton = new BButton("connect", "Join #Haiku!", new BMessage(MSG_START_SIRC));
 
         // Apply saved font choices on startup
         BFont initialFont;
@@ -2312,15 +2515,17 @@ public:
         channelScroll->SetExplicitPreferredSize(BSize(130, B_SIZE_UNLIMITED)); 
         userScroll->SetExplicitPreferredSize(BSize(110, B_SIZE_UNLIMITED));    
 
-        // Place the 2-row fEmoticonGrid into your bottom toolbar builder
+        // FIXED BOTTOM TOOLBAR: Using our layout-safe toggle button control
         BLayoutBuilder::Group<>(this, B_VERTICAL, 5)
             .SetInsets(10)
             .Add(mainSplitter, 1.0) 
             .AddGroup(B_HORIZONTAL, 5, 0.0) 
-                .Add(fEmoticonGrid, 0.0)    // UPDATE: Placed your tracked member view cleanly here
+                .Add(fIconToggleButton, 0.0) // FIX: Places the layout-safe toggle button here
                 .Add(fInputControl, 1.0)     
-                .Add(fConnectButton, 0.0)    
+             //  .Add(fConnectButton, 0.0)    
             .End();
+
+
 
 
         // 6. Initialize State Properties
@@ -2424,6 +2629,13 @@ void Show()
         initDrawMsg.AddBool("initial_boot_pass", true);
         this->PostMessage(&initDrawMsg);
     }
+    
+    if (fCustomChatLog != nullptr && fCurrentServerNode == nullptr) {
+        // Force the custom chat view to repaint itself with our default graphic
+        fCustomChatLog->Invalidate(); 
+    }
+    
+    
 }
 
 
@@ -2781,7 +2993,7 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         menu->AddItem(connectMenuItem);
 
         // Toggle Auto-Reconnect Option
-        BString toggleReconnectLabel = srvItem->IsAutoReconnect() ? "Auto-Reconnect Enabled" : "Enable Auto-Reconnect";
+        BString toggleReconnectLabel = srvItem->IsAutoReconnect() ? "Auto-Reconnect on Disconnect" : "Auto-Reconnect on Disconnect";
         BMessage* toggleReconnectMsg = new BMessage(MSG_TOGGLE_AUTORECONNECT);
         toggleReconnectMsg->AddPointer("server_item", srvItem);
         BMenuItem* reconnectMenuItem = new BMenuItem(toggleReconnectLabel.String(), toggleReconnectMsg);
@@ -2789,15 +3001,68 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         menu->AddItem(reconnectMenuItem);
         
         // Status Messages Suppression Option
-        BString toggleStatusLabel = srvItem->IsHideStatus() ? "Status Messages Hidden" : "Status Messages Visible";
+        BString toggleStatusLabel = srvItem->IsHideStatus() ? "Hide Status Messages" : "Hide Status Messages";
         BMessage* toggleStatusMsg = new BMessage(MSG_TOGGLE_HIDE_STATUS);
         toggleStatusMsg->AddPointer("server_item", srvItem);
         BMenuItem* statusMenuItem = new BMenuItem(toggleStatusLabel.String(), toggleStatusMsg);
         if (srvItem->IsHideStatus()) statusMenuItem->SetMarked(true);
-        menu->AddItem(statusMenuItem);
-   		 
+        menu->AddItem(statusMenuItem); // <-- FIXED: Added missing menu allocation injection pass
+
+
+        // Custom Inline Emoticons Toggle 
+        BString toggleEmotesLabel = "Enable Emoticons";
+        BMessage* toggleEmotesMsg = new BMessage('tgem');
+        toggleEmotesMsg->AddPointer("server_item", srvItem);
+        BMenuItem* emotesMenuItem = new BMenuItem(toggleEmotesLabel.String(), toggleEmotesMsg);
+        
+        // Find the configuration matching this specific server item to set initial state
+        if (srvItem != nullptr) {
+            BString targetServerName(srvItem->Text());
+            bool initialMarkState = false;
+            bool serverFound = false;
+
+            // 1. Search primary servers list
+            for (const auto& srv : cfg.servers) {
+                if (BString(srv.name.c_str()) == targetServerName) {
+                    initialMarkState = srv.enableEmoticons;
+                    serverFound = true;
+                    break;
+                }
+            }
+            
+            // 2. Fallback to user-defined custom server profiles ONLY if not found in primary list
+            if (!serverFound) {
+                for (const auto& srv : cfg.customServers) {
+                    if (BString(srv.name.c_str()) == targetServerName) {
+                        initialMarkState = srv.enableEmoticons;
+                        break;
+                    }
+                }
+            }
+
+            if (initialMarkState) emotesMenuItem->SetMarked(true);
+        }
+
+        menu->AddItem(emotesMenuItem);
+        
+                
+        // Channel List Option
+       	menu->AddSeparatorItem();
+        BMessage* listMsg = new BMessage(MSG_CONTEXT_CHAN_LIST);
+        listMsg->AddPointer("server_item", srvItem);
+        menu->AddItem(new BMenuItem("Show Available Channels", listMsg));
+        menu->AddSeparatorItem();
+        
+                
+        // Open specific server configuration window
+
+        BMessage* configMsg = new BMessage(MSG_CONTEXT_CONFIGURE_SERVER);
+        configMsg->AddPointer("server_item", srvItem);
+        menu->AddItem(new BMenuItem("More Settings for this Server...", configMsg));  
+        menu->AddSeparatorItem();
+        
         // Custom Draw Engine Toggle 
-        BString toggleDrawLabel = "Enable High Performance Draw Engine";
+        BString toggleDrawLabel = "Enable High Performance Draw Engine (All Servers)";
         BMessage* toggleDrawMsg = new BMessage(MSG_TOGGLE_CUSTOM_DRAW);
         toggleDrawMsg->AddPointer("server_item", srvItem);
         BMenuItem* drawMenuItem = new BMenuItem(toggleDrawLabel.String(), toggleDrawMsg);
@@ -2805,23 +3070,11 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         if (cfg.useCustomDrawFunction) drawMenuItem->SetMarked(true);
         menu->AddItem(drawMenuItem);
         
-        // Open specific server configuration window
-        menu->AddSeparatorItem();
-        BMessage* configMsg = new BMessage(MSG_CONTEXT_CONFIGURE_SERVER);
-        configMsg->AddPointer("server_item", srvItem);
-        menu->AddItem(new BMenuItem("Configure Server...", configMsg));
-        
-        
-        // Channel List Option
-        menu->AddSeparatorItem();
-        BMessage* listMsg = new BMessage(MSG_CONTEXT_CHAN_LIST);
-        listMsg->AddPointer("server_item", srvItem);
-        menu->AddItem(new BMenuItem("Channel List", listMsg));
         
         // Put Add Server Here 
         menu->AddSeparatorItem();
         BMessage* addSrvMsg = new BMessage('adcs'); // Reuses your original button message identifier
-        menu->AddItem(new BMenuItem("Add Server…", addSrvMsg));
+        menu->AddItem(new BMenuItem("Add Custom Server…", addSrvMsg));
         
 
         if (srvItem->IsCustom()) {
@@ -2841,6 +3094,7 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         menu->Go(screenPoint, true, true, true);
     }
 }
+
 
 
 
@@ -4732,40 +4986,145 @@ public:
         switch (message->what) {
 
 
-        case 'emcl': {
-            const char* triggerText;
-            if (message->FindString("trigger", &triggerText) == B_OK) {
-                BTextView* textView = fInputControl->TextView();
-                if (textView == nullptr) break;
+        case 'tgem': {
+            // 1. Recover the pointer to the target server item
+            ServerTreeItem* srvItem = nullptr;
+            if (message->FindPointer("server_item", (void**)&srvItem) == B_OK && srvItem != nullptr) {
+                
+                // 2. Locate the matching server struct inside your config mapping
+                BString currentServerName(srvItem->Text());
+                bool targetState = false;
+                bool serverFound = false;
+                
+                // Search primary servers list
+                for (auto& srv : cfg.servers) {
+                    if (BString(srv.name.c_str()) == currentServerName) {
+                        srv.enableEmoticons = !srv.enableEmoticons;
+                        targetState = srv.enableEmoticons;
+                        serverFound = true;
+                        break;
+                    }
+                }
 
-                int32 textLen = textView->TextLength();
-                
-                // Keep typing continuous by forcing focus to the input field first
-                fInputControl->MakeFocus(true);
-                
-                // 1. Move cursor to the absolute end of the message text string
-                textView->Select(textLen, textLen);
-                
-                // 2. Add a leading space if we aren't at the start of an empty line
-                if (textLen > 0) {
-                    BString currentText = fInputControl->Text();
-                    if (!currentText.EndsWith(" ")) {
-                        textView->Insert(" ");
+                // Fallback to custom servers list if not found in primary list
+                if (!serverFound) {
+                    for (auto& srv : cfg.customServers) {
+                        if (BString(srv.name.c_str()) == currentServerName) {
+                            srv.enableEmoticons = !srv.enableEmoticons;
+                            targetState = srv.enableEmoticons;
+                            break;
+                        }
                     }
                 }
                 
-                // 3. Insert the exact emoticon trigger text shortcut string
-                textView->Insert(triggerText);
+                // 3. CRITICAL: Save the modified configuration to disk immediately!
+                save_config();
                 
-                // 4. CRITICAL FIX: Insert a real space character via the text view API.
-                // This forces the Interface Kit to flag the control as fully updated.
-                textView->Insert(" ");
+                // 4. Update the source menu item's visual checkmark state dynamically
+                void* sourcePtr = nullptr;
+                if (message->FindPointer("source", &sourcePtr) == B_OK) {
+                    BMenuItem* clickedItem = static_cast<BMenuItem*>(sourcePtr);
+                    if (clickedItem != nullptr) {
+                        clickedItem->SetMarked(targetState);
+                    }
+                }
                 
-                // 5. Ensure the input view follows the text growth bounds
-                textView->ScrollToSelection();
+                // 5. Force UI/Toolbar layout sync if editing the active window view context
+                if (fCurrentServerNode == srvItem) {
+                    if (fIconToggleButton != nullptr) {
+                        if (targetState) {
+                            fIconToggleButton->Show();
+                        } else {
+                            fIconToggleButton->Hide();
+                        }
+                    }
+                    
+                    if (fCustomChatLog != nullptr) {
+                        fCustomChatLog->Invalidate();
+                    }
+                    
+                    this->InvalidateLayout(true);
+                }
             }
             break;
         }
+
+
+
+
+        // POPUP LIFECYCLE MONITOR: Resets tracking pointer cleanly whenever the popup closes
+        case MSG_POPUP_WAS_DESTROYED: {
+            fActiveIconPopup = nullptr;
+            break;
+        }
+
+
+
+        // ICON GRID MANAGER LAUNCHER: Toggles the custom borderless icon canvas on and off
+        case MSG_TOGGLE_ICON_POPUP: {
+            if (fIconToggleButton != nullptr) {
+                // 1. FIXED TOGGLE: If the window is already active, close it and break out
+                if (fActiveIconPopup != nullptr) {
+                    fActiveIconPopup->PostMessage(B_QUIT_REQUESTED);
+                    fActiveIconPopup = nullptr;
+                    break;
+                }
+
+                // 2. Safe layout geometry extraction relative to our parent window context
+                BRect buttonFrame = fIconToggleButton->Frame();
+                BPoint buttonWindowPos(buttonFrame.left, buttonFrame.top);
+                BPoint screenCoordinate = ConvertToScreen(buttonWindowPos);
+                
+                // 3. FIX: Spin up the popup passing ONLY the messenger target thread handle.
+                // We completely remove any reference to fEmoticonGrid to bypass pointer corruption crashes!
+                EmotePopupWindow* popWin = new EmotePopupWindow(screenCoordinate, BMessenger(this));
+                
+                // 4. Update our active class reference tracker
+                fActiveIconPopup = popWin;
+                popWin->Show();
+            }
+            break;
+        }
+
+
+
+
+
+        // EMOTICON SELECTION HANDLER: Inserts text smileys into the typing control field
+        case 'emcl': {
+            void* popWinPtr = nullptr;
+            if (message->FindPointer("popup_window_ref", &popWinPtr) == B_OK && popWinPtr != nullptr) {
+                BWindow* popupWindow = static_cast<BWindow*>(popWinPtr);
+                popupWindow->PostMessage(B_QUIT_REQUESTED);
+                fActiveIconPopup = nullptr;
+            }
+
+            BString emoteTrigger;
+            if (message->FindString("trigger", &emoteTrigger) == B_OK) {
+                BTextView* inputTextView = fInputControl->TextView();
+                if (inputTextView != nullptr) {
+                    fInputControl->MakeFocus(true);
+                    
+                    BString insertionText = emoteTrigger;
+                    insertionText << " ";
+                    
+                    // FIX: Safe Haiku cursor tracking using the standard GetSelection method parameters
+                    int32 startPos = 0;
+                    int32 endPos = 0;
+                    inputTextView->GetSelection(&startPos, &endPos);
+                    
+                    // Insert the emoticon code bytes straight into the active cursor point location
+                    inputTextView->Insert(startPos, insertionText.String(), insertionText.Length());
+                    
+                    // Reposition the blinking cursor bar right after the newly inserted text
+                    int32 newCursorPos = startPos + insertionText.Length();
+                    inputTextView->Select(newCursorPos, newCursorPos);
+                }
+            }
+            break;
+        }
+
+
 
 
 
@@ -5455,10 +5814,19 @@ public:
 			bool initialBootPass = false;
 			message->FindBool("initial_boot_pass", &initialBootPass);
 
-			// Flip the configuration state ONLY if clicked by the user (not on startup)
+			// Flip the global configuration state ONLY if clicked by the user
 			if (!initialBootPass) {
 				cfg.useCustomDrawFunction = !cfg.useCustomDrawFunction;
 				save_config();
+			}
+
+			// Synchronize the menu item checkmark state visually
+			void* sourcePtr = nullptr;
+			if (message->FindPointer("source", &sourcePtr) == B_OK) {
+				BMenuItem* clickedItem = static_cast<BMenuItem*>(sourcePtr);
+				if (clickedItem != nullptr) {
+					clickedItem->SetMarked(cfg.useCustomDrawFunction);
+				}
 			}
 
 			if (fChatLog == nullptr || fCustomChatLog == nullptr || fChatContainer == nullptr)
@@ -5471,8 +5839,8 @@ public:
 			if (layout == nullptr)
 				break;
 
+			// Evaluate layout changes globally
 			if (cfg.useCustomDrawFunction) {
-				// Safely swap out standard text layout for the high-performance canvas
 				if (chatScroll && chatScroll->Parent() == fChatContainer) {
 					layout->RemoveView(chatScroll);
 				}
@@ -5494,8 +5862,6 @@ public:
 				fCustomChatLog->SetExplicitPreferredSize(BSize(B_SIZE_UNSET, B_SIZE_UNSET));
 				fCustomChatLog->ClearAllLines();
 
-				// --- FIX: FORCE BACKGROUND SYNC ON ENGINE INITIALIZATION ---
-				// Ensure the unique server background is explicitly re-bound to this specific engine pass
 				if (fCurrentServerNode != nullptr) {
 					std::string activeServerName = fCurrentServerNode->Text(); 
 					for (size_t i = 0; i < cfg.servers.size(); i++) {
@@ -5519,6 +5885,8 @@ public:
 			this->InvalidateLayout(true);
 			break;
 		}
+
+
 
 
 
@@ -5963,7 +6331,7 @@ public:
                 // Formulate the informational message body text
                 BString aboutText;
                 aboutText <<  AppInfo::VERSION_STRING << "\n" 
-                		  << "By Kris Beazley \"ablyss\"\n"
+                		  << "By Kris Beazley (ablyss)\n"
                 		  << "Copyright 2026 The MIT License\n\n"
 
                           << "A lightweight, multi-server IRC client built natively "
@@ -6408,12 +6776,13 @@ public:
                             }
                         }
 
-                        // Toggle visibility of the 4x4 picker group matrix instantly
+                        // FIX: Toggle the layout-safe toggle button control visibility frame dynamically
                         if (emotesActive) {
-                            fEmoticonGrid->Show();
+                            fIconToggleButton->Show();
                         } else {
-                            fEmoticonGrid->Hide();
+                            fIconToggleButton->Hide();
                         }
+
 
                         // Force layout engine to re-flow text controls over collapsed areas
                         this->InvalidateLayout(true);
@@ -6774,7 +7143,7 @@ void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
     BTextView*        fChatLog;
     BListView*        fUserList;
     BTextControl*     fInputControl;
-    BButton*          fConnectButton;
+  //  BButton*          fConnectButton;
     
     thread_id         fLiberaThread;
     thread_id         fOftcThread;
@@ -6793,10 +7162,13 @@ void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
     BView*           fChatContainer; 
     CustomChatView*  fCustomChatLog; 
     bool fIsLoadingHistory = false; 
-	BGridView*    fEmoticonGrid;
+
 	BObjectList<BString, true> fAutoOpList;
 	BObjectList<BString, true> fCurrentBanHarvest;
-
+	
+ 	BGridView*    fEmoticonGrid;
+    BButton*    fIconToggleButton;  
+	BWindow*    fActiveIconPopup; 
 }; 
 
 class Cricket : public BApplication {

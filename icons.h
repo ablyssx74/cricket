@@ -7,6 +7,9 @@
 #ifndef ICONS_H
 #define ICONS_H
 
+extern const unsigned char kIconCricket[];
+extern const size_t kIconkIconCricketSize;
+
 extern const unsigned char kIconWideeyed[];
 extern const size_t kIconWideeyedSize;
 
