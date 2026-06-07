@@ -2017,18 +2017,6 @@ public:
         fChatLogFontMenu    = CreateFontMenu("Chat Log Font:", cfg.chatLogFontSize);
         fUserListFontMenu   = CreateFontMenu("User List Font:", cfg.userListFontSize);
 
-        fAutoConnectCheck = new BCheckBox("autoconnect", "Automatically connect at startup", nullptr);
-        fAutoConnectCheck->SetValue(srv.autoConnect ? B_CONTROL_ON : B_CONTROL_OFF);
-
-        fAutoReconnectCheck = new BCheckBox("autoreconnect", "Automatically reconnect on drop", nullptr);
-        fAutoReconnectCheck->SetValue(srv.autoReconnect ? B_CONTROL_ON : B_CONTROL_OFF);
-
-        fDebugEnableCheck = new BCheckBox("debug", "Enable low-level socket engine logs", nullptr);
-        fDebugEnableCheck->SetValue(cfg.debugEnable ? B_CONTROL_ON : B_CONTROL_OFF);
-
-        fHideStatusCheck = new BCheckBox("hidestatus", "Hide channel status messages (Joins/Parts/Quits)", nullptr);
-        fHideStatusCheck->SetValue(srv.hideStatusMessages ? B_CONTROL_ON : B_CONTROL_OFF);
-
         BButton* cancelBtn = new BButton("cancel", "Cancel", new BMessage('cfcn'));
         BButton* saveBtn = new BButton("save", "Save", new BMessage('cfsv'));
         saveBtn->MakeDefault(true);
@@ -2136,7 +2124,7 @@ public:
                 ServerConfig& srv = GetActiveConfig();
                 srv.nick = fNickInput->Text();
                 srv.altNick  = fAltNickInput->Text();
-				srv.altNick2 = fAltNick2Input->Text();
+                srv.altNick2 = fAltNick2Input->Text();
 
                 // SAFETY GUARD: Only overwrite the password if the user actually typed something new.
                 // If the field is visually blank but they didn't touch it, preserve the loaded configuration string!
@@ -2147,16 +2135,11 @@ public:
                 
                 srv.backgroundImagePath = fBgPathInput->Text();
                 srv.backgroundOpacity = fBgOpacitySlider->Value(); 
-                srv.enableEmoticons = (fEnableEmoticonsCheck->Value() == B_CONTROL_ON);
-                srv.pass = fPassInput->Text();
-                srv.autoConnect = (fAutoConnectCheck->Value() == B_CONTROL_ON);
-                srv.autoReconnect = (fAutoReconnectCheck->Value() == B_CONTROL_ON);
-                cfg.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
+                
+                
                 cfg.awayMessage = fAwayInput->Text();
-				cfg.quitMessage = fQuitInput->Text();
-                srv.hideStatusMessages = (fHideStatusCheck->Value() == B_CONTROL_ON);
-				cfg.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
-				
+                cfg.quitMessage = fQuitInput->Text();
+                
                 BMenuItem* item = fServerListFontMenu->Menu()->FindMarked();
                 if (item && item->Message()) cfg.serverListFontSize = item->Message()->FindInt32("size");
 
@@ -2166,18 +2149,16 @@ public:
                 item = fUserListFontMenu->Menu()->FindMarked();
                 if (item && item->Message()) cfg.userListFontSize = item->Message()->FindInt32("size");
 
-                if (fItem != nullptr) {
-                    fItem->SetAutoConnect(srv.autoConnect);
-                    fItem->SetAutoReconnect(srv.autoReconnect);
-                    fItem->SetHideStatus(srv.hideStatusMessages);
-                }
+                // Note: Removed fItem auto-connect/disconnect/status setters 
+                // since those checkboxes no longer exist to alter state.
 
                 BMessage updateNotify('mscf'); 
                 if (fParentWindow) fParentWindow->PostMessage(&updateNotify);
-            	delete fFilePanel; 
+                delete fFilePanel; 
                 Quit();
                 break;
             }
+
 
             default:
                 BWindow::MessageReceived(message);
@@ -2405,7 +2386,7 @@ public:
         
         
         // --- NEW COMPACT ICON DROPDOWN LAUNCHER CONTROLS ---
-        fIconToggleButton = new BButton("iconToggleBtn", "Icons ▾", new BMessage(MSG_TOGGLE_ICON_POPUP));
+        fIconToggleButton = new BButton("iconToggleBtn", "Emots ▾", new BMessage(MSG_TOGGLE_ICON_POPUP));
         fIconToggleButton->SetExplicitAlignment(BAlignment(B_ALIGN_LEFT, B_ALIGN_VERTICAL_CENTER));
         fIconToggleButton->SetTarget(this);
         // --- END OF GRID SELECTION SETUP ---
