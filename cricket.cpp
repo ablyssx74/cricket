@@ -13,6 +13,8 @@
 #include <Roster.h>
 #include <TranslationUtils.h> 
 #include <Slider.h> 
+#include <app/MessageRunner.h>
+
 
 // Storage, Path Finder & System File Kits
 #include <Directory.h>
@@ -348,6 +350,16 @@ enum {
 	MSG_USER_LIST_CONTEXT_CLICK = 'ulcx',
 	MSG_CONTEXT_PRIVMSG = 'cxpm',
 	MSG_EMOTE_CLICKED = 'emcl',
+	MSG_CONTEXT_OP = 'mCOP',
+	MSG_CONTEXT_OP_SUBMIT = 'mOPS',  
+    MSG_CONTEXT_TIMED_DEOP_TRIGGER = 'mTDO',
+    MSG_CONTEXT_DEOP = 'mCDO',
+    MSG_CONTEXT_VOICE = 'mCVO',
+    MSG_CONTEXT_DEVOICE = 'mCDV',
+    MSG_CONTEXT_KICK = 'mCKC',
+    MSG_CONTEXT_KICK_SUBMIT = 'mKCS',
+    MSG_CONTEXT_SHOW_BANS   = 'mSBN',
+    MSG_CONTEXT_UNBAN_SUBMIT = 'mUBS', 
 
 };
 
@@ -2148,7 +2160,7 @@ public:
         BString windowTitle;
         windowTitle << AppInfo::VERSION_STRING;
         SetTitle(windowTitle.String());
-        
+
 
 
         
@@ -2469,6 +2481,68 @@ void Show()
 
 
 
+void DisplayBanListDialog(BString channelName)
+{
+    BRect windowFrame(0, 0, 450, 300);
+    BRect screenFrame = Frame();
+    windowFrame.OffsetTo(
+        screenFrame.left + (screenFrame.Width() - windowFrame.Width()) / 2,
+        screenFrame.top + (screenFrame.Height() - windowFrame.Height()) / 2
+    );
+
+    BWindow* banWin = new BWindow(windowFrame, (BString("Bans: ") << channelName).String(), 
+                                 B_TITLED_WINDOW, B_NOT_RESIZABLE | B_NOT_ZOOMABLE);
+
+    BView* panel = new BView(banWin->Bounds(), "banPanel", B_FOLLOW_ALL, B_WILL_DRAW);
+    panel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+    banWin->AddChild(panel);
+
+    BTextView* titleText = new BTextView(BRect(15, 10, 435, 35), "title", BRect(0,0,420,20), B_FOLLOW_ALL, B_WILL_DRAW);
+    titleText->SetText((BString("Active ban mask protocols running in ") << channelName << ":").String());
+    titleText->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+    titleText->MakeEditable(false);
+    titleText->MakeSelectable(false);
+    panel->AddChild(titleText);
+
+    BListView* banListView = new BListView(BRect(15, 40, 435, 220), "banListWidget", B_SINGLE_SELECTION_LIST);
+    
+    // ==================== REPOPULATE WITH LIVE HARVEST DATA ====================
+    for (int32 i = 0; i < fCurrentBanHarvest.CountItems(); i++) {
+        BString* storedMask = fCurrentBanHarvest.ItemAt(i);
+        if (storedMask != nullptr) {
+            banListView->AddItem(new BStringItem(storedMask->String()));
+        }
+    }
+    
+    // Clear out the tracking storage array right away so it is fresh for your next check
+    fCurrentBanHarvest.MakeEmpty();
+    // ===========================================================================
+
+    panel->AddChild(banListView);
+
+    BButton* closeBtn = new BButton(BRect(245, 260, 330, 285), "close", "Close", new BMessage(B_QUIT_REQUESTED));
+    BButton* unbanBtn = new BButton(BRect(340, 260, 435, 285), "unban", "Remove Ban", new BMessage(MSG_CONTEXT_UNBAN_SUBMIT));
+    
+    closeBtn->SetTarget(banWin);
+    unbanBtn->SetTarget(this);
+
+    BMessage* unbanPayload = new BMessage(MSG_CONTEXT_UNBAN_SUBMIT);
+    unbanPayload->AddString("target_channel", channelName);
+    unbanPayload->AddPointer("window_ref", banWin);
+    unbanBtn->SetMessage(unbanPayload);
+
+    panel->AddChild(closeBtn);
+    panel->AddChild(unbanBtn);
+
+    banWin->Show();
+}
+
+
+
+
+
+
+
 void RebuildActiveChannelBuffer() {
 	fIsLoadingHistory = true;
     if (fActiveBufferItem == nullptr || !fChatLog || !fCustomChatLog) return;
@@ -2651,6 +2725,13 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         
         menu->AddSeparatorItem();
         
+        // NEW: View Channel Ban List Option
+        BMessage* banListMsg = new BMessage(MSG_CONTEXT_SHOW_BANS);
+        banListMsg->AddPointer("chan_item", chanItem); // Pass the specific channel node pointer
+        menu->AddItem(new BMenuItem("View Channel Ban List...", banListMsg));
+        
+        menu->AddSeparatorItem();
+        
         BMessage* removeMsg = new BMessage('rmch'); 
         removeMsg->AddPointer("channel_item", chanItem);
         menu->AddItem(new BMenuItem("Remove Channel", removeMsg));
@@ -2659,6 +2740,7 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         menu->Go(screenPoint, true, true, true);
         return;
     }
+
 
     // 2. Server menu logic
     ServerTreeItem* srvItem = dynamic_cast<ServerTreeItem*>(item);
@@ -3128,7 +3210,9 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
     }
 
-    // Catch Successful Join actions (Handles Us AND Other Users)
+
+	// @JOIN
+     // Catch Successful Join actions (Handles Us AND Other Users)
     if (command == "JOIN") {
         BString channelJoined = trailing.Length() > 0 ? trailing : line;
         
@@ -3167,20 +3251,14 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             }
             fTopicView->SetText(BString("Joined ") << channelJoined << ". Awaiting topic payload...");
             
-            // === NEW: Request bulk user profiles to populate away states upon entry ===
-            BSecureSocket* activeSocket = nullptr;
-            if (contextServer != nullptr && fServerSockets.count(contextServer) > 0) {
-                activeSocket = fServerSockets[contextServer];
-            } else {
-                activeSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
-            }
+            // === DRY REFACTOR: Simplified socket lookup call ===
+            BSecureSocket* activeSocket = GetActiveSocket(contextServer);
 
             if (activeSocket != nullptr) {
                 BString syncWho;
                 syncWho << "WHO " << channelJoined << "\r\n";
                 activeSocket->Write(syncWho.String(), syncWho.Length());
             }
-            // ======================================================================
             
         } else {
             // Someone else joined a channel we are already in!
@@ -3206,11 +3284,101 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     if (fActiveBufferItem == chanNode) {
                         RefreshUserListUI();
                     }
+
+                    // ==================== LIVE AUTO-OP INTERCEPTOR ====================
+                    // Scan our running tracker list to see if this user has an active timed op window
+                    bool shouldAutoOp = false;
+                    for (int32 i = 0; i < fAutoOpList.CountItems(); i++) {
+                        BString* storedNick = fAutoOpList.ItemAt(i);
+                        if (storedNick != nullptr && *storedNick == userWhoJoined) {
+                            shouldAutoOp = true;
+                            break;
+                        }
+                    }
+
+                    // If a match is found, immediately issue the network command to restore their Op
+                    if (shouldAutoOp) {
+                        BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                        if (activeSocket != nullptr) {
+                            BString autoOpPayload;
+                            autoOpPayload << "MODE " << channelJoined << " +o " << userWhoJoined << "\r\n";
+                            activeSocket->Write(autoOpPayload.String(), autoOpPayload.Length());
+                        }
+                    }
+                    // ==================================================================
                 }
             }
         }
         return;
     }
+
+
+
+        // ==================== HARVEST BAN DATA (367 RPL_BANLIST) ====================
+        if (command == "367") {
+            // Reconstruct or read the parameters space from 'line'
+            BString fullParams = line;
+            fullParams.Trim();
+
+            // Expected format inside line parameter: "YourNick #channel mask kicker timestamp"
+            // Let's break it down word-by-word safely by splitting into an array or stepping spaces
+            int32 firstSpace = fullParams.FindFirst(" ");  // End of YourNick
+            if (firstSpace != B_ERROR) {
+                BString afterNick = fullParams.String() + firstSpace + 1;
+                afterNick.Trim();
+
+                int32 secondSpace = afterNick.FindFirst(" "); // End of #channel
+                if (secondSpace != B_ERROR) {
+                    BString maskPart = afterNick.String() + secondSpace + 1;
+                    maskPart.Trim();
+
+                    // Isolate just the mask word token before kicker and timestamp spaces
+                    int32 thirdSpace = maskPart.FindFirst(" ");
+                    if (thirdSpace != B_ERROR) {
+                        maskPart.Truncate(thirdSpace);
+                    }
+                    maskPart.Trim();
+
+                    // Clean up any rogue formatting or line-stuffing parameters safely
+                    maskPart.ReplaceAll("\r", "");
+                    maskPart.ReplaceAll("\n", "");
+
+                    if (maskPart.Length() > 0) {
+                        // Add the verified clean mask string directly into our harvest list array
+                        fCurrentBanHarvest.AddItem(new BString(maskPart));
+                    }
+                }
+            }
+            return;
+        }
+
+        // ==================== GENERATE DIALOG (368 RPL_ENDOFBANLIST) ====================
+        if (command == "368") {
+            BString targetChannel = line;
+            targetChannel.Trim();
+            
+            // Expected format: "YourNick #channel :End of Channel Ban List"
+            int32 firstSpace = targetChannel.FindFirst(" ");
+            if (firstSpace != B_ERROR) {
+                BString afterNick = targetChannel.String() + firstSpace + 1;
+                afterNick.Trim();
+
+                int32 secondSpace = afterNick.FindFirst(" ");
+                if (secondSpace != B_ERROR) {
+                    afterNick.Truncate(secondSpace);
+                }
+                targetChannel = afterNick;
+            }
+            targetChannel.Trim();
+
+            // Safely initialize the window layout dashboard now that data collection is finished
+            DisplayBanListDialog(targetChannel);
+            return;
+        }
+
+
+
+
 
    
           // TOPIC: Real-time broadcast notification when a user modifies the room topic
@@ -3602,6 +3770,141 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             }
             return;
         }
+
+
+
+
+
+
+        // Live MODE & KICK Handlers (Tokenizer-Integrated Block)
+        if (command == "MODE" || command == "KICK") {
+            if (contextServer == nullptr) {
+                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+            }
+
+            // Extract the channel target from the line parameter
+            BString targetChannel = line;
+            targetChannel.Trim();
+            
+            // Isolate the first token (the channel name) from the line parameter
+            BString remainderParams = "";
+            int32 firstSpace = targetChannel.FindFirst(" ");
+            if (firstSpace != B_ERROR) {
+                targetChannel.CopyInto(remainderParams, firstSpace + 1, targetChannel.Length() - firstSpace - 1);
+                targetChannel.Truncate(firstSpace);
+            }
+            targetChannel.Trim();
+            remainderParams.Trim();
+
+            // Loop through the channel tree structure to locate the targeted channel room
+            int32 totalTreeItems = fChannelTree->CountItems();
+            for (int32 c = 0; c < totalTreeItems; c++) {
+                BListItem* baseItem = fChannelTree->ItemAt(c);
+                if (baseItem == nullptr || fChannelTree->Superitem(baseItem) != contextServer) continue;
+
+                ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(baseItem);
+                if (!chanNode || BString(chanNode->Text()) != targetChannel) continue;
+
+                BObjectList<UserListItem, true>* userVector = fChannelUsers[chanNode];
+                if (userVector == nullptr) continue;
+
+                // ==================== SUB-BRANCH A: MODE PROCESSING ====================
+                if (command == "MODE") {
+                    // Flags and target now sit cleanly inside remainderParams: "+o HaikuUser"
+                    int32 flagSpace = remainderParams.FindFirst(" ");
+                    if (flagSpace != B_ERROR) {
+                        BString flagString;
+                        remainderParams.CopyInto(flagString, 0, flagSpace);
+                        
+                        BString targetNick = remainderParams.String() + flagSpace + 1;
+                        targetNick.ReplaceAll("\r", "");
+                        targetNick.ReplaceAll("\n", "");
+                        targetNick.Trim();
+
+                        bool adding = flagString.StartsWith("+");
+                        BString symbol = "";
+                        if (flagString.FindFirst("o") != B_ERROR) symbol = "@";
+                        if (flagString.FindFirst("v") != B_ERROR) symbol = "+";
+
+                        if (symbol.Length() > 0) {
+                            bool itemWasUpdated = false;
+
+                            for (int32 i = 0; i < userVector->CountItems(); i++) {
+                                UserListItem* uiUser = userVector->ItemAt(i);
+                                if (uiUser == nullptr) continue;
+
+                                BString cleanName = GetCleanNickname(uiUser->Text());
+                                if (cleanName == targetNick) {
+                                    if (adding) {
+                                        uiUser->SetText((BString(symbol) << cleanName).String());
+                                    } else {
+                                        uiUser->SetText(cleanName.String());
+                                    }
+                                    itemWasUpdated = true;
+                                    break;
+                                }
+                            }
+
+                            // If we modified an item in the active channel, force the UI to repaint
+                            if (itemWasUpdated && fActiveBufferItem == chanNode) {
+                                RefreshUserListUI();
+                            }
+                        }
+                    }
+                }
+                // ==================== SUB-BRANCH B: KICK PROCESSING ====================
+                else if (command == "KICK") {
+                    BString kicker = prefix;
+                    int32 exclamIdx = kicker.FindFirst("!");
+                    if (exclamIdx != B_ERROR) kicker.Truncate(exclamIdx);
+
+                    // Remainder contains: "TargetNick :Reason"
+                    BString targetNick = remainderParams;
+                    BString kickReason = trailing; // If tokenizer puts reason in trailing
+                    
+                    int32 reasonColon = targetNick.FindFirst(":");
+                    if (reasonColon != B_ERROR) {
+                        kickReason = targetNick.String() + reasonColon + 1;
+                        targetNick.Truncate(reasonColon);
+                    }
+                    targetNick.Trim();
+                    kickReason.ReplaceAll("\r", "");
+                    kickReason.ReplaceAll("\n", "");
+                    kickReason.Trim();
+
+                    for (int32 i = userVector->CountItems() - 1; i >= 0; i--) {
+                        UserListItem* uiUser = userVector->ItemAt(i);
+                        if (uiUser == nullptr) continue;
+
+                        if (GetCleanNickname(uiUser->Text()) == targetNick) {
+                            UserListItem* removedUser = userVector->RemoveItemAt(i);
+                            delete removedUser;
+
+                            BString logLine;
+                            logLine << "<-- " << targetNick << " was kicked by " << kicker;
+                            if (kickReason.Length() > 0) {
+                                logLine << " (" << kickReason << ")\n";
+                            } else {
+                                logLine << "\n";
+                            }
+                            LogToItemBuffer(chanNode, logLine);
+
+                            if (fActiveBufferItem == chanNode) {
+                                RefreshUserListUI();
+                            }
+                            break;
+                        }
+                    }
+                }
+                break; // Break tree traversal loop cleanly once room resolves
+            }
+            return;
+        }
+
+
+
+
+
 
 
 
@@ -4415,6 +4718,488 @@ public:
 
 
 
+        // REMOVE BAN EXECUTOR: Transmits the unban command string out over the network connection
+        case MSG_CONTEXT_UNBAN_SUBMIT: {
+            BString targetChannel;
+            void* winPtr = nullptr;
+
+            if (message->FindString("target_channel", &targetChannel) == B_OK &&
+                message->FindPointer("window_ref", &winPtr) == B_OK && winPtr != nullptr) {
+                
+                BWindow* modalWindow = static_cast<BWindow*>(winPtr);
+                BString selectedMask = "";
+
+                if (modalWindow->Lock()) {
+                    BListView* listWidget = dynamic_cast<BListView*>(modalWindow->FindView("banListWidget"));
+                    if (listWidget != nullptr) {
+                        int32 selectionIdx = listWidget->CurrentSelection();
+                        if (selectionIdx >= 0) {
+                            BStringItem* selectedRow = dynamic_cast<BStringItem*>(listWidget->ItemAt(selectionIdx));
+                            if (selectedRow != nullptr) {
+                                selectedMask = selectedRow->Text();
+                            }
+                        }
+                    }
+                    modalWindow->Unlock();
+                }
+
+                // Verify a valid list row selection was established before building network payload
+                if (selectedMask.Length() > 0) {
+                    ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                    BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+
+                    if (activeSocket != nullptr) {
+                        BString outgoingPayload;
+                        outgoingPayload << "MODE " << targetChannel << " -b " << selectedMask << "\r\n";
+                        activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
+                        
+                        // Close window frame cleanly
+                        modalWindow->PostMessage(B_QUIT_REQUESTED);
+                    }
+                } else {
+                    // Fallback helper notice alert box if no item row row highlight index was targeted
+                    BAlert* alert = new BAlert("SelectionMissing", "Please select a ban entry mask row element to remove first.", "OK");
+                    alert->Go();
+                }
+            }
+            break;
+        }
+
+
+
+
+
+
+        // BAN DUMP ENGINE: Requests the raw server ban list data structure
+        case MSG_CONTEXT_SHOW_BANS: {
+            void* chanPtr = nullptr;
+            ChannelTreeItem* targetedChanNode = nullptr;
+            
+            if (message->FindPointer("chan_item", &chanPtr) == B_OK && chanPtr != nullptr) {
+                targetedChanNode = static_cast<ChannelTreeItem*>(chanPtr);
+            } else {
+                // FIX: Cast fActiveBufferItem safely from BStringItem* to ChannelTreeItem*
+                targetedChanNode = dynamic_cast<ChannelTreeItem*>(fActiveBufferItem);
+            }
+            
+            if (targetedChanNode == nullptr) break;
+            BString activeChannel = targetedChanNode->Text();
+
+            ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+            if (contextServer == nullptr) break;
+
+            int32 spaceIdx = activeChannel.FindLast(" ");
+            if (spaceIdx != B_ERROR) {
+                BString extractedChannel;
+                activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
+                activeChannel = extractedChannel;
+            }
+            if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&")) break;
+
+            BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+            if (activeSocket != nullptr) {
+                BString outgoingPayload;
+                outgoingPayload << "MODE " << activeChannel << " b\r\n";
+                activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
+            }
+            break;
+        }
+
+
+
+
+
+         // CHANNEL MODE EXECUTOR: Dispatches mode modifications (-o, +v, -v) to the server
+        case MSG_CONTEXT_DEOP:
+        case MSG_CONTEXT_VOICE:
+        case MSG_CONTEXT_DEVOICE: {
+            BString targetNick;
+            if (message->FindString("target_nick", &targetNick) == B_OK && targetNick.Length() > 0) {
+                
+                ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                if (contextServer == nullptr) break;
+
+                if (fActiveBufferItem == nullptr) break;
+                BString activeChannel = fActiveBufferItem->Text();
+
+                int32 spaceIdx = activeChannel.FindLast(" ");
+                if (spaceIdx != B_ERROR) {
+                    BString extractedChannel;
+                    activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
+                    activeChannel = extractedChannel;
+                }
+
+                if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&")) break; 
+
+                BString flag;
+                switch (message->what) {
+                    case MSG_CONTEXT_OP:      flag = "+o"; break;
+                    case MSG_CONTEXT_DEOP:    flag = "-o"; break;
+                    case MSG_CONTEXT_VOICE:   flag = "+v"; break;
+                    case MSG_CONTEXT_DEVOICE: flag = "-v"; break;
+                }
+
+                // DRY Call replaces the old 6-line map check block
+                BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+
+                if (activeSocket != nullptr) {
+                    BString outgoingPayload;
+                    outgoingPayload << "MODE " << activeChannel << " " << flag << " " << targetNick << "\r\n";
+                    activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
+                }
+            }
+            break;
+        }
+        
+ 
+ 
+        // OP ENVELOPE GENERATOR: Prompts window with time duration operator options
+        case MSG_CONTEXT_OP: {
+            BString targetNick;
+            if (message->FindString("target_nick", &targetNick) == B_OK && targetNick.Length() > 0) {
+                
+                BRect windowFrame(0, 0, 400, 140);
+                BRect screenFrame = Frame();
+                windowFrame.OffsetTo(
+                    screenFrame.left + (screenFrame.Width() - windowFrame.Width()) / 2,
+                    screenFrame.top + (screenFrame.Height() - windowFrame.Height()) / 2
+                );
+
+                BWindow* inputWin = new BWindow(windowFrame, "Give Operator Status", 
+                                               B_MODAL_WINDOW, 
+                                               B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS);
+
+                BView* panel = new BView(inputWin->Bounds(), "bgPanel", B_FOLLOW_ALL, B_WILL_DRAW);
+                panel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+                inputWin->AddChild(panel);
+
+                BTextView* promptLabel = new BTextView(BRect(15, 10, 385, 35), "prompt", 
+                                                      BRect(0, 0, 370, 25), B_FOLLOW_LEFT | B_FOLLOW_TOP, B_WILL_DRAW);
+                BString promptText;
+                promptText << "Select how long to grant Operator status to '" << targetNick << "':";
+                promptLabel->SetText(promptText.String());
+                promptLabel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+                promptLabel->MakeEditable(false);
+                promptLabel->MakeSelectable(false);
+                panel->AddChild(promptLabel);
+
+                // Create Durations Dropdown
+                BPopUpMenu* timeMenu = new BPopUpMenu("OpDurations");
+                timeMenu->AddItem(new BMenuItem("Permanently", nullptr));
+                timeMenu->AddItem(new BMenuItem("5 Minutes", nullptr));
+                timeMenu->AddItem(new BMenuItem("1 Hour", nullptr));
+                timeMenu->AddItem(new BMenuItem("1 Day", nullptr));
+                
+                if (timeMenu->ItemAt(0) != nullptr) timeMenu->ItemAt(0)->SetMarked(true);
+
+                BMenuField* durationField = new BMenuField(BRect(15, 45, 385, 70), "opDurationDropdown", 
+                                                         "Duration: ", timeMenu);
+                durationField->SetDivider(panel->StringWidth("Duration: ") + 5);
+                panel->AddChild(durationField);
+
+                // Action buttons
+                BButton* cancelBtn = new BButton(BRect(200, 100, 285, 125), "cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
+                
+                // FIX: Corrected spelling to MSG_CONTEXT_OP_SUBMIT here
+                BButton* opBtn = new BButton(BRect(295, 100, 385, 125), "op", "Grant Op", new BMessage(MSG_CONTEXT_OP_SUBMIT));
+                
+                cancelBtn->SetTarget(inputWin);
+                panel->AddChild(cancelBtn);
+                panel->AddChild(opBtn);
+
+                BMessage* buttonPayload = new BMessage(MSG_CONTEXT_OP_SUBMIT);
+                buttonPayload->AddString("target_nick", targetNick);
+                buttonPayload->AddPointer("window_ref", inputWin);
+                opBtn->SetMessage(buttonPayload);
+                opBtn->SetTarget(this);
+
+                inputWin->Show();
+            }
+            break;
+        }
+
+
+  
+  
+          // OP TRANSMITTER: Grants operator status and schedules the auto-deop runner
+        case MSG_CONTEXT_OP_SUBMIT: {
+            BString targetNick;
+            BString opDuration = "Permanently";
+            
+            if (message->FindString("target_nick", &targetNick) == B_OK) {
+                void* winPtr = nullptr;
+                
+                if (message->FindPointer("window_ref", &winPtr) == B_OK && winPtr != nullptr) {
+                    BWindow* modalWindow = static_cast<BWindow*>(winPtr);
+                    
+                    if (modalWindow->Lock()) {
+                        BMenuField* durationField = dynamic_cast<BMenuField*>(modalWindow->FindView("opDurationDropdown"));
+                        if (durationField != nullptr && durationField->Menu() != nullptr) {
+                            BMenuItem* markedItem = durationField->Menu()->FindMarked();
+                            if (markedItem != nullptr) {
+                                opDuration = markedItem->Label();
+                            }
+                        }
+                        modalWindow->Unlock();
+                        modalWindow->PostMessage(B_QUIT_REQUESTED);
+                    }
+                }
+
+                ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                if (contextServer == nullptr) break;
+
+                if (fActiveBufferItem == nullptr) break;
+                BString activeChannel = fActiveBufferItem->Text();
+
+                int32 spaceIdx = activeChannel.FindLast(" ");
+                if (spaceIdx != B_ERROR) {
+                    BString extractedChannel;
+                    activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
+                    activeChannel = extractedChannel;
+                }
+                if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&")) break;
+
+                BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                if (activeSocket != nullptr) {
+                    // 1. Send the immediate +o payload over the wire
+                    BString outgoingPayload;
+                    outgoingPayload << "MODE " << activeChannel << " +o " << targetNick << "\r\n";
+                    activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
+
+                    // 2. Schedule the automatic de-op payload if a time limit was picked
+                    bigtime_t delayMicroseconds = 0;
+                    if (opDuration == "5 Minutes") delayMicroseconds = 5LL * 60LL * 1000000LL;
+                    else if (opDuration == "1 Hour") delayMicroseconds = 60LL * 60LL * 1000000LL;
+                    else if (opDuration == "1 Day")  delayMicroseconds = 24LL * 60LL * 60LL * 1000000LL;
+
+                    if (delayMicroseconds > 0) {
+                        // 1. Permanently track their name locally so we can intercept future rejoins
+                        BString* trackedNick = new BString(targetNick);
+                        fAutoOpList.AddItem(trackedNick);
+
+                        // 2. Create the notification parcel to remove them when the timer expires
+                        BMessage* deopTrigger = new BMessage(MSG_CONTEXT_TIMED_DEOP_TRIGGER);
+                        deopTrigger->AddString("target_channel", activeChannel);
+                        deopTrigger->AddString("target_nick", targetNick);
+                        deopTrigger->AddPointer("server_node", contextServer);
+
+                        new BMessageRunner(BMessenger(this), deopTrigger, delayMicroseconds, 1);
+                    }
+
+                }
+            }
+            break;
+        }
+
+  
+  
+        // TIMED DEOP EVENT: Automatically executes when the scheduled BMessageRunner countdown expires
+        case MSG_CONTEXT_TIMED_DEOP_TRIGGER: {
+            BString targetChannel;
+            BString targetNick;
+            void* serverPtr = nullptr;
+
+            if (message->FindString("target_channel", &targetChannel) == B_OK &&
+                message->FindString("target_nick", &targetNick) == B_OK &&
+                message->FindPointer("server_node", &serverPtr) == B_OK && serverPtr != nullptr) {
+
+                // WIPE FROM AUTO-OP LIST: They are no longer protected by the automatic interceptor
+                for (int32 i = fAutoOpList.CountItems() - 1; i >= 0; i--) {
+                    BString* storedNick = fAutoOpList.ItemAt(i);
+                    if (storedNick != nullptr && *storedNick == targetNick) {
+                        delete fAutoOpList.RemoveItemAt(i);
+                    }
+                }
+
+                ServerTreeItem* targetServer = static_cast<ServerTreeItem*>(serverPtr);
+                BSecureSocket* activeSocket = GetActiveSocket(targetServer);
+
+                if (activeSocket != nullptr) {
+                    BString stripPayload;
+                    stripPayload << "MODE " << targetChannel << " -o " << targetNick << "\r\n";
+                    activeSocket->Write(stripPayload.String(), stripPayload.Length());
+                }
+            }
+            break;
+        }
+
+
+        
+        
+        
+        // KICK & BAN ENVELOPE GENERATOR: Prompts window with time ban option settings
+        case MSG_CONTEXT_KICK: {
+            BString targetNick;
+            if (message->FindString("target_nick", &targetNick) == B_OK && targetNick.Length() > 0) {
+                
+                // Tallied the box height frame from 110 to 180 to fit new control elements cleanly
+                BRect windowFrame(0, 0, 400, 180);
+                BRect screenFrame = Frame();
+                windowFrame.OffsetTo(
+                    screenFrame.left + (screenFrame.Width() - windowFrame.Width()) / 2,
+                    screenFrame.top + (screenFrame.Height() - windowFrame.Height()) / 2
+                );
+
+                BWindow* inputWin = new BWindow(windowFrame, "Kick / Ban User Control", 
+                                               B_MODAL_WINDOW, 
+                                               B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS);
+
+                BView* panel = new BView(inputWin->Bounds(), "bgPanel", B_FOLLOW_ALL, B_WILL_DRAW);
+                panel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+                inputWin->AddChild(panel);
+
+                BTextView* promptLabel = new BTextView(BRect(15, 10, 385, 35), "prompt", 
+                                                      BRect(0, 0, 370, 25), B_FOLLOW_LEFT | B_FOLLOW_TOP, B_WILL_DRAW);
+                BString promptText;
+                promptText << "Enter administration criteria for user '" << targetNick << "':";
+                promptLabel->SetText(promptText.String());
+                promptLabel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+                promptLabel->MakeEditable(false);
+                promptLabel->MakeSelectable(false);
+                panel->AddChild(promptLabel);
+
+                // Initialize the structural base text entry field configuration box
+                BMessage* enterPayload = new BMessage(MSG_CONTEXT_KICK_SUBMIT);
+                enterPayload->AddString("target_nick", targetNick);
+                
+                BTextControl* reasonInput = new BTextControl(BRect(15, 45, 385, 70), "reasonField", 
+                                                            "Reason: ", "Requested via context menu", enterPayload);
+                reasonInput->SetDivider(panel->StringWidth("Reason: ") + 5);
+                panel->AddChild(reasonInput);
+
+                // 1. ADD BAN CHECKBOX (Uses 'CheckBox.h' interface properties natively)
+                BCheckBox* banCheck = new BCheckBox(BRect(15, 80, 150, 105), "banCheckbox", "Also Ban User", nullptr);
+                panel->AddChild(banCheck);
+
+                // 2. ADD DURATION DROPDOWN (Uses 'MenuField.h' and 'PopUpMenu.h' controls)
+                BPopUpMenu* timeMenu = new BPopUpMenu("Durations");
+                timeMenu->AddItem(new BMenuItem("Forever", nullptr));
+                timeMenu->AddItem(new BMenuItem("5 Minutes", nullptr));
+                timeMenu->AddItem(new BMenuItem("1 Hour", nullptr));
+                timeMenu->AddItem(new BMenuItem("1 Day", nullptr));
+                
+                // Select default configuration item marker
+                if (timeMenu->ItemAt(0) != nullptr) timeMenu->ItemAt(0)->SetMarked(true);
+
+                BMenuField* durationField = new BMenuField(BRect(160, 80, 385, 105), "durationDropdown", 
+                                                         "Duration: ", timeMenu);
+                durationField->SetDivider(panel->StringWidth("Duration: ") + 5);
+                panel->AddChild(durationField);
+
+                // Move operational button widgets safely down to bottom edge rows
+                BButton* cancelBtn = new BButton(BRect(200, 140, 285, 165), "cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
+                BButton* kickBtn = new BButton(BRect(295, 140, 385, 165), "kick", "Execute", new BMessage(MSG_CONTEXT_KICK_SUBMIT));
+                
+                cancelBtn->SetTarget(inputWin);
+                panel->AddChild(cancelBtn);
+                panel->AddChild(kickBtn);
+
+                enterPayload->AddPointer("window_ref", inputWin);
+                
+                BMessage* buttonPayload = new BMessage(MSG_CONTEXT_KICK_SUBMIT);
+                buttonPayload->AddString("target_nick", targetNick);
+                buttonPayload->AddPointer("window_ref", inputWin);
+                kickBtn->SetMessage(buttonPayload);
+                
+                reasonInput->SetTarget(this);
+                kickBtn->SetTarget(this);
+
+                reasonInput->MakeFocus(true);
+                inputWin->Show();
+            }
+            break;
+        }
+
+
+
+
+
+
+        // KICK & BAN TRANSMITTER: Dispatches eviction and ban parameters to the network
+        case MSG_CONTEXT_KICK_SUBMIT: {
+            BString targetNick;
+            BString kickReason = "Requested via context menu";
+            bool shouldBan = false;
+            BString banDuration = "Forever";
+            
+            if (message->FindString("target_nick", &targetNick) == B_OK) {
+                void* winPtr = nullptr;
+                
+                if (message->FindPointer("window_ref", &winPtr) == B_OK && winPtr != nullptr) {
+                    BWindow* modalWindow = static_cast<BWindow*>(winPtr);
+                    
+                    if (modalWindow->Lock()) {
+                        // 1. Extract the text reason string
+                        BTextControl* reasonField = dynamic_cast<BTextControl*>(modalWindow->FindView("reasonField"));
+                        if (reasonField != nullptr) {
+                            kickReason = reasonField->Text();
+                        }
+                        
+                        // 2. Extract the ban checkbox state
+                        BCheckBox* banCheck = dynamic_cast<BCheckBox*>(modalWindow->FindView("banCheckbox"));
+                        if (banCheck != nullptr) {
+                            shouldBan = (banCheck->Value() == B_CONTROL_ON);
+                        }
+
+                        // 3. Extract the active dropdown duration value
+                        BMenuField* durationField = dynamic_cast<BMenuField*>(modalWindow->FindView("durationDropdown"));
+                        if (durationField != nullptr && durationField->Menu() != nullptr) {
+                            BMenuItem* markedItem = durationField->Menu()->FindMarked();
+                            if (markedItem != nullptr) {
+                                banDuration = markedItem->Label();
+                            }
+                        }
+                        
+                        modalWindow->Unlock();
+                        modalWindow->PostMessage(B_QUIT_REQUESTED);
+                    }
+                }
+                
+                kickReason.Trim();
+                if (kickReason.Length() == 0) {
+                    kickReason = "No reason specified";
+                }
+
+                ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                if (contextServer == nullptr) break;
+
+                if (fActiveBufferItem == nullptr) break;
+                BString activeChannel = fActiveBufferItem->Text();
+
+                int32 spaceIdx = activeChannel.FindLast(" ");
+                if (spaceIdx != B_ERROR) {
+                    BString extractedChannel;
+                    activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
+                    activeChannel = extractedChannel;
+                }
+                if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&")) break;
+
+                BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                if (activeSocket != nullptr) {
+                    BString outgoingPayload;
+
+                    // ==================== LIVE BAN PROCESSING ====================
+                    if (shouldBan) {
+                        // Standard IRC ban blocks nick variations securely via wildcard mask
+                        outgoingPayload << "MODE " << activeChannel << " +b " << targetNick << "!*@*\r\n";
+                        
+                        // Optional note appended directly to the channel view string context
+                        kickReason << " [Banned: " << banDuration << "]";
+                    }
+
+                    // Append the standard KICK instruction payload string
+                    outgoingPayload << "KICK " << activeChannel << " " << targetNick << " :" << kickReason << "\r\n";
+                    activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
+                }
+            }
+            break;
+        }
+
+
+
+
+
+
 
         // PRIVATE QUERY EXECUTOR: Opens a new chat session branch for one-on-one chats
         case MSG_CONTEXT_PRIVMSG: {
@@ -4458,81 +5243,89 @@ public:
         }
 
 
-         // 1. CONTEXT CLICK HANDLER: Intercepts row interactions to show the menu
+        // 1. CONTEXT CLICK HANDLER: Intercepts row interactions to show the menu
         case MSG_USER_LIST_CONTEXT_CLICK: {
             BPoint mousePoint;
             uint32 mouseBtn = 0;
             
             fUserList->GetMouse(&mousePoint, &mouseBtn);
             
-            // In Haiku, secondary button clicks are evaluated via bitwise validation flags
             if (mouseBtn & B_SECONDARY_MOUSE_BUTTON) {
                 int32 selectedIdx = fUserList->CurrentSelection();
-                if (selectedIdx >= 0) {
-                    UserListItem* clickedItem = dynamic_cast<UserListItem*>(fUserList->ItemAt(selectedIdx));
-                    if (clickedItem != nullptr) {
-                        
-                        // Strip any common IRC rank prefixes (~, &, %, @, +) safely
-                        BString cleanNick = clickedItem->Text();
-                        while (cleanNick.StartsWith("~") || cleanNick.StartsWith("&") || 
-                               cleanNick.StartsWith("%") || cleanNick.StartsWith("@") || 
-                               cleanNick.StartsWith("+")) {
-                            cleanNick.Remove(0, 1);
-                        }
+                if (selectedIdx < 0) break;
 
-                        BPopUpMenu* contextMenu = new BPopUpMenu("UserContext", false, false);
+                UserListItem* clickedItem = dynamic_cast<UserListItem*>(fUserList->ItemAt(selectedIdx));
+                if (clickedItem == nullptr) break;
 
-                        // CONDITION A: You right-clicked YOUR OWN nickname handle
-                        if (cleanNick == fMyNick) {
-                            BMenuItem* toggleAwayItem = nullptr;
-                            if (clickedItem->IsAway()) {
-                                toggleAwayItem = new BMenuItem("Set Status: Back", new BMessage(MSG_CONTEXT_SET_AWAY));
-                            } else {
-                                toggleAwayItem = new BMenuItem("Set Status: Away", new BMessage(MSG_CONTEXT_SET_AWAY));
-                            }
-                            contextMenu->AddItem(toggleAwayItem);
-                        } 
-                        // CONDITION B: You right-clicked SOMEONE ELSE's nickname handle
-                        else {
-                            BString menuLabel;
-                            menuLabel << "Private Message " << cleanNick;
-                            
-                            BMessage* pmMsg = new BMessage(MSG_CONTEXT_PRIVMSG);
-                            pmMsg->AddString("target_nick", cleanNick);
-                            
-                            BMenuItem* pmItem = new BMenuItem(menuLabel.String(), pmMsg);
-                            contextMenu->AddItem(pmItem);
-                        }
+                // DRY call replaces manual stripping loop cleanly
+                BString cleanNick = GetCleanNickname(clickedItem->Text());
+                BPopUpMenu* contextMenu = new BPopUpMenu("UserContext", false, false);
 
-                        contextMenu->SetTargetForItems(this);
-
-                        // Launch the pop-up menu right under your cursor coordinates safely
-                        contextMenu->Go(fUserList->ConvertToScreen(mousePoint), true, true, true);
+                // CONDITION A: You right-clicked YOUR OWN nickname handle
+                if (cleanNick == fMyNick) {
+                    BMenuItem* toggleAwayItem = nullptr;
+                    if (clickedItem->IsAway()) {
+                        toggleAwayItem = new BMenuItem("Set Status: Back", new BMessage(MSG_CONTEXT_SET_AWAY));
+                    } else {
+                        toggleAwayItem = new BMenuItem("Set Status: Away", new BMessage(MSG_CONTEXT_SET_AWAY));
                     }
+                    contextMenu->AddItem(toggleAwayItem);
+                } 
+                // CONDITION B: You right-clicked SOMEONE ELSE's nickname handle
+                else {
+                    BString menuLabel;
+                    menuLabel << "Private Message " << cleanNick;
+                    
+                    BMessage* pmMsg = new BMessage(MSG_CONTEXT_PRIVMSG);
+                    pmMsg->AddString("target_nick", cleanNick);
+                    
+                    contextMenu->AddItem(new BMenuItem(menuLabel.String(), pmMsg));
+                    contextMenu->AddSeparatorItem();
+
+                    BMenu* modesMenu = new BMenu("Channel Modes");
+                    struct {
+                        const char* label;
+                        uint32 command;
+                    } opActions[] = {
+                        { "Op", MSG_CONTEXT_OP },
+                        { "Deop", MSG_CONTEXT_DEOP },
+                        { "Voice", MSG_CONTEXT_VOICE },
+                        { "Devoice", MSG_CONTEXT_DEVOICE },
+                        { "Kick", MSG_CONTEXT_KICK }
+                    };
+
+                    for (const auto& action : opActions) {
+                        BMessage* actionMsg = new BMessage(action.command);
+                        actionMsg->AddString("target_nick", cleanNick);
+                        modesMenu->AddItem(new BMenuItem(action.label, actionMsg));
+                    }
+
+                    modesMenu->SetTargetForItems(this);
+                    contextMenu->AddItem(modesMenu);
                 }
+
+                contextMenu->SetTargetForItems(this);
+                contextMenu->Go(fUserList->ConvertToScreen(mousePoint), true, true, true);
             }
             break;
         }
 
 
 
-        // 2. EXECUTE SERVER TRANSMISSION: Dispatches the corresponding raw /AWAY parameters
+
+
+         // 2. EXECUTE SERVER TRANSMISSION: Dispatches the corresponding raw /AWAY parameters
         case MSG_CONTEXT_SET_AWAY: {
             if (fActiveBufferItem != nullptr) {
                 ServerTreeItem* targetedServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
-                BSecureSocket* activeSocket = nullptr;
                 
-                if (targetedServer != nullptr && fServerSockets.count(targetedServer) > 0) {
-                    activeSocket = fServerSockets[targetedServer];
-                } else {
-                    activeSocket = (targetedServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
-                }
+                // DRY Call simplifies your away status code branch
+                BSecureSocket* activeSocket = GetActiveSocket(targetedServer);
 
                 if (activeSocket != nullptr) {
                     BString outgoingPayload;
                     bool currentlyAway = false;
 
-                    // Query our active right panel row objects to determine status state
                     for (int32 i = 0; i < fUserList->CountItems(); i++) {
                         UserListItem* uiUser = dynamic_cast<UserListItem*>(fUserList->ItemAt(i));
                         if (uiUser != nullptr) {
@@ -4550,7 +5343,7 @@ public:
                     }
 
                     if (currentlyAway) {
-                        outgoingPayload << "AWAY\r\n"; // Sending empty AWAY clears status on server
+                        outgoingPayload << "AWAY\r\n";
                     } else {
                         outgoingPayload << "AWAY :" << cfg.awayMessage.c_str() << "\r\n";
                     }
@@ -4560,6 +5353,7 @@ public:
             }
             break;
         }
+
 
 
 
@@ -5844,6 +6638,34 @@ public:
 
 private:
 
+BString
+GetCleanNickname(const char* rawNick)
+{
+    BString cleanNick(rawNick);
+    while (cleanNick.StartsWith("~") || cleanNick.StartsWith("&") || 
+           cleanNick.StartsWith("%") || cleanNick.StartsWith("@") || 
+           cleanNick.StartsWith("+")) {
+        cleanNick.Remove(0, 1);
+    }
+    return cleanNick;
+}
+
+
+
+BSecureSocket*
+GetActiveSocket(ServerTreeItem* contextServer)
+{
+    if (contextServer == nullptr)
+        return nullptr;
+
+    if (fServerSockets.count(contextServer) > 0) {
+        return fServerSockets[contextServer];
+    }
+    
+    return (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+}
+
+
     BOutlineListView* fChannelTree;
     ServerTreeItem*   fLiberaNode;
     ServerTreeItem*   fOftcNode;
@@ -5885,6 +6707,8 @@ private:
     CustomChatView*  fCustomChatLog; 
     bool fIsLoadingHistory = false; 
 	BGridView*    fEmoticonGrid;
+	BObjectList<BString, true> fAutoOpList;
+	BObjectList<BString, true> fCurrentBanHarvest;
 
 }; 
 
