@@ -1595,7 +1595,7 @@ private:
 };
 
 
-
+// @ChannelTreeItem
 class ChannelTreeItem : public BStringItem {
 public:
     // Accept an additional bool isCustom parameter (defaults to false)
@@ -1632,7 +1632,9 @@ public:
     void SetAutoJoin(bool autoJoin) { fAutoJoin = autoJoin; }
     bool IsAutoJoin() const { return fAutoJoin; }
     size_t GetServerIndex() const { return fServerIndex; }
-    bool   IsCustom() const { return fIsCustom; } // NEW: Public getter to query custom flag
+    bool   IsCustom() const { return fIsCustom; } 
+    void SetTopic(const char* topic) { fChannelTopic = topic; }
+    BString GetTopic() const { return fChannelTopic; }
 
     // Override the native drawing framework loop
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
@@ -1674,7 +1676,7 @@ public:
 
 private:
     size_t fServerIndex;
-    bool   fIsCustom; // NEW: Track vector classification path inside instance memory
+    bool   fIsCustom; 
     bool   fHasUnread;
     bool   fAutoJoin;
 };
@@ -3380,39 +3382,79 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-   
-          // TOPIC: Real-time broadcast notification when a user modifies the room topic
-        if (command == "TOPIC") {
-            BString senderNick = prefix;
-            int32 exclamIdx = senderNick.FindFirst("!");
-            if (exclamIdx != B_ERROR) senderNick.Truncate(exclamIdx);
+ 
+ 
+        // Live AWAY Handler: Catches other users changing their status in real-time (Requires CAP REQ)
+        if (command == "AWAY") {
+            if (contextServer == nullptr) {
+                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+            }
 
-            // Extract the channel target from 'line'
-            BString channelTarget = line;
-            channelTarget.Trim();
-            channelTarget.ReplaceAll(" ", "");
+            BString userWhoChanged = prefix;
+            int32 exclamIdx = userWhoChanged.FindFirst("!");
+            if (exclamIdx != B_ERROR) {
+                userWhoChanged.Truncate(exclamIdx);
+            }
+            userWhoChanged.Trim();
 
-            ChannelTreeItem* chanNode = FindChannelNode(contextServer, channelTarget);
-            if (chanNode != nullptr) {
-                // Log the topic change alert cleanly inside the room's main chat log window layout frame
-                BString topicNotice;
-                topicNotice << "--- " << senderNick << " has changed the topic to: " << trailing << "\n";
-                LogToItemBuffer(chanNode, topicNotice);
+            // If trailing parameter has length, they went away. If empty, they returned.
+            bool isNowAway = (trailing.Length() > 0);
 
-                // If the user is currently looking at this room layout tab, update the top bar instantly
-                if (fActiveBufferItem == chanNode) {
-                    fTopicView->SetText(trailing.String());
-                    fTopicView->Invalidate();
+            bool uiRefreshNeeded = false;
+            
+            // Loop through all active channel buffers
+            for (auto it = fChannelUsers.begin(); it != fChannelUsers.end(); ++it) {
+                ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(it->first);
+                if (chanNode != nullptr) {
+                    
+                    // FIX: Isolate the parent item safely
+                    BListItem* superItem = fChannelTree->Superitem(chanNode);
+                    
+                    // If superItem is null, this is a Private Query PM tab, not a channel room!
+                    // If it is a PM tab, verify it matches the user changing status
+                    if (superItem == nullptr) {
+                        if (BString(chanNode->Text()) == userWhoChanged) {
+                            // Update PM away indicators here if your custom draw engine supports it
+                            if (fActiveBufferItem == chanNode) uiRefreshNeeded = true;
+                        }
+                        continue; // Skip the channel-specific network matching loops safely
+                    }
+
+                    // Standard validation guard for legitimate channel rooms
+                    if (superItem != contextServer) continue;
+
+                    BObjectList<UserListItem, true>* userVector = it->second;
+                    if (userVector != nullptr) {
+                        for (int32 i = 0; i < userVector->CountItems(); i++) {
+                            UserListItem* uiUser = userVector->ItemAt(i);
+                            if (uiUser != nullptr) {
+                                BString cleanName = GetCleanNickname(uiUser->Text());
+                                if (cleanName == userWhoChanged) {
+                                    UpdateUserAwayState(chanNode, userWhoChanged.String(), isNowAway);
+                                    
+                                    if (fActiveBufferItem == chanNode) {
+                                        uiRefreshNeeded = true;
+                                    }
+                                    break; 
+                                }
+                            }
+                        }
+                    }
                 }
+            }
+
+            if (uiRefreshNeeded) {
+                RefreshUserListUI();
             }
             return;
         }
- 
+
+
    
    
     
 
-        // RPL_UNAWAY: Server confirms you are no longer marked away
+        // RPL_UNAWAY (305): Server confirms you are no longer marked away
         if (command == "305") {
             if (contextServer == nullptr) {
                 contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
@@ -3422,38 +3464,27 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             BString notice = "--- Server Notification: You are no longer marked as being away.\n";
             LogToItemBuffer(serverLog ? serverLog : fActiveBufferItem, notice);
             
-            for (auto it = fChannelUsers.begin(); it != fChannelUsers.end(); ++it) {
-                ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(it->first);
-                if (chanNode != nullptr) {
-                    UpdateUserAwayState(chanNode, fMyNick.String(), false); // false = active/bright
-                }
-            }
-            
+            // DRY helper updates your state across all channels on this server instantly
+            UpdateMyGlobalAwayState(contextServer, false); // false = active/bright
             return;
         }
 
+        // RPL_NOWAWAY (306): Server confirms you are now successfully marked away
+        if (command == "306") {
+            if (contextServer == nullptr) {
+                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+            }
+    
+            BStringItem* serverLog = FindServerLogNode(contextServer);
+            BString notice;
+            notice << "--- Server Notification: You are now marked as away (" << cfg.awayMessage.c_str() << ").\n";
+            LogToItemBuffer(serverLog ? serverLog : fActiveBufferItem, notice);
+    
+            // DRY helper updates your state across all channels on this server instantly
+            UpdateMyGlobalAwayState(contextServer, true); // true = away/dimmed
+            return;
+        }
 
-		// RPL_NOWAWAY: Server confirms you are now successfully marked away
-		if (command == "306") {
-    		if (contextServer == nullptr) {
-        		contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
-    		}
-    
-    		BStringItem* serverLog = FindServerLogNode(contextServer);
-    		BString notice;
-    
-    		notice << "--- Server Notification: You are now marked as away (" << cfg.awayMessage.c_str() << ").\n";
-    
-    		LogToItemBuffer(serverLog ? serverLog : fActiveBufferItem, notice);
-    
-    		for (auto it = fChannelUsers.begin(); it != fChannelUsers.end(); ++it) {
-        		ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(it->first);
-        		if (chanNode != nullptr) {
-            		UpdateUserAwayState(chanNode, fMyNick.String(), true);
-        		}
-    		}
-    		return;
-		}
 
         
 
@@ -4408,10 +4439,11 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(targetNode);
                 if (chanNode) {
                     
-                    // === AUTOMATION HOOK: Mark user as back upon active typing ===
-                    // If they are speaking in a channel, they are active. Override away state to false.
-                    UpdateUserAwayState(chanNode, senderNick.String(), false);
-                    // =============================================================
+                    // === FIXED AUTOMATION HOOK: Only mark back if *I* am the one typing ===
+                    if (senderNick == fMyNick) {
+                        UpdateUserAwayState(chanNode, senderNick.String(), false);
+                    }
+                    // =====================================================================
 
                     if (fActiveBufferItem != chanNode) {
                         chanNode->SetUnread(true);
@@ -4426,6 +4458,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 LogToItemBuffer(targetNode, formattedMsg);
             }
             return;
+
         }
      
         
@@ -4502,6 +4535,16 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             }
         }
 
+        // ==================== NEW: IRCv3 CAPABILITY NEGOTIATION ====================
+        // Request the capability listing and register for away status events immediately
+        BString capHandshake;
+        capHandshake << "CAP LS 302\r\nCAP REQ :away-notify\r\n";
+        localSocket->Write(capHandshake.String(), capHandshake.Length());
+        if (cfg.debugEnable) {
+            LogDebugStream(targetNode->Text(), "OUTGOING", capHandshake.String(), capHandshake.Length());
+        }
+        // ===========================================================================
+
         // 2. Dynamic Nickname Handshake Configuration
         BString nickHandshake;
         nickHandshake << "NICK " << targetNode->GetNick() << "\r\n";
@@ -4517,6 +4560,15 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         if (cfg.debugEnable) {
             LogDebugStream(targetNode->Text(), "OUTGOING", userHandshake.String(), userHandshake.Length());
         }
+
+        // ==================== NEW: CLOSE CAPABILITY CAP WINDOW ====================
+        // Complete the handshake pass so registration can finalize completely on the server
+        BString capEndHandshake = "CAP END\r\n";
+        localSocket->Write(capEndHandshake.String(), capEndHandshake.Length());
+        if (cfg.debugEnable) {
+            LogDebugStream(targetNode->Text(), "OUTGOING", capEndHandshake.String(), capEndHandshake.Length());
+        }
+        // ===========================================================================
 
         char buffer[512];
         ssize_t bytesRead;
@@ -4557,9 +4609,8 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         // 4. Thread and Socket Cleanup State Reset
         bool triggerReconnect = targetNode->IsAutoReconnect();
         
-        // Before accessing the window maps, ensure the window is still fully valid and active
         if (be_app->CountWindows() > 0 && be_app->WindowAt(0) == window) {
-            if (window->Lock()) { // Double check thread safety lock boundaries
+            if (window->Lock()) { 
                 window->fServerSockets.erase(targetNode);
                 window->fServerThreads.erase(targetNode);
                 
@@ -4572,7 +4623,6 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 }
                 window->Unlock();
                 
-                // Only post a reconnection message if the parent workspace isn't shutting down
                 if (triggerReconnect) {
                     BMessage* reconnectMessage = new BMessage(MSG_RECONNECT_SERVER);
                     reconnectMessage->AddPointer("server_item", targetNode);
@@ -4584,6 +4634,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         delete localSocket;
         return B_OK;
     }
+
 
 
 
@@ -6264,22 +6315,40 @@ public:
                     if (isServerRootNode != nullptr) {
                         // If the clicked object matches a server root node item entity, set the status banner
                         fTopicView->SetText("Network connection logs status feed.");
-                    } else if (itemText.StartsWith("#")) {
-                        
-                        // Scan your cache map by raw text names to bypass pointer/context drift
-                        bool topicFoundInCache = false;
-                        for (auto it = fChannelTopics.begin(); it != fChannelTopics.end(); ++it) {
-                            if (it->first != nullptr && BString(it->first->Text()) == itemText) {
-                                fTopicView->SetText(it->second.String());
-                                topicFoundInCache = true;
-                                break;
+                    } else {
+                        // FIX: Clean the active tab text of any leading mode rank prefixes (@, +)
+                        BString cleanedItemText = itemText;
+                        cleanedItemText.Trim();
+                        while (cleanedItemText.StartsWith("@") || cleanedItemText.StartsWith("+")) {
+                            cleanedItemText.Remove(0, 1);
+                        }
+
+                        // We only process cache matching if this row is a channel name
+                        if (cleanedItemText.StartsWith("#") || cleanedItemText.StartsWith("&")) {
+                            // Scan your cache map by raw text names to bypass pointer/context drift
+                            bool topicFoundInCache = false;
+                            for (auto it = fChannelTopics.begin(); it != fChannelTopics.end(); ++it) {
+                                if (it->first != nullptr) {
+                                    // FIX: Strip rank prefixes from cache keys as well for exact string mapping
+                                    BString cachedNodeText = it->first->Text();
+                                    cachedNodeText.Trim();
+                                    while (cachedNodeText.StartsWith("@") || cachedNodeText.StartsWith("+")) {
+                                        cachedNodeText.Remove(0, 1);
+                                    }
+
+                                    if (cachedNodeText == cleanedItemText) {
+                                        fTopicView->SetText(it->second.String());
+                                        topicFoundInCache = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!topicFoundInCache) {
+                                fTopicView->SetText("No topic set.");
                             }
                         }
 
-                        if (!topicFoundInCache) {
-                            fTopicView->SetText("No topic set.");
-                        }
-                        
                         // Restore the active user list including their channel modes!
                         if (fChannelUsers.find(fActiveBufferItem) != fChannelUsers.end()) {
                             BObjectList<UserListItem, true>* userVector = fChannelUsers[fActiveBufferItem];
@@ -6363,6 +6432,7 @@ public:
             }
             break;
         }
+
 
 
 
@@ -6663,6 +6733,23 @@ GetActiveSocket(ServerTreeItem* contextServer)
     }
     
     return (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+}
+
+
+void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
+{
+    for (auto it = fChannelUsers.begin(); it != fChannelUsers.end(); ++it) {
+        ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(it->first);
+        if (chanNode != nullptr) {
+            // Safety check: ensure we only update channels that belong to the current server
+            if (fChannelTree->Superitem(chanNode) != contextServer) continue;
+            
+            UpdateUserAwayState(chanNode, fMyNick.String(), isAway);
+        }
+    }
+    
+    // Instantly refresh the right-hand nickname list panel if we modified the active view
+    RefreshUserListUI();
 }
 
 
