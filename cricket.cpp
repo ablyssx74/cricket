@@ -2082,11 +2082,7 @@ public:
                 .End()
             .End()
             .Add(fBgOpacitySlider) 
-            // .Add(fAutoConnectCheck)
-            // .Add(fAutoReconnectCheck)
-            // .Add(fHideStatusCheck)  
-            // .Add(fEnableEmoticonsCheck) 
-            // .Add(fDebugEnableCheck)    
+ 
            
             .AddGlue()
             .AddGroup(B_HORIZONTAL, 10)
@@ -2475,7 +2471,6 @@ public:
 
 
         fInputControl = new BTextControl("input", "", "", new BMessage(MSG_SEND_MESSAGE));
-      //  fConnectButton = new BButton("connect", "Join #Haiku!", new BMessage(MSG_START_SIRC));
 
         // Apply saved font choices on startup
         BFont initialFont;
@@ -2522,7 +2517,6 @@ public:
             .AddGroup(B_HORIZONTAL, 5, 0.0) 
                 .Add(fIconToggleButton, 0.0) // FIX: Places the layout-safe toggle button here
                 .Add(fInputControl, 1.0)     
-             //  .Add(fConnectButton, 0.0)    
             .End();
 
 
@@ -7132,7 +7126,6 @@ void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
     std::map<BStringItem*, BString> fTextBuffers;
     std::map<BStringItem*, BString> fChannelTopics;
     
-    //std::map<BStringItem*, BObjectList<BStringItem, true>*> fChannelUsers;    
     std::map<BStringItem*, BObjectList<UserListItem, true>*> fChannelUsers;
     std::map<BStringItem*, bigtime_t> fLastTimestampTime;
     std::map<ServerTreeItem*, thread_id> fServerThreads;
@@ -7143,7 +7136,6 @@ void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
     BTextView*        fChatLog;
     BListView*        fUserList;
     BTextControl*     fInputControl;
-  //  BButton*          fConnectButton;
     
     thread_id         fLiberaThread;
     thread_id         fOftcThread;
