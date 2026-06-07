@@ -60,7 +60,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.11 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.12 (Haiku OS)";
 }
 
 using json = nlohmann::json;
