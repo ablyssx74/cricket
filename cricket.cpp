@@ -60,7 +60,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.12 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.13 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -284,7 +284,7 @@ void load_config() {
         libera.altNick = BString(dynamicNick).Append("+").String(); 
         libera.altNick2 = BString(dynamicNick).Append("__").String();
         libera.pass = "";
-        libera.autojoin = {"#ubuntu", "#linux"};
+        libera.autojoin = {""};
         libera.autoConnect = false;
         libera.autoReconnect = false;
         libera.hideStatusMessages = false;
@@ -300,7 +300,7 @@ void load_config() {
         oftc.altNick = BString(dynamicNick).Append("+").String();  
         oftc.altNick2 = BString(dynamicNick).Append("__").String();
         oftc.pass = "";
-        oftc.autojoin = {"#haiku"};
+        oftc.autojoin = {""};
         oftc.autoConnect = false;
         oftc.autoReconnect = false;
         oftc.hideStatusMessages = false;
@@ -1612,15 +1612,15 @@ static int SortChannelsByUsers(const void* first, const void* second) {
 // 2. DECLARE THE WINDOW
 class IRCChannelListWindow : public BWindow {
 public:
-    IRCChannelListWindow(BWindow* owner, BSecureSocket* targetSocket, ServerTreeItem* serverItem) 
-        // Changing to B_DOCUMENT_WINDOW restores the standard Haiku resizable border frame layout
+    // Update the constructor signature to accept 4 arguments:
+    IRCChannelListWindow(BWindow* owner, BSecureSocket* targetSocket, ServerTreeItem* serverItem, IRCChannelListWindow** tracker) 
         : BWindow(BRect(150, 150, 800, 650), "Network Channel List", 
                   B_DOCUMENT_WINDOW, B_ASYNCHRONOUS_CONTROLS) {
 
-        
         fOwnerWindow = owner;
         fSocket = targetSocket;
-        fServerContext = serverItem; // <-- ADDED: Stores server context item reference safely
+        fServerContext = serverItem; 
+        fTracker = tracker; // <-- ADDED: Save the tracking address safely
 
         fListView = new BListView("chan_list_view");
         fListView->SetInvocationMessage(new BMessage('join'));
@@ -1639,7 +1639,7 @@ public:
     // Public getter required by the '322' protocol parser block
     BSecureSocket* GetTargetSocket() const { return fSocket; }
 
-    // --- ADDED: Public getter to query the parent network server node if needed ---
+    // Public getter to query the parent network server node if needed
     ServerTreeItem* GetServerContext() const { return fServerContext; }
 
     void DispatchMessage(BMessage* message, BHandler* handler) override {
@@ -1681,8 +1681,6 @@ public:
                     message->FindString("topic", &topic) == B_OK) {
             
                     fListView->AddItem(new ChannelRowItem(channelName, userCount, topic));
-            
-                    // Automatically re-sorts the rows live on screen!
                     fListView->SortItems(SortChannelsByUsers); 
                 }
                 break;
@@ -1710,24 +1708,29 @@ public:
         }
     }
 
-    void Quit() override {
-        // Loop and explicitly free all custom ChannelRowItem allocations out of the heap pool
+    // --- UPDATED: Swapped Quit() for QuitRequested() to clear pointer instantly ---
+    bool QuitRequested() override {
         while (fListView->CountItems() > 0) {
             BListItem* item = fListView->RemoveItem((int32)0);
             delete item;
         }
 
-        BMessage notification('cldc'); // Notify parent window fActiveListWindow is dead
-        if (fOwnerWindow) fOwnerWindow->PostMessage(&notification);
-        BWindow::Quit();
+        // Instantly clears fActiveListWindow in the main thread thread-safely
+        if (fTracker != nullptr) {
+            *fTracker = nullptr;
+        }
+
+        return true; 
     }
 
 private:
-    BWindow*         fOwnerWindow;
-    BListView*       fListView;
-    BSecureSocket*   fSocket;
-    ServerTreeItem*  fServerContext; // <-- ADDED: Private context tracker storage field
+    BWindow*               fOwnerWindow;
+    BListView*             fListView;
+    BSecureSocket*         fSocket;
+    ServerTreeItem*        fServerContext; 
+    IRCChannelListWindow** fTracker; // <-- ADDED: Private variable to hold tracker reference
 };
+
 
 
 // @ChannelTreeItem
@@ -2375,7 +2378,7 @@ public:
         windowTitle << AppInfo::VERSION_STRING;
         SetTitle(windowTitle.String());
 		fActiveIconPopup = nullptr;
-
+		fActiveListWindow = nullptr;
 
         
         // 1. Setup Channel Tree View (Left Side)
@@ -3950,20 +3953,16 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-	        // RPL_LIST: Individual channel description entry token row
+        // RPL_LIST: Individual channel description entry token row
         if (command == "322") { 
             // Server data line parameter syntax: <YourNick> <#Channel> <UserCount> :[Topic Text]
-            // NOTE: Because our main loop already extracted 'trailing' (Topic), 
-            // the 'line' variable here contains exactly: "YourNick #channel UserCount"
-            
             BString channelName = "";
             BString userCount = "";
             
             int32 firstSpace = line.FindFirst(" ");
             if (firstSpace != B_ERROR) {
-                // Extract parameters reliably using a temporary copy loop
                 BString argsBlock = line;
-                argsBlock.Remove(0, firstSpace + 1); // Strip your own nickname out safely
+                argsBlock.Remove(0, firstSpace + 1); // Strip nickname
                 
                 int32 secondSpace = argsBlock.FindFirst(" ");
                 if (secondSpace != B_ERROR) {
@@ -3983,53 +3982,46 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             channelName.Trim();
             userCount.Trim();
 
-            // Safety check: skip broken packets or invalid parsing attempts
             if (channelName.Length() == 0) return;
 
             if (contextServer == nullptr) {
                 contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
             }
 
-            // --- Safe multi-threaded pointer validation via BMessenger ---
+            // --- Simplified, bulletproof window verification ---
             if (fActiveListWindow != nullptr) {
-                BMessenger messenger(fActiveListWindow);
-                if (messenger.IsValid()) {
-                    
-                    // Fetch accurate active network stream connection out of lookup map safely
-                    BSecureSocket* activeNetworkSocket = nullptr;
-                    if (fServerSockets.count(contextServer) > 0) {
-                        activeNetworkSocket = fServerSockets[contextServer];
-                    } else {
-                        activeNetworkSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
-                    }
-
-                    bool targetMatches = false;
-                    
-                    // --- Lock window thread loop safely before invoking class methods ---
-                    if (fActiveListWindow->Lock()) {
-                        // Securely cross-validate using the verified public target socket getter
-                        if (fActiveListWindow->GetTargetSocket() == activeNetworkSocket) {
-                            targetMatches = true;
-                        }
-                        fActiveListWindow->Unlock();
-                    }
-
-                    // Only forward data packages if the window targets this specific server stream
-                    if (targetMatches) {
-                        BMessage* rowPackage = new BMessage(MSG_ADD_LIST_ROW);
-                        rowPackage->AddString("channel", channelName.String());
-                        rowPackage->AddString("users", userCount.String());
-                        rowPackage->AddString("topic", trailing.String()); // 'trailing' holds parsed topic
-                        
-                        // Fire-and-forget messaging delivers data asynchronously without freezing threads
-                        fActiveListWindow->PostMessage(rowPackage);
-                    }
+                
+                BSecureSocket* activeNetworkSocket = nullptr;
+                if (fServerSockets.count(contextServer) > 0) {
+                    activeNetworkSocket = fServerSockets[contextServer];
                 } else {
-                    fActiveListWindow = nullptr; // Reset pointer if closed by user
+                    activeNetworkSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+                }
+
+                bool targetMatches = false;
+                
+                // Safely Lock the window thread to check ownership.
+                // If it returns false, the window is already dead/quitting.
+                if (fActiveListWindow->Lock()) {
+                    if (fActiveListWindow->GetTargetSocket() == activeNetworkSocket) {
+                        targetMatches = true;
+                    }
+                    fActiveListWindow->Unlock();
+                }
+
+                // Forward data package to the list view if servers match
+                if (targetMatches) {
+                    BMessage* rowPackage = new BMessage(MSG_ADD_LIST_ROW);
+                    rowPackage->AddString("channel", channelName.String());
+                    rowPackage->AddString("users", userCount.String());
+                    rowPackage->AddString("topic", trailing.String()); 
+                    
+                    fActiveListWindow->PostMessage(rowPackage);
                 }
             }
             return;
         }
+
 
 
 
@@ -6353,55 +6345,38 @@ public:
         	
             case MSG_CONTEXT_CHAN_LIST: {
                 void* ptr = nullptr;
-                // FindPointer requires a pointer-to-a-pointer (void**)&ptr cast to work correctly
                 if (message->FindPointer("server_item", (void**)&ptr) != B_OK || ptr == nullptr) {
                     break;
                 }
 
                 ServerTreeItem* serverItem = static_cast<ServerTreeItem*>(ptr);
                 
-                // Dynamically fetch the accurate active network connection from our lookup map
                 BSecureSocket* activeSocket = nullptr;
                 if (fServerSockets.count(serverItem) > 0) {
                     activeSocket = fServerSockets[serverItem];
                 } else {
-                    // Backwards-compatibility fallback for default servers on startup
                     activeSocket = (serverItem == fOftcNode) ? fOftcSocket : fLiberaSocket;
                 }
                 
                 if (activeSocket != nullptr) {
-                    // Safely query the window thread using Haiku's BMessenger API ---
-                    bool windowIsValid = false;
-                    if (fActiveListWindow != nullptr) {
-                        BMessenger messenger(fActiveListWindow);
-                        if (messenger.IsValid()) {
-                            windowIsValid = true;
-                        } else {
-                            // The window was closed by the user and cleaned itself up; reset our tracking pointer safely
-                            fActiveListWindow = nullptr;
-                        }
-                    }
-
-                    // Launch or activate the float list view pop-up window securely
-                    if (fActiveListWindow == nullptr || !windowIsValid) {
-                        // Pass the serverItem pointer along so the pop-up knows its network context parent
-                        fActiveListWindow = new IRCChannelListWindow(this, activeSocket, serverItem);
+                    if (fActiveListWindow == nullptr) {
+                        fActiveListWindow = new IRCChannelListWindow(this, activeSocket, serverItem, &fActiveListWindow);
                         fActiveListWindow->Show();
                     } else {
-                        // Lock and activate the window since it is still running smoothly in memory
                         if (fActiveListWindow->Lock()) {
                             fActiveListWindow->Activate(true);
                             fActiveListWindow->Unlock();
                         }
                     }
                 } else {
-                    // Fallback warning if the user attempts to view channels while completely offline
                     BString warning;
                     warning.SetToFormat("System Error: You must connect to '%s' first before requesting a channel list.\n", serverItem->Text());
                     LogToItemBuffer(fActiveBufferItem, warning);
                 }
                 break;
             }
+
+
 
 
         	
@@ -6957,7 +6932,7 @@ public:
                             }
 
                             if (fActiveListWindow == nullptr || !windowIsValid) {
-                                fActiveListWindow = new IRCChannelListWindow(this, activeSocket, contextServer);
+                                fActiveListWindow = new IRCChannelListWindow(this, activeSocket, contextServer, &fActiveListWindow);
                                 fActiveListWindow->Show();
                             } else {
                                 if (fActiveListWindow->Lock()) {
