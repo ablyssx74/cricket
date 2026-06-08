@@ -12,6 +12,7 @@
 #include <SupportKit.h>
 #include <Roster.h>
 #include <Slider.h> 
+#include <Box.h>
 
 // Storage, Path Finder & System File Kits
 #include <Directory.h>
@@ -60,7 +61,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.14 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.16 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -80,7 +81,17 @@ struct ServerConfig {
     bool enableEmoticons;    
     std::string backgroundImagePath; 
     int32 backgroundOpacity; 
+    
+    int32 serverListFontSize = 12;
+    int32 chatLogFontSize = 12;
+    int32 userListFontSize = 12;
+    bool useCustomDrawFunction = true; 
+    bool debugEnable = false; 
+
+    // Per-server Chat Logging Option (Defaults to false)
+    bool logChatsToFile = false; 
 };
+
 
 struct Config {
     bool debugEnable = false;
@@ -89,10 +100,11 @@ struct Config {
     int32 serverListFontSize = 12;
     int32 chatLogFontSize = 12;
     int32 userListFontSize = 12;
-    std::string quitMessage = AppInfo::VERSION_STRING; 
+    std::string quitMessage = "App Quit: " + std::string(AppInfo::VERSION_STRING); 
     std::string awayMessage = "I am away from my computer right now."; 
-    bool useCustomDrawFunction = true; 
+    bool useCustomDrawFunction = true; // Acts as fallback standard for new profiles
 } cfg;
+
 
 int selectedConfig = 0;
 
@@ -132,6 +144,14 @@ void save_config() {
         s["background_image"] = srv.backgroundImagePath; 
         s["bg_opacity"] = srv.backgroundOpacity; 
         s["enable_emoticons"] = srv.enableEmoticons; 
+        s["useCustomDrawFunction"] = srv.useCustomDrawFunction;
+	    s["logChatsToFile"] = srv.logChatsToFile;
+
+        // Per-server font size settings
+        s["serverListFontSize"] = srv.serverListFontSize;
+        s["chatLogFontSize"] = srv.chatLogFontSize;
+        s["userListFontSize"] = srv.userListFontSize;
+
         json ajArray = json::array();
         for (const auto& chan : srv.autojoin) {
             ajArray.push_back(chan);
@@ -151,7 +171,6 @@ void save_config() {
         s["nick"] = srv.nick;        
         s["altNick"] = srv.altNick;
         s["altNick2"] = srv.altNick2; 
-        
         s["pass"] = srv.pass;
         s["autoConnect"] = srv.autoConnect; 
         s["autoReconnect"] = srv.autoReconnect;
@@ -159,6 +178,14 @@ void save_config() {
         s["background_image"] = srv.backgroundImagePath;
         s["bg_opacity"] = srv.backgroundOpacity; 
         s["enable_emoticons"] = srv.enableEmoticons;  
+        s["useCustomDrawFunction"] = srv.useCustomDrawFunction;
+ 	    s["logChatsToFile"] = srv.logChatsToFile;
+ 	     
+        // Per-server font size settings
+        s["serverListFontSize"] = srv.serverListFontSize;
+        s["chatLogFontSize"] = srv.chatLogFontSize;
+        s["userListFontSize"] = srv.userListFontSize;
+
         json ajArray = json::array();
         for (const auto& chan : srv.autojoin) {
             ajArray.push_back(chan);
@@ -180,6 +207,7 @@ void save_config() {
 }
 
 
+
 void load_config() {
     ensure_config_dir();
     cfg.debugEnable = false;
@@ -197,7 +225,7 @@ void load_config() {
         if (infile.is_open()) {
             try {
                 json j = json::parse(infile);
-                cfg.quitMessage = j.value("quitMessage", AppInfo::VERSION_STRING);
+                cfg.quitMessage = j.value("quitMessage", "App Quit: " + std::string(AppInfo::VERSION_STRING));
                 cfg.awayMessage = j.value("awayMessage", "I am away from my computer right now.");
                 cfg.debugEnable = j.value("debugEnable", false);             
                 cfg.serverListFontSize = j.value("serverListFontSize", (int32)12);
@@ -222,6 +250,14 @@ void load_config() {
                         srv.backgroundImagePath = s.value("background_image", ""); 
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
+                        srv.useCustomDrawFunction = s.value("useCustomDrawFunction", cfg.useCustomDrawFunction);
+                        srv.logChatsToFile = s.value("logChatsToFile", false);
+
+                        // Parse per-server fonts; falls back to the global configurations parsed above
+                        srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
+                        srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
+                        srv.userListFontSize   = s.value("userListFontSize", cfg.userListFontSize);
+
                         if (s.contains("autojoin") && s["autojoin"].is_array()) {
                             for (const auto& chan : s["autojoin"]) {
                                 srv.autojoin.push_back(chan.get<std::string>());
@@ -241,7 +277,6 @@ void load_config() {
                         srv.nick = s.value("nick", "HaikuUser");                        
                         srv.altNick = s.value("altNick", srv.nick + "+");  
                         srv.altNick2 = s.value("altNick2", srv.nick + "__"); 
-                        
                         srv.pass = s.value("pass", "");
                         srv.autoReconnect = s.value("autoReconnect", false); 
                         srv.autoConnect = s.value("autoConnect", false); 
@@ -249,6 +284,14 @@ void load_config() {
                         srv.backgroundImagePath = s.value("background_image", ""); 
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
+                        srv.useCustomDrawFunction = s.value("useCustomDrawFunction", cfg.useCustomDrawFunction);
+                        srv.logChatsToFile = s.value("logChatsToFile", false);
+                        
+                        // Parse per-server fonts; falls back to the global configurations parsed above
+                        srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
+                        srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
+                        srv.userListFontSize   = s.value("userListFontSize", cfg.userListFontSize);
+
                         if (s.contains("autojoin") && s["autojoin"].is_array()) {
                             for (const auto& chan : s["autojoin"]) {
                                 srv.autojoin.push_back(chan.get<std::string>());
@@ -270,7 +313,8 @@ void load_config() {
         cfg.servers.clear();        
         cfg.customServers.clear(); 
         cfg.useCustomDrawFunction = true; 
-
+		cfg.quitMessage = "App Quit: " + std::string(AppInfo::VERSION_STRING);
+		
         srand(static_cast<unsigned int>(real_time_clock_usecs()));
         int randomSuffix = 1000 + (rand() % 9000);
         BString dynamicNick;
@@ -288,16 +332,24 @@ void load_config() {
         libera.autoConnect = false;
         libera.autoReconnect = false;
         libera.hideStatusMessages = false;
-		libera.backgroundImagePath = ""; 
-		libera.backgroundOpacity = 30; 
-		libera.enableEmoticons = true; 
-		 
+        libera.backgroundImagePath = ""; 
+        libera.backgroundOpacity = 30; 
+        libera.enableEmoticons = true; 
+        libera.useCustomDrawFunction = cfg.useCustomDrawFunction;
+        libera.logChatsToFile = false;
+         
+        // Fallbacks for the hardcoded defaults
+        libera.serverListFontSize = cfg.serverListFontSize;
+        libera.chatLogFontSize    = cfg.chatLogFontSize;
+        libera.userListFontSize   = cfg.userListFontSize;
+        cfg.servers.push_back(libera);
+         
         ServerConfig oftc;
         oftc.name = "OFTC";
         oftc.host = "irc.oftc.net";
         oftc.port = 6697;
         oftc.nick = dynamicNick.String();
-        oftc.altNick = BString(dynamicNick).Append("+").String();  
+        oftc.altNick = BString(dynamicNick).Append("+").String(); 
         oftc.altNick2 = BString(dynamicNick).Append("__").String();
         oftc.pass = "";
         oftc.autojoin = {"#haiku"};
@@ -307,11 +359,13 @@ void load_config() {
         oftc.backgroundImagePath = ""; 
         oftc.backgroundOpacity = 30; 
         oftc.enableEmoticons = true; 
+        oftc.useCustomDrawFunction = cfg.useCustomDrawFunction;
+        oftc.logChatsToFile = false;
         
-        cfg.servers.push_back(libera);
+        oftc.serverListFontSize = cfg.serverListFontSize;
+        oftc.chatLogFontSize    = cfg.chatLogFontSize;
+        oftc.userListFontSize   = cfg.userListFontSize;
         cfg.servers.push_back(oftc);
-        
-        save_config(); 
     }
 }
 
@@ -498,7 +552,7 @@ public:
 private:
     void ParseTextAndIcons(const BString& text, const text_run_array* runs, BObjectList<StyledRunFragment, true>* rawFragments);
     void ComputeWrapForLine(StyledLine* line, float maxWidth, BObjectList<StyledRunFragment, true>* rawFragments);
-    
+    virtual void ScrollTo(BPoint point);
     void ComputeWrapForLine(StyledLine* line, float maxWidth);
 	void UpdateScrollRange(bool scrollToBottom = false);
     BObjectList<StyledLine, true> fLines; 
@@ -922,6 +976,10 @@ void CustomChatView::ComputeWrapForLine(StyledLine* line, float maxWidth, BObjec
     }
 }
 
+void CustomChatView::ScrollTo(BPoint point) {
+    BView::ScrollTo(point);
+    Invalidate(); 
+}
 
 
 
@@ -939,8 +997,30 @@ void CustomChatView::SetActiveChannel(BStringItem* activeNode) {
 // Intercept System-wide Color/Theme Changes Live
 void CustomChatView::MessageReceived(BMessage* message) {
     switch (message->what) {
+        case B_MOUSE_WHEEL_CHANGED: {
+            float deltaY = 0.0f;
+            if (message->FindFloat("be:wheel_delta_y", &deltaY) == B_OK && deltaY != 0.0f) {
+                
+                BScrollBar* vScrollBar = ScrollBar(B_VERTICAL);
+                if (vScrollBar != nullptr) {
+                    float currentVal = vScrollBar->Value();
+                    
+                    // Proportional rapid-scrolling multiplier calculation
+                    float acceleratedScrollAmount = deltaY * (fLineHeight * 1.5f);
+                    
+                    vScrollBar->SetValue(currentVal + acceleratedScrollAmount);
+
+                    // FIX: Force a global redraw of the view layout hierarchy.
+                    // This tells the App Server to refresh the background image canvas,
+                    // completely eliminating text smearing and tearing when scrolling.
+                    Invalidate();
+                    return; 
+                }
+            }
+            break;
+        }
+
         case MSG_CLEAR_CUSTOM_BUFFER: {
-            // 1. Loop backward and purge only rows matching our current active room context node
             for (int32 i = fLines.CountItems() - 1; i >= 0; i--) {
                 StyledLine* line = fLines.ItemAt(i);
                 if (line != nullptr && line->itemNode == fActiveChannelNode) {
@@ -948,22 +1028,17 @@ void CustomChatView::MessageReceived(BMessage* message) {
                 }
             }
 
-            // 2. Decoupled messaging bypasses compile-order and circular header errors ---
-            // We pass an internal message token up to the base BWindow layer to handle map clearing safely.
             if (Window() != nullptr && fActiveChannelNode != nullptr) {
-                BMessage clearCacheMsg('clch'); // Clear Channel Cache custom token
+                BMessage clearCacheMsg('clch'); 
                 clearCacheMsg.AddPointer("active_node", fActiveChannelNode); 
                 Window()->PostMessage(&clearCacheMsg);
             }
 
-            // 3. Recalculate scrollbar heights and force a fresh repaint pass across the clean canvas
             UpdateScrollRange(false);
             Invalidate();
             break;
         }
 
-        
-        // Ensure your existing system color theme hooks continue working natively alongside this switch
         case B_COLORS_UPDATED: {
             SetViewColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
             SetLowColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
@@ -976,6 +1051,7 @@ void CustomChatView::MessageReceived(BMessage* message) {
             break;
     }
 }
+
 
 
 void CustomChatView::Draw(BRect updateRect) {
@@ -1344,22 +1420,16 @@ void CustomChatView::MouseDown(BPoint point) {
 
 void CustomChatView::SetBackgroundImage(const char* filePath)
 {
-    // Clean up any previously cached background asset to prevent memory leaks
     delete fBackgroundBitmap;
     fBackgroundBitmap = nullptr;
 
     if (filePath != nullptr) {
-        // Automatically decode and load the image file format into RAM
         fBackgroundBitmap = BTranslationUtils::GetBitmap(filePath);
-        
-        if (fBackgroundBitmap == nullptr) {
-            printf("[ERROR] Failed to load background image: %s\n", filePath);
-        }
     }
 
-    // Force a full screen redraw pass to present the new background layout
     Invalidate();
 }
+
 
 
 static void LogDebugStream(const char* serverName, const char* direction, const char* rawData, int32 dataLength) {
@@ -1519,7 +1589,6 @@ private:
 
 
 
-
 // 1. DECLARE HELPER ITEM FIRST: Put ChannelRowItem at the top so the window can see it
 class ChannelRowItem : public BStringItem {
 public:
@@ -1531,6 +1600,8 @@ public:
 
     BString GetChannelName() const { return fChannel; }
     int32   GetUserCount() const { return fRawUserCount; } 
+    
+    
 
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
         owner->PushState();
@@ -1550,31 +1621,53 @@ public:
         owner->GetFont(&dynamicListFont);
         owner->SetFont(&dynamicListFont);
         
-        // FIX #2: Correct native way to compute the baseline Y coordinate using GetFontHeight()
         font_height fh;
-        dynamicListFont.GetHeight(&fh); // Compute baseline using the dynamic font metrics
+        dynamicListFont.GetHeight(&fh); 
         float baselineY = itemRect.bottom - (fh.descent + fh.leading);
 
-        // Column A: Channel Name (Starts at pixel 10)
+        // Column A: Channel Name (Starts at pixel 10, strictly limited to 140px wide)
+        BString truncatedChannel = fChannel;
+        owner->TruncateString(&truncatedChannel, B_TRUNCATE_END, 140.0f);
         owner->MovePenTo(itemRect.left + 10, baselineY);
-        owner->DrawString(fChannel.String());
+        owner->DrawString(truncatedChannel.String());
 
-        // Column B: User Count (Starts at pixel 160)
+        // --- FIXED #1: RESTORE STABLE GREEN COLOR FOR VISIBLE USER LOGS ---
+        if (!IsSelected()) {
+            // Using explicit custom dark green color code (RGB) to guarantee contrast scannability
+            rgb_color forestGreen = {0, 180, 0, 255};
+            owner->SetHighColor(forestGreen); 
+        }
+        
+        // Column B: User Count (Starts at pixel 160, strictly limited to 80px wide)
+        BString truncatedUsers = fUsers;
+        owner->TruncateString(&truncatedUsers, B_TRUNCATE_END, 80.0f);
         owner->MovePenTo(itemRect.left + 160, baselineY);
-        owner->SetHighColor(ui_color(B_SUCCESS_COLOR)); 
-        owner->DrawString(fUsers.String());
+        owner->DrawString(truncatedUsers.String());
 
-        // Column C: Topic Description (Starts at pixel 250)
+        // --- FIXED #2: ROBUST VISIBLE CLIPPING BOUNDARY TRACKER CALCULATION ---
         if (IsSelected()) {
             owner->SetHighColor(ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR));
         } else {
             owner->SetHighColor(ui_color(B_LIST_ITEM_TEXT_COLOR));
         }
-        owner->MovePenTo(itemRect.left + 250, baselineY);
         
-        BString truncatedTopic = fTopic;
-        owner->TruncateString(&truncatedTopic, B_TRUNCATE_END, itemRect.Width() - 260);
-        owner->DrawString(truncatedTopic.String());
+        // Extract the exact layout width directly via the parent window frame.
+        // This is 100% self-contained and avoids incomplete type/header errors.
+        float visibleViewportWidth = owner->Bounds().Width();
+        if (owner->Window() != nullptr) {
+            // Subtract the default horizontal scrollbar width if needed, or fallback gracefully
+            visibleViewportWidth = owner->Window()->Frame().Width() - 30.0f;
+        }
+        
+        float remainingTopicWidth = visibleViewportWidth - 275.0f;
+        if (remainingTopicWidth > 15.0f) {
+            BString truncatedTopic = fTopic;
+            owner->TruncateString(&truncatedTopic, B_TRUNCATE_END, remainingTopicWidth);
+            owner->MovePenTo(itemRect.left + 250, baselineY);
+            owner->DrawString(truncatedTopic.String());
+        }
+
+
 
         owner->PopState();
     }
@@ -1585,6 +1678,7 @@ private:
     BString fTopic;
     int32   fRawUserCount;
 };
+
 
 
 // Sorts items so that the highest user count bubbles up to the top
@@ -1625,6 +1719,7 @@ public:
         fListView = new BListView("chan_list_view");
         fListView->SetInvocationMessage(new BMessage('join'));
         BScrollView* scrollPane = new BScrollView("scroll_list", fListView, 0, false, true);
+		
 
         BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
             .SetInsets(5)
@@ -1641,6 +1736,21 @@ public:
 
     // Public getter to query the parent network server node if needed
     ServerTreeItem* GetServerContext() const { return fServerContext; }
+    
+    // Force a complete recalculation of our column items during runtime window stretching
+    void FrameResized(float newWidth, float newHeight) override {
+        // Call base class implementation first to keep Haiku layout structures aligned
+        BWindow::FrameResized(newWidth, newHeight);
+
+        if (fListView != nullptr) {
+            // 1. Tell the internal view layout parameters to invalidate their width geometries
+            fListView->InvalidateLayout();
+            
+            // 2. Clear item height/width cache bounds and force every visible row item to call DrawItem()
+            fListView->Invalidate();
+        }
+    }
+
 
     void DispatchMessage(BMessage* message, BHandler* handler) override {
         if (message->what == B_MOUSE_DOWN && handler == fListView) {
@@ -1961,111 +2071,128 @@ private:
 
 
 
-
-
 class ServerConfigWindow : public BWindow {
 public:
     virtual ~ServerConfigWindow() {}
 
-    // Added bool isCustom = false parameter to the constructor signature
     ServerConfigWindow(BWindow* parent, ServerTreeItem* item, size_t serverIdx, bool isCustom = false)
-        // Pass an empty dummy size; B_AUTO_UPDATE_SIZE_LIMITS will force it to fit perfectly!
-        : BWindow(BRect(0, 0, 1, 1), "Server Properties", B_MODAL_WINDOW_LOOK, 
-                  B_MODAL_SUBSET_WINDOW_FEEL, B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS) {
+        : BWindow(BRect(0, 0, 450, 600), "Server Properties", B_MODAL_WINDOW_LOOK, 
+                  B_MODAL_SUBSET_WINDOW_FEEL, B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS) { // Removed B_NOT_RESIZABLE so users can expand the channel list box comfortably
 
-        
         fParentWindow = parent;
         fItem = item;
         fServerIdx = serverIdx;
-        fIsCustom = isCustom; // NEW: Track vector classification type inside instance memory
+        fIsCustom = isCustom; 
 
         AddToSubset(parent);
-        CenterIn(parent->Frame());
 
         ServerConfig& srv = GetActiveConfig();
+        
+        // Deep copy active server configuration autojoin fields onto local tracking array space
+        fLocalAutojoinList = srv.autojoin;
+
+        // --- Core Entry Fields ---
+        fNickInput = new BTextControl("nick", "Nickname:", srv.nick.c_str(), nullptr);
+        fAltNickInput  = new BTextControl("altnick", "Alt Nick 1:", srv.altNick.c_str(), nullptr);
+        fAltNick2Input = new BTextControl("altnick2", "Alt Nick 2:", srv.altNick2.c_str(), nullptr);
+        
+        fPassInput = new BTextControl("pass", "Password:", "", nullptr);
+        BTextView* passTextView = fPassInput->TextView();
+        if (passTextView != nullptr) {
+            passTextView->HideTyping(true);
+        }
+        fPassInput->SetText(srv.pass.c_str());
+
+        fAwayInput = new BTextControl("awaymsg", "AWAY Message:", cfg.awayMessage.c_str(), nullptr);
+        fQuitInput = new BTextControl("quitmsg", "QUIT Message:", cfg.quitMessage.c_str(), nullptr);
+
+        fServerListFontMenu = CreateFontMenu("Server List Font:", srv.serverListFontSize);
+        fChatLogFontMenu    = CreateFontMenu("Chat Log Font:", srv.chatLogFontSize);
+        fUserListFontMenu   = CreateFontMenu("User List Font:", srv.userListFontSize);
 
         fBgPathInput = new BTextControl("bg_path", "Wallpaper Image:", srv.backgroundImagePath.c_str(), nullptr);
         fBrowseBgBtn = new BButton("browse_bg", "Browse…", new BMessage('adbg'));
         fFilePanel = new BFilePanel(B_OPEN_PANEL, new BMessenger(this), nullptr, B_FILE_NODE, false);
 
-       // fEnableEmoticonsCheck = new BCheckBox("enable_emotes", "Enable custom inline emoticons", nullptr);
-       // fEnableEmoticonsCheck->SetValue(srv.enableEmoticons ? B_CONTROL_ON : B_CONTROL_OFF);
-
-        // Instantiate the dimming slider control
         fBgOpacitySlider = new BSlider("bg_opacity_sld", "Wallpaper Dimming Level:", nullptr, 0, 100, B_HORIZONTAL);
         fBgOpacitySlider->SetValue(srv.backgroundOpacity);
         fBgOpacitySlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
-        fBgOpacitySlider->SetHashMarkCount(11); // Marks every 10%
+        fBgOpacitySlider->SetHashMarkCount(11); 
 
+        // --- Checkbox Options ---
+        fAutoConnectCheck = new BCheckBox("autoconnect", "Automatically connect at startup", nullptr);
+        fAutoConnectCheck->SetValue(srv.autoConnect ? B_CONTROL_ON : B_CONTROL_OFF);
 
-        fNickInput = new BTextControl("nick", "Nickname:", srv.nick.c_str(), nullptr);
-        
-        // 1. Instantiate the input control blank initially
-        fPassInput = new BTextControl("pass", "Password:", "", nullptr);
-        
-        // 2. Extract a pointer to the inner native BTextView workspace 
-        BTextView* passTextView = fPassInput->TextView();
-        if (passTextView != nullptr) {
-            // Enable Haiku's built-in character masking
-            passTextView->HideTyping(true);
+        fAutoReconnectCheck = new BCheckBox("autoreconnect", "Automatically reconnect on drop", nullptr);
+        fAutoReconnectCheck->SetValue(srv.autoReconnect ? B_CONTROL_ON : B_CONTROL_OFF);
+
+        fHideStatusCheck = new BCheckBox("hidestatus", "Hide channel status messages (Joins/Parts/Quits)", nullptr);
+        fHideStatusCheck->SetValue(srv.hideStatusMessages ? B_CONTROL_ON : B_CONTROL_OFF);
+
+        fDebugEnableCheck = new BCheckBox("debug", "Enable low-level socket engine logs", nullptr);
+        fDebugEnableCheck->SetValue(srv.debugEnable ? B_CONTROL_ON : B_CONTROL_OFF);
+
+        fEnableEmoticonsCheck = new BCheckBox("enable_emotes", "Enable custom inline emoticons for this server", nullptr);
+        fEnableEmoticonsCheck->SetValue(srv.enableEmoticons ? B_CONTROL_ON : B_CONTROL_OFF);
+
+        fUseCustomDrawCheck = new BCheckBox("use_custom_draw", "Enable High Performance Draw Engine", nullptr);
+        fUseCustomDrawCheck->SetValue(srv.useCustomDrawFunction ? B_CONTROL_ON : B_CONTROL_OFF);
+
+        fLogChatsToFileCheck = new BCheckBox("log_chats", "Log server chats to file", nullptr);
+        fLogChatsToFileCheck->SetValue(srv.logChatsToFile ? B_CONTROL_ON : B_CONTROL_OFF);
+
+        // --- NEW: AUTOJOIN CHANNELS INTERFACE COMPONENTS ---
+        fAutojoinListView = new BListView("autojoin_list");
+        BScrollView* autojoinScroll = new BScrollView("autojoin_scroll", fAutojoinListView, 0, false, true);
+        autojoinScroll->SetExplicitMinSize(BSize(150, 100)); // Safeguard clear display box framing
+
+        // Populate the interactive list view using our tracking vector elements
+        for (const auto& chan : fLocalAutojoinList) {
+            if (!chan.empty()) {
+                fAutojoinListView->AddItem(new BStringItem(chan.c_str()));
+            }
         }
 
-        // 3. Set the text string buffer from config structure
-        // Clearing and setting it after HideTyping ensures Haiku masks it on boot.
-        fPassInput->SetText(srv.pass.c_str());
+        fAutojoinInput = new BTextControl("chan_input", "", "", nullptr);
+        fAddAutojoinBtn = new BButton("add_chan", "Add", new BMessage('ajad'));
+        fRemoveAutojoinBtn = new BButton("rem_chan", "Remove", new BMessage('ajrm'));
 
-
- 
-        fServerListFontMenu = CreateFontMenu("Server List Font:", cfg.serverListFontSize);
-        fChatLogFontMenu    = CreateFontMenu("Chat Log Font:", cfg.chatLogFontSize);
-        fUserListFontMenu   = CreateFontMenu("User List Font:", cfg.userListFontSize);
-
+        // --- Window Actions ---
         BButton* cancelBtn = new BButton("cancel", "Cancel", new BMessage('cfcn'));
         BButton* saveBtn = new BButton("save", "Save", new BMessage('cfsv'));
         saveBtn->MakeDefault(true);
 
-		fQuitInput = new BTextControl("quitmsg", "QUIT Message:", cfg.quitMessage.c_str(), nullptr);
-		fAwayInput = new BTextControl("awaymsg", "AWAY Message:", cfg.awayMessage.c_str(), nullptr);
-		
-		fAltNickInput  = new BTextControl("altnick", "Alt Nick 1:", srv.altNick.c_str(), nullptr);
-		fAltNick2Input = new BTextControl("altnick2", "Alt Nick 2:", srv.altNick2.c_str(), nullptr);
-		
+        // --- Layout Building Architecture ---
         BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
             .SetInsets(15)
             .AddGrid(5.0f, 5.0f)
-    		    // Row 0: Nickname
-    			.Add(fNickInput->CreateLabelLayoutItem(), 0, 0)
-    			.Add(fNickInput->CreateTextViewLayoutItem(), 1, 0)
-    			
-    			// Row 1: Alt Nick 1
-    			.Add(fAltNickInput->CreateLabelLayoutItem(), 0, 1)
-    			.Add(fAltNickInput->CreateTextViewLayoutItem(), 1, 1)
-    			
-    			// Row 2: Alt Nick 2
-    			.Add(fAltNick2Input->CreateLabelLayoutItem(), 0, 2)
-    			.Add(fAltNick2Input->CreateTextViewLayoutItem(), 1, 2)
-    			
-    			// Row 3: Password (Now isolated safely)
-    			.Add(fPassInput->CreateLabelLayoutItem(), 0, 3)     
-    			.Add(fPassInput->CreateTextViewLayoutItem(), 1, 3)
+                .Add(fNickInput->CreateLabelLayoutItem(), 0, 0)
+                .Add(fNickInput->CreateTextViewLayoutItem(), 1, 0)
+                
+                .Add(fAltNickInput->CreateLabelLayoutItem(), 0, 1)
+                .Add(fAltNickInput->CreateTextViewLayoutItem(), 1, 1)
+                
+                .Add(fAltNick2Input->CreateLabelLayoutItem(), 0, 2)
+                .Add(fAltNick2Input->CreateTextViewLayoutItem(), 1, 2)
+                
+                .Add(fPassInput->CreateLabelLayoutItem(), 0, 3)     
+                .Add(fPassInput->CreateTextViewLayoutItem(), 1, 3)
             
-            	// Row 4: FIXED - Shifted Quit Message down to its own row to stop overlaps!
-            	.Add(fAwayInput->CreateLabelLayoutItem(), 0, 4)
-            	.Add(fAwayInput->CreateTextViewLayoutItem(), 1, 4)  
-            	
-            	// Row 4: FIXED - Shifted Quit Message down to its own row to stop overlaps!
-            	.Add(fQuitInput->CreateLabelLayoutItem(), 0, 5)
-            	.Add(fQuitInput->CreateTextViewLayoutItem(), 1, 5)         
+                .Add(fAwayInput->CreateLabelLayoutItem(), 0, 4)
+                .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 4)  
+                
+                .Add(fQuitInput->CreateLabelLayoutItem(), 0, 5)
+                .Add(fQuitInput->CreateTextViewLayoutItem(), 1, 5)         
     
-                // Rows 5-7: FIXED - Corrected font alignments sequentially
-            	.Add(fServerListFontMenu->CreateLabelLayoutItem(), 0, 6)
-            	.Add(fServerListFontMenu->CreateMenuBarLayoutItem(), 1, 6)
-            	
-            	.Add(fChatLogFontMenu->CreateLabelLayoutItem(), 0, 7)
-            	.Add(fChatLogFontMenu->CreateMenuBarLayoutItem(), 1, 7)
-            	
-            	.Add(fUserListFontMenu->CreateLabelLayoutItem(), 0, 8)
-            	.Add(fUserListFontMenu->CreateMenuBarLayoutItem(), 1, 8)
+                .Add(fServerListFontMenu->CreateLabelLayoutItem(), 0, 6)
+                .Add(fServerListFontMenu->CreateMenuBarLayoutItem(), 1, 6)
+                
+                .Add(fChatLogFontMenu->CreateLabelLayoutItem(), 0, 7)
+                .Add(fChatLogFontMenu->CreateMenuBarLayoutItem(), 1, 7)
+                
+                .Add(fUserListFontMenu->CreateLabelLayoutItem(), 0, 8)
+                .Add(fUserListFontMenu->CreateMenuBarLayoutItem(), 1, 8)
+
                 .Add(fBgPathInput->CreateLabelLayoutItem(), 0, 9)
                 .AddGroup(B_HORIZONTAL, 5, 1, 9)
                     .Add(fBgPathInput->CreateTextViewLayoutItem(), 1.0)
@@ -2073,8 +2200,43 @@ public:
                 .End()
             .End()
             .Add(fBgOpacitySlider) 
- 
-           
+            .AddStrut(4)
+
+
+            // HEADER-SAFE FIX: Uses an explicitly instantiated BBox container 
+            // to provide a pristine text title and frame border safely.
+            .AddGroup(B_VERTICAL, 5)
+                .Add([&]() -> BView* {
+                    BBox* autojoinBox = new BBox(B_FANCY_BORDER);
+                    autojoinBox->SetLabel("Autojoin Channels");
+                    
+                    BLayoutBuilder::Group<>(autojoinBox, B_VERTICAL, 5)
+                        .SetInsets(10, 20, 10, 10) // Padding adjustments account for the header text title
+                        .Add(autojoinScroll, 1.0)
+                        .AddGroup(B_HORIZONTAL, 5)
+                            .Add(fAutojoinInput, 1.0)
+                            .Add(fAddAutojoinBtn, 0.0)
+                            .Add(fRemoveAutojoinBtn, 0.0)
+                        .End();
+                        
+                    return autojoinBox;
+                }(), 1.0)
+            .End()
+
+
+
+
+
+
+            
+            
+            .Add(fAutoConnectCheck)
+            .Add(fAutoReconnectCheck)
+            .Add(fHideStatusCheck)
+            // .Add(fDebugEnableCheck)      
+            .Add(fEnableEmoticonsCheck) 
+            .Add(fUseCustomDrawCheck)            
+            .Add(fLogChatsToFileCheck)
             .AddGlue()
             .AddGroup(B_HORIZONTAL, 10)
                 .AddGlue()
@@ -2082,20 +2244,69 @@ public:
                 .Add(saveBtn)
             .End();
             
-            
-    	if (parent) {
-        	CenterIn(parent->Frame()); 
-    		} else {
-        	CenterOnScreen(); 
-    	}
-
+        if (parent) {
+            CenterIn(parent->Frame()); 
+        } else {
+            CenterOnScreen(); 
+        }
     }
-    
-    
+
 
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
-        	
+            
+            case 'ajad': {
+                BString inputChan = fAutojoinInput->Text();
+                inputChan.Trim();
+                
+                // SAFETY GUARD: Ignore the operation if the field is blank or unchanged from the placeholder hint
+                if (inputChan.Length() > 0 && inputChan != "#EnterChannelName") {
+                    
+                    // Automatically append typical IRC channel prefix notation if missing
+                    if (!inputChan.StartsWith("#") && !inputChan.StartsWith("&")) {
+                        inputChan.Prepend("#");
+                    }
+                    
+                    // Prevent pushing exact structural duplicate channel entries onto list
+                    bool isDuplicate = false;
+                    for (int32 i = 0; i < fAutojoinListView->CountItems(); i++) {
+                        BStringItem* it = static_cast<BStringItem*>(fAutojoinListView->ItemAt(i));
+                        if (it && inputChan.ICompare(it->Text()) == 0) {
+                            isDuplicate = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!isDuplicate) {
+                        fAutojoinListView->AddItem(new BStringItem(inputChan.String()));
+                        fLocalAutojoinList.push_back(inputChan.String());
+                        fAutojoinInput->SetText(""); // Reset text field completely empty
+                    }
+                }
+                break;
+            }
+
+
+            // --- REMOVE SELECTED CHANNEL FROM VECTOR LOOP ---
+            case 'ajrm': {
+                int32 selectedIdx = fAutojoinListView->CurrentSelection();
+                if (selectedIdx >= 0) {
+                    BStringItem* item = static_cast<BStringItem*>(fAutojoinListView->RemoveItem(selectedIdx));
+                    if (item != nullptr) {
+                        BString targetText = item->Text();
+                        delete item; // Safe deletion avoids storage heap memory leakage
+                        
+                        // Erase match out of our local copy tracking vector
+                        for (auto it = fLocalAutojoinList.begin(); it != fLocalAutojoinList.end(); ++it) {
+                            if (targetText.ICompare(it->c_str()) == 0) {
+                                fLocalAutojoinList.erase(it);
+                                break;
+                            }
+                        }
+                    }
+                }
+                break;
+            }
         	
         	case 'adbg':
                 if (fFilePanel != nullptr) {
@@ -2104,33 +2315,33 @@ public:
                 break;
 
             case B_REFS_RECEIVED: {
-                // Fired automatically when an item is selected from Haiku's file browser panel
                 entry_ref ref;
                 if (message->FindRef("refs", &ref) == B_OK) {
                     BEntry entry(&ref, true);
                     BPath path;
                     if (entry.GetPath(&path) == B_OK) {
-                        // Push the clean absolute path string right back into text display view
                         fBgPathInput->SetText(path.Path());
                     }
                 }
                 break;
             }
         	
-            case 'cfcn':
+            case 'cfcn': {
+                // Clear and free item pointers from the local list box view to prevent memory leaking
+                while (fAutojoinListView->CountItems() > 0) {
+                    delete fAutojoinListView->RemoveItem((int32)0);
+                }
             	delete fFilePanel; 
                 Quit();
                 break;
+            }
                 
             case 'cfsv': {
-                // Dynamically route data saving to the correct active vector configuration structure 
                 ServerConfig& srv = GetActiveConfig();
                 srv.nick = fNickInput->Text();
                 srv.altNick  = fAltNickInput->Text();
                 srv.altNick2 = fAltNick2Input->Text();
 
-                // SAFETY GUARD: Only overwrite the password if the user actually typed something new.
-                // If the field is visually blank but they didn't touch it, preserve the loaded configuration string!
                 BString inputPassword = fPassInput->Text();
                 if (inputPassword.Length() > 0) {
                     srv.pass = inputPassword.String();
@@ -2139,21 +2350,38 @@ public:
                 srv.backgroundImagePath = fBgPathInput->Text();
                 srv.backgroundOpacity = fBgOpacitySlider->Value(); 
                 
-                
                 cfg.awayMessage = fAwayInput->Text();
                 cfg.quitMessage = fQuitInput->Text();
                 
                 BMenuItem* item = fServerListFontMenu->Menu()->FindMarked();
-                if (item && item->Message()) cfg.serverListFontSize = item->Message()->FindInt32("size");
+                if (item && item->Message()) srv.serverListFontSize = item->Message()->FindInt32("size");
 
                 item = fChatLogFontMenu->Menu()->FindMarked();
-                if (item && item->Message()) cfg.chatLogFontSize = item->Message()->FindInt32("size");
+                if (item && item->Message()) srv.chatLogFontSize = item->Message()->FindInt32("size");
 
                 item = fUserListFontMenu->Menu()->FindMarked();
-                if (item && item->Message()) cfg.userListFontSize = item->Message()->FindInt32("size");
+                if (item && item->Message()) srv.userListFontSize = item->Message()->FindInt32("size");
 
-                // Note: Removed fItem auto-connect/disconnect/status setters 
-                // since those checkboxes no longer exist to alter state.
+                srv.autoConnect = (fAutoConnectCheck->Value() == B_CONTROL_ON);
+                srv.autoReconnect = (fAutoReconnectCheck->Value() == B_CONTROL_ON);
+                srv.hideStatusMessages = (fHideStatusCheck->Value() == B_CONTROL_ON);
+                srv.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
+                srv.enableEmoticons = (fEnableEmoticonsCheck->Value() == B_CONTROL_ON);
+                srv.useCustomDrawFunction = (fUseCustomDrawCheck->Value() == B_CONTROL_ON);
+                srv.logChatsToFile = (fLogChatsToFileCheck->Value() == B_CONTROL_ON);
+
+                // --- NEW: COMMIT LOCAL AUTOJOIN CHANGED VECTOR PERMANENTLY ---
+                // If list is empty, we preserve a baseline blank value to prevent connection script stalls
+                if (fLocalAutojoinList.empty()) {
+                    srv.autojoin = {""};
+                } else {
+                    srv.autojoin = fLocalAutojoinList;
+                }
+
+                // Memory cleanup pass before shutdown
+                while (fAutojoinListView->CountItems() > 0) {
+                    delete fAutojoinListView->RemoveItem((int32)0);
+                }
 
                 BMessage updateNotify('mscf'); 
                 if (fParentWindow) fParentWindow->PostMessage(&updateNotify);
@@ -2161,13 +2389,13 @@ public:
                 Quit();
                 break;
             }
-
-
+            
             default:
                 BWindow::MessageReceived(message);
                 break;
         }
     }
+
 
 private:
     BWindow*            fParentWindow;
@@ -2191,7 +2419,16 @@ private:
     BButton*            fBrowseBgBtn;
     BFilePanel*         fFilePanel;
     BCheckBox*          fEnableEmoticonsCheck; 
+    BCheckBox*          fUseCustomDrawCheck; 
 	BSlider*            fBgOpacitySlider; 
+	BCheckBox*          fLogChatsToFileCheck; 
+	BListView*          fAutojoinListView;
+    BTextControl*       fAutojoinInput;
+    BButton*            fAddAutojoinBtn;
+    BButton*            fRemoveAutojoinBtn;
+	std::vector<std::string> fLocalAutojoinList;
+	
+	
     // NEW: Safe helper function to fetch correct active reference target safely
     ServerConfig& GetActiveConfig() {
         if (fIsCustom && fServerIdx < cfg.customServers.size()) {
@@ -2221,6 +2458,7 @@ private:
         return new BMenuField("font_field", label, menu);
     }
 };
+
 
 
 
@@ -2394,14 +2632,7 @@ public:
         fIconToggleButton->SetTarget(this);
         // --- END OF GRID SELECTION SETUP ---
 
-
-
-
-
-
-
-
-        
+       
         // 2. Load Config and Populate Servers Tree ONCE
         load_config(); 
 
@@ -2452,32 +2683,45 @@ public:
 
         BScrollView* userScroll = new BScrollView("scroll_users", fUserList, 0, false, true);
 
-
-
         fInputControl = new BTextControl("input", "", "", new BMessage(MSG_SEND_MESSAGE));
 
-        // Apply saved font choices on startup
+
+        // Ensure we have at least one server available to read initial sizes from safely
+        int32 initialServerListSize = cfg.serverListFontSize;
+        int32 initialChatLogSize    = cfg.chatLogFontSize;
+        int32 initialUserListSize   = cfg.userListFontSize;
+
+        if (!cfg.servers.empty()) {
+            initialServerListSize = cfg.servers[0].serverListFontSize;
+            initialChatLogSize    = cfg.servers[0].chatLogFontSize;
+            initialUserListSize   = cfg.servers[0].userListFontSize;
+        }
+
+        // Apply saved font choices on startup based on the active server's settings
         BFont initialFont;
 
         fChannelTree->GetFont(&initialFont);
-        initialFont.SetSize(cfg.serverListFontSize);
-        fChannelTree->SetFont(&initialFont);
+        initialFont.SetSize(initialServerListSize);
+        fChannelTree->SetFont(&initialFont, B_FONT_SIZE); // Pass B_FONT_SIZE flag to force invalidate/redraw
 
         fChatLog->GetFont(&initialFont);
-        initialFont.SetSize(cfg.chatLogFontSize);
-        fChatLog->SetFont(&initialFont);
+        initialFont.SetSize(initialChatLogSize);
+        fChatLog->SetFont(&initialFont, B_FONT_SIZE);
 
         // Also push text size preferences right down to custom engine tracker
-        fCustomChatLog->SetLineHeight(cfg.chatLogFontSize + 4.0f); 
+        fCustomChatLog->SetLineHeight(initialChatLogSize + 4.0f); 
 
         fUserList->GetFont(&initialFont);
-        initialFont.SetSize(cfg.userListFontSize);
-        fUserList->SetFont(&initialFont);
+        initialFont.SetSize(initialUserListSize);
+        fUserList->SetFont(&initialFont, B_FONT_SIZE);
         
         fTopicView->GetFont(&initialFont);
-        initialFont.SetSize(cfg.chatLogFontSize);
-        fTopicView->SetFont(&initialFont);
+        initialFont.SetSize(initialChatLogSize);
+        fTopicView->SetFont(&initialFont, B_FONT_SIZE);
         fTopicView->TextView()->SetFontAndColor(&initialFont, B_FONT_SIZE);
+
+        // ... (Keep Layout Architecture/BSplitView code exactly as it is below) ...
+
 
        // 5. Layout Architecture using Adjustable Split Panes
         BSplitView* mainSplitter = new BSplitView(B_HORIZONTAL, 5.0f);
@@ -2600,9 +2844,22 @@ void Show()
             }
         }
     }
+    
+    // --- ADD THE LOOKUP BLOCK ---
+    size_t activeIdx = (size_t)selectedConfig;
+    ServerConfig* activeSrv = nullptr;
+    if (activeIdx < cfg.servers.size()) {
+        activeSrv = &cfg.servers[activeIdx];
+    } else {
+        size_t customIdx = activeIdx - cfg.servers.size();
+        if (customIdx < cfg.customServers.size()) {
+            activeSrv = &cfg.customServers[customIdx];
+        }
+    }
 
     // 3. Trigger the high-performance engine swap pass after the initial draw cycle
-    if (cfg.useCustomDrawFunction) {
+    bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+	if (drawEngineActive) { 
         BMessage initDrawMsg(MSG_TOGGLE_CUSTOM_DRAW);
         initDrawMsg.AddBool("initial_boot_pass", true);
         this->PostMessage(&initDrawMsg);
@@ -2736,6 +2993,17 @@ void DisplayBanListDialog(BString channelName)
 
 
 void RebuildActiveChannelBuffer() {
+	size_t activeIdx = (size_t)selectedConfig;
+    ServerConfig* activeSrv = nullptr;
+    if (activeIdx < cfg.servers.size()) {
+        activeSrv = &cfg.servers[activeIdx];
+    } else {
+        size_t customIdx = activeIdx - cfg.servers.size();
+        if (customIdx < cfg.customServers.size()) {
+            activeSrv = &cfg.customServers[customIdx];
+        }
+    }
+	
 	fIsLoadingHistory = true;
     if (fActiveBufferItem == nullptr || !fChatLog || !fCustomChatLog) return;
 
@@ -2748,7 +3016,8 @@ void RebuildActiveChannelBuffer() {
     fCustomChatLog->ClearAllLines(); // Canvas is now safely cleared out
 
     // 3. Ensure the custom log view is pointing at the selected workspace channel room
-    if (cfg.useCustomDrawFunction) {
+    bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+	if (drawEngineActive) { 
         fCustomChatLog->SetActiveChannel(fActiveBufferItem);
     }
 
@@ -2768,7 +3037,7 @@ void RebuildActiveChannelBuffer() {
     }
 
     // 5. Force exactly ONE layout redraw pass once the history is fully built out
-    if (cfg.useCustomDrawFunction) {
+	if (drawEngineActive) { 
         fCustomChatLog->Invalidate();
     } else {
         fChatLog->ScrollToSelection();
@@ -2783,10 +3052,26 @@ void RenderLineWithoutCaching(BStringItem* itemNode, BString text) {
     if (!text.EndsWith("\n")) text << "\n";
     if (!fChatLog || !fCustomChatLog) return;
 
-    // Prepare Font Variations
+    // Fetch the context-driven active server config
+    size_t activeIdx = (size_t)selectedConfig;
+    ServerConfig* activeSrv = nullptr;
+    
+    if (activeIdx < cfg.servers.size()) {
+        activeSrv = &cfg.servers[activeIdx];
+    } else {
+        size_t customIdx = activeIdx - cfg.servers.size();
+        if (customIdx < cfg.customServers.size()) {
+            activeSrv = &cfg.customServers[customIdx];
+        }
+    }
+
+    // Determine the precise baseline font size for this stream layer
+    int32 targetChatFontSize = activeSrv ? activeSrv->chatLogFontSize : cfg.chatLogFontSize;
+
+    // Prepare Font Variations using the contextual target scale
     BFont regularChatFont;
     fChatLog->GetFont(&regularChatFont);
-    regularChatFont.SetSize(cfg.chatLogFontSize);
+    regularChatFont.SetSize(targetChatFontSize);
 
     BFont boldChatFont = regularChatFont;
     boldChatFont.SetFace(B_BOLD_FACE);
@@ -2872,7 +3157,8 @@ void RenderLineWithoutCaching(BStringItem* itemNode, BString text) {
         runArray->count = runCount;
 
         // --- Route to the active view layer constraints ---
-        if (cfg.useCustomDrawFunction) {
+        bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+		if (drawEngineActive) { 
             // Pass incoming itemNode directly to preserve multi-room isolation routes
             fCustomChatLog->AddStyledLine(itemNode, text, runArray);
         } else {
@@ -2884,7 +3170,8 @@ void RenderLineWithoutCaching(BStringItem* itemNode, BString text) {
         free(runArray);
     } else {
         // Fallback insertion route if system out of memory
-        if (cfg.useCustomDrawFunction) {
+        bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+		if (drawEngineActive) { 
             // Pass incoming itemNode directly here as well
             fCustomChatLog->AddStyledLine(itemNode, text, nullptr);
         } else {
@@ -2899,10 +3186,23 @@ void RenderLineWithoutCaching(BStringItem* itemNode, BString text) {
 
 
 
+
 private:
     //@Menus
 
 void ShowContextMenu(BPoint screenPoint, BListItem* item) {
+	
+	size_t activeIdx = (size_t)selectedConfig;
+    ServerConfig* activeSrv = nullptr;
+    if (activeIdx < cfg.servers.size()) {
+        activeSrv = &cfg.servers[activeIdx];
+    } else {
+        size_t customIdx = activeIdx - cfg.servers.size();
+        if (customIdx < cfg.customServers.size()) {
+            activeSrv = &cfg.customServers[customIdx];
+        }
+    }
+	
     if (item == nullptr) return; // Safety check
     
     // 1. Channel menu logic
@@ -2993,6 +3293,7 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         toggleEmotesMsg->AddPointer("server_item", srvItem);
         BMenuItem* emotesMenuItem = new BMenuItem(toggleEmotesLabel.String(), toggleEmotesMsg);
         
+        /*
         // Find the configuration matching this specific server item to set initial state
         if (srvItem != nullptr) {
             BString targetServerName(srvItem->Text());
@@ -3022,13 +3323,13 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         }
 
         menu->AddItem(emotesMenuItem);
-        
+        */
                 
         // Channel List Option
        	menu->AddSeparatorItem();
         BMessage* listMsg = new BMessage(MSG_CONTEXT_CHAN_LIST);
         listMsg->AddPointer("server_item", srvItem);
-        menu->AddItem(new BMenuItem("Show Available Channels", listMsg));
+        menu->AddItem(new BMenuItem("Channel List", listMsg));
         menu->AddSeparatorItem();
         
                 
@@ -3036,18 +3337,22 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
 
         BMessage* configMsg = new BMessage(MSG_CONTEXT_CONFIGURE_SERVER);
         configMsg->AddPointer("server_item", srvItem);
-        menu->AddItem(new BMenuItem("More Settings for this Server...", configMsg));  
-        menu->AddSeparatorItem();
+        menu->AddItem(new BMenuItem("Server Settings...", configMsg));  
         
+        
+        /*
+        menu->AddSeparatorItem();
+
         // Custom Draw Engine Toggle 
-        BString toggleDrawLabel = "Enable High Performance Draw Engine (All Servers)";
+        BString toggleDrawLabel = "Enable High Performance Draw Engine";
         BMessage* toggleDrawMsg = new BMessage(MSG_TOGGLE_CUSTOM_DRAW);
         toggleDrawMsg->AddPointer("server_item", srvItem);
         BMenuItem* drawMenuItem = new BMenuItem(toggleDrawLabel.String(), toggleDrawMsg);
         // Uses the runtime configuration flag to set initial checkmark state
-        if (cfg.useCustomDrawFunction) drawMenuItem->SetMarked(true);
+        bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+		if (drawEngineActive) drawMenuItem->SetMarked(true);
         menu->AddItem(drawMenuItem);
-        
+        */
         
         // Put Add Server Here 
         menu->AddSeparatorItem();
@@ -3130,16 +3435,37 @@ void LogToItemBuffer(BStringItem* itemNode, BString text) {
     if (!text.EndsWith("\n")) text << "\n";
     fTextBuffers[itemNode] << text;
     
+     
+    // --- NEW: FIRE THE AUTOMATIC DISK WRITER HOOK ---
+    // It filters out active servers automatically based on individual user config states     
+    this->WriteLogToFile(itemNode, text);
+    
     if (fActiveBufferItem == itemNode) {
         if (!fChatLog || !fCustomChatLog || !fChatContainer) return;
+
+        // Fetch the context-driven active server config
+        size_t activeIdx = (size_t)selectedConfig;
+        ServerConfig* activeSrv = nullptr;
+        
+        if (activeIdx < cfg.servers.size()) {
+            activeSrv = &cfg.servers[activeIdx];
+        } else {
+            size_t customIdx = activeIdx - cfg.servers.size();
+            if (customIdx < cfg.customServers.size()) {
+                activeSrv = &cfg.customServers[customIdx];
+            }
+        }
+
+        // Determine the precise baseline font size for this active buffer window
+        int32 targetChatFontSize = activeSrv ? activeSrv->chatLogFontSize : cfg.chatLogFontSize;
 
         // TERMINAL DIAGNOSTIC: Print the incoming raw text line string
         // if (cfg.debugEnable) printf("\n[DEBUG] LogToItemBuffer Input text: %s", text.String());
 
-        // Prepare Font Variations
+        // Prepare Font Variations using the contextual target scale
         BFont regularChatFont;
         fChatLog->GetFont(&regularChatFont);
-        regularChatFont.SetSize(cfg.chatLogFontSize);
+        regularChatFont.SetSize(targetChatFontSize);
 
         BFont boldChatFont = regularChatFont;
         boldChatFont.SetFace(B_BOLD_FACE);
@@ -3158,7 +3484,7 @@ void LogToItemBuffer(BStringItem* itemNode, BString text) {
         if (urlStartIdx == B_ERROR) urlStartIdx = text.IFindFirst("https://");
 
         // TERMINAL DIAGNOSTIC: Print calculated indexing values
-       // if (cfg.debugEnable) printf("[DEBUG] Offsets calculated -> OpenBracket: %d, CloseBracket: %d, URLStart: %d\n", 
+        // if (cfg.debugEnable) printf("[DEBUG] Offsets calculated -> OpenBracket: %d, CloseBracket: %d, URLStart: %d\n", 
         //       (int)openingBracketIdx, (int)closingBracketIdx, (int)urlStartIdx);
 
         // 1. Allocate the run array layout cleanly before routing
@@ -3191,7 +3517,7 @@ void LogToItemBuffer(BStringItem* itemNode, BString text) {
                 runArray->runs[runCount].offset = closingBracketIdx + 2;
                 runArray->runs[runCount].font = regularChatFont;
                 runArray->runs[runCount].color = textColor;
-               // if (cfg.debugEnable) printf("[DEBUG] Added Run %d: Regular face reset applied at index %d\n", runCount, (int)(closingBracketIdx + 2));
+                // if (cfg.debugEnable) printf("[DEBUG] Added Run %d: Regular face reset applied at index %d\n", runCount, (int)(closingBracketIdx + 2));
                 runCount++;
             }
 
@@ -3211,7 +3537,7 @@ void LogToItemBuffer(BStringItem* itemNode, BString text) {
                     runArray->runs[runCount].offset = urlStartIdx;
                     runArray->runs[runCount].font = urlLinkFont;
                     runArray->runs[runCount].color = hyperlinkColor;
-                   // if (cfg.debugEnable) printf("[DEBUG] Added Run %d: Blue link applied at index %d\n", runCount, (int)urlStartIdx);
+                    // if (cfg.debugEnable) printf("[DEBUG] Added Run %d: Blue link applied at index %d\n", runCount, (int)urlStartIdx);
                     runCount++;
                 }
 
@@ -3225,20 +3551,21 @@ void LogToItemBuffer(BStringItem* itemNode, BString text) {
                     runArray->runs[runCount].offset = urlEndIdx;
                     runArray->runs[runCount].font = regularChatFont;
                     runArray->runs[runCount].color = textColor;
-                  //  if (cfg.debugEnable) printf("[DEBUG] Added Run %d: Regular face reset after link applied at index %d\n", runCount, (int)urlEndIdx);
+                    //  if (cfg.debugEnable) printf("[DEBUG] Added Run %d: Regular face reset after link applied at index %d\n", runCount, (int)urlEndIdx);
                     runCount++;
                 }
             }
 
             runArray->count = runCount;
-           // if (cfg.debugEnable) printf("[DEBUG] Total run array layout counts submitted: %d\n", (int)runCount);
+            // if (cfg.debugEnable) printf("[DEBUG] Total run array layout counts submitted: %d\n", (int)runCount);
 
             // 2. Perform the view-swapping via Layout API using the parent scrollviews
             BView* chatScroll = fChatLog->Parent();       
             BView* customScroll = fCustomChatLog->Parent(); 
             BLayout* layout = fChatContainer->GetLayout();
 
-            if (cfg.useCustomDrawFunction) {
+            bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+			if (drawEngineActive) { 
                 if (chatScroll && chatScroll->Parent() == fChatContainer) {
                     layout->RemoveView(chatScroll);
                 }
@@ -3267,7 +3594,8 @@ void LogToItemBuffer(BStringItem* itemNode, BString text) {
             free(runArray);
         } else {
             // Fallback insertion route if system out of memory
-            if (cfg.useCustomDrawFunction) {
+           bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+			if (drawEngineActive) { 
                 fCustomChatLog->SetActiveChannel(fActiveBufferItem);
                 fCustomChatLog->AddStyledLine(itemNode, text, nullptr);
             } else {
@@ -3277,9 +3605,9 @@ void LogToItemBuffer(BStringItem* itemNode, BString text) {
             }
         }
 
-        
         // Handle view boundary updates and scrolling
-        if (cfg.useCustomDrawFunction) {
+       bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+		if (drawEngineActive) { 
             fChatContainer->InvalidateLayout();
         } else {
             fChatLog->ScrollToSelection();
@@ -3988,8 +4316,13 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
             }
 
-            // --- Simplified, bulletproof window verification ---
-            if (fActiveListWindow != nullptr) {
+            // --- 1. LOCAL CACHING FIX ---
+            // We copy the pointer to a local variable. If the window thread nullifies 
+            // fActiveListWindow mid-block, our 'targetWindow' remains a valid address 
+            // for the duration of this function's scope.
+            IRCChannelListWindow* targetWindow = fActiveListWindow;
+
+            if (targetWindow != nullptr) {
                 
                 BSecureSocket* activeNetworkSocket = nullptr;
                 if (fServerSockets.count(contextServer) > 0) {
@@ -4000,27 +4333,31 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
                 bool targetMatches = false;
                 
-                // Safely Lock the window thread to check ownership.
-                // If it returns false, the window is already dead/quitting.
-                if (fActiveListWindow->Lock()) {
-                    if (fActiveListWindow->GetTargetSocket() == activeNetworkSocket) {
+                // --- 2. SAFE LOCKING ---
+                // In Haiku, if the window is being destroyed, Lock() will return false.
+                // This is our primary defense against using a "dead" object.
+                if (targetWindow->Lock()) {
+                    if (targetWindow->GetTargetSocket() == activeNetworkSocket) {
                         targetMatches = true;
                     }
-                    fActiveListWindow->Unlock();
+                    targetWindow->Unlock();
                 }
 
-                // Forward data package to the list view if servers match
+                // --- 3. ASYNCHRONOUS POSTING ---
                 if (targetMatches) {
                     BMessage* rowPackage = new BMessage(MSG_ADD_LIST_ROW);
                     rowPackage->AddString("channel", channelName.String());
                     rowPackage->AddString("users", userCount.String());
                     rowPackage->AddString("topic", trailing.String()); 
                     
-                    fActiveListWindow->PostMessage(rowPackage);
+                    // PostMessage is thread-safe and won't crash even if the 
+                    // target thread dies immediately after this call.
+                    targetWindow->PostMessage(rowPackage);
                 }
             }
             return;
         }
+
 
 
 
@@ -5781,18 +6118,33 @@ public:
 			bool initialBootPass = false;
 			message->FindBool("initial_boot_pass", &initialBootPass);
 
-			// Flip the global configuration state ONLY if clicked by the user
-			if (!initialBootPass) {
-				cfg.useCustomDrawFunction = !cfg.useCustomDrawFunction;
+			// 1. Locate the active server config instance
+			size_t activeIdx = (size_t)selectedConfig;
+			ServerConfig* activeSrv = nullptr;
+			
+			if (activeIdx < cfg.servers.size()) {
+				activeSrv = &cfg.servers[activeIdx];
+			} else {
+				size_t customIdx = activeIdx - cfg.servers.size();
+				if (customIdx < cfg.customServers.size()) {
+					activeSrv = &cfg.customServers[customIdx];
+				}
+			}
+
+			// 2. Flip the state contextually
+			if (!initialBootPass && activeSrv != nullptr) {
+				activeSrv->useCustomDrawFunction = !activeSrv->useCustomDrawFunction;
 				save_config();
 			}
 
-			// Synchronize the menu item checkmark state visually
+			// 3. Resolve active visibility constraints state
+			bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+
 			void* sourcePtr = nullptr;
 			if (message->FindPointer("source", &sourcePtr) == B_OK) {
 				BMenuItem* clickedItem = static_cast<BMenuItem*>(sourcePtr);
 				if (clickedItem != nullptr) {
-					clickedItem->SetMarked(cfg.useCustomDrawFunction);
+					clickedItem->SetMarked(drawEngineActive);
 				}
 			}
 
@@ -5806,8 +6158,8 @@ public:
 			if (layout == nullptr)
 				break;
 
-			// Evaluate layout changes globally
-			if (cfg.useCustomDrawFunction) {
+			// Swap layout hierarchies using contextual state profile choice
+			if (drawEngineActive) {
 				if (chatScroll && chatScroll->Parent() == fChatContainer) {
 					layout->RemoveView(chatScroll);
 				}
@@ -5829,19 +6181,14 @@ public:
 				fCustomChatLog->SetExplicitPreferredSize(BSize(B_SIZE_UNSET, B_SIZE_UNSET));
 				fCustomChatLog->ClearAllLines();
 
-				if (fCurrentServerNode != nullptr) {
-					std::string activeServerName = fCurrentServerNode->Text(); 
-					for (size_t i = 0; i < cfg.servers.size(); i++) {
-						if (cfg.servers[i].name == activeServerName) {
-							std::string initialBg = cfg.servers[i].backgroundImagePath;
-							int32 initialDim = cfg.servers[i].backgroundOpacity;
-							
-							if (!initialBg.empty()) {
-								fCustomChatLog->SetBackgroundImage(initialBg.c_str());
-								fCustomChatLog->SetBackgroundDimming(initialDim);
-							}
-							break;
-						}
+				if (activeSrv != nullptr) {
+					fCustomChatLog->SetLineHeight(activeSrv->chatLogFontSize + 4.0f);
+
+					if (!activeSrv->backgroundImagePath.empty()) {
+						fCustomChatLog->SetBackgroundImage(activeSrv->backgroundImagePath.c_str());
+						fCustomChatLog->SetBackgroundDimming(activeSrv->backgroundOpacity);
+					} else {
+						fCustomChatLog->SetBackgroundImage(nullptr);
 					}
 				}
 			}
@@ -5852,6 +6199,7 @@ public:
 			this->InvalidateLayout(true);
 			break;
 		}
+
 
 
 
@@ -6142,13 +6490,29 @@ public:
 
 
         	
-       case 'mscf': {
-        save_config(); // Save new dimensions to configuration file
+     case 'mscf': {
+        save_config(); 
+
+        size_t activeIdx = (size_t)selectedConfig;
+        ServerConfig* activeSrv = nullptr;
+        
+        if (activeIdx < cfg.servers.size()) {
+            activeSrv = &cfg.servers[activeIdx];
+        } else {
+            size_t customIdx = activeIdx - cfg.servers.size();
+            if (customIdx < cfg.customServers.size()) {
+                activeSrv = &cfg.customServers[customIdx];
+            }
+        }
+
+        int32 targetServerListFontSize = activeSrv ? activeSrv->serverListFontSize : cfg.serverListFontSize;
+        int32 targetChatLogFontSize    = activeSrv ? activeSrv->chatLogFontSize : cfg.chatLogFontSize;
+        int32 targetUserListFontSize   = activeSrv ? activeSrv->userListFontSize : cfg.userListFontSize;
 
         // 1. Update Server List Font AND recalculate item heights (Left panel)
         BFont treeFont;
         fChannelTree->GetFont(&treeFont);
-        treeFont.SetSize(cfg.serverListFontSize);
+        treeFont.SetSize(targetServerListFontSize);
         fChannelTree->SetFont(&treeFont);
 
         int32 treeCount = fChannelTree->CountItems();
@@ -6164,29 +6528,27 @@ public:
         // 2. Update Topic View Bar Font Size
         BFont topicFont;
         fTopicView->GetFont(&topicFont);
-        topicFont.SetSize(cfg.chatLogFontSize); // Make chat log text size
+        topicFont.SetSize(targetChatLogFontSize);
         fTopicView->SetFont(&topicFont);
         
         if (fTopicView->TextView()) {
-            fTopicView->TextView()->SetFontAndColor(&topicFont, B_FONT_SIZE); // Updates the editable region
+            fTopicView->TextView()->SetFontAndColor(&topicFont, B_FONT_SIZE);
         }
         fTopicView->InvalidateLayout();
         fTopicView->Invalidate();
 
-        // 3. OPTIMIZED: Update BTextView history without erasing formatted style loops (Center panel)
+        // 3. Update BTextView history without erasing formatted style loops (Center panel)
         BFont chatFont;
         fChatLog->GetFont(&chatFont);
-        chatFont.SetSize(cfg.chatLogFontSize);
+        chatFont.SetSize(targetChatLogFontSize);
         fChatLog->SetFont(&chatFont);
-
-        // Tell the text view to smoothly scale all characters to the new size in-place
         fChatLog->SetFontAndColor(&chatFont, B_FONT_SIZE); 
         fChatLog->Invalidate();
 
         // 4. Update User List Font AND recalculate item heights (Right panel)
         BFont userFont;
         fUserList->GetFont(&userFont);
-        userFont.SetSize(cfg.userListFontSize);
+        userFont.SetSize(targetUserListFontSize);
         fUserList->SetFont(&userFont);
 
         int32 userCount = fUserList->CountItems();
@@ -6199,23 +6561,16 @@ public:
         fUserList->InvalidateLayout();
         fUserList->Invalidate();
 
-        // --- STEP 5: Live Resize and Recalculate Custom Draw Engine Layout Geometry ---
+        // 5. Live Resize and Recalculate Custom Draw Engine Layout Geometry
         if (fCustomChatLog != nullptr) {
-            fCustomChatLog->SetLineHeight(cfg.chatLogFontSize + 4.0f);
+            fCustomChatLog->SetLineHeight(targetChatLogFontSize + 4.0f);
             
             std::string bgPath = "";
             int32 dimmingLevel = 30;
-            size_t activeIdx = (size_t)selectedConfig;
             
-            if (activeIdx < cfg.servers.size()) {
-                bgPath = cfg.servers[activeIdx].backgroundImagePath;
-                dimmingLevel = cfg.servers[activeIdx].backgroundOpacity; // <-- EXTRACTED
-            } else {
-                size_t customIdx = activeIdx - cfg.servers.size();
-                if (customIdx < cfg.customServers.size()) {
-                    bgPath = cfg.customServers[customIdx].backgroundImagePath;
-                    dimmingLevel = cfg.customServers[customIdx].backgroundOpacity; // <-- EXTRACTED
-                }
+            if (activeSrv != nullptr) {
+                bgPath = activeSrv->backgroundImagePath;
+                dimmingLevel = activeSrv->backgroundOpacity;
             }
 
             if (bgPath.empty()) {
@@ -6224,16 +6579,10 @@ public:
                 fCustomChatLog->SetBackgroundImage(bgPath.c_str());
             }
 
-            // Push the dimming slider changes down directly into the graphics card buffer loop
             fCustomChatLog->SetBackgroundDimming(dimmingLevel);
-            
-            // Force the word-wrapping coordinates to recalculate matching the new scale ---
             fCustomChatLog->RecalculateAllLineWraps();
-            
-            // Forces the app server to trigger CustomChatView::Draw instantly
             fCustomChatLog->Invalidate();
         }
-
 
         break;
     }
@@ -6541,9 +6890,13 @@ public:
 
         	
         case 'slch': {
+            // 1. Declare the safe scope target variables right at the top
+            int32 targetServerListFontSize = cfg.serverListFontSize;
+            int32 targetChatLogFontSize    = cfg.chatLogFontSize;
+            int32 targetUserListFontSize   = cfg.userListFontSize;
+
             int32 selectedIdx = fChannelTree->CurrentSelection();
             if (selectedIdx >= 0) {
-                // Change the cast to generic BListItem first to preserve your custom object signatures
                 BListItem* rawItem = fChannelTree->ItemAt(selectedIdx);
                 BStringItem* selectedItem = dynamic_cast<BStringItem*>(rawItem);
                 
@@ -6572,11 +6925,9 @@ public:
                     
                     // === DYNAMIC BACKGROUND SEPARATION PASS ===
                     if (fCustomChatLog != nullptr && fCurrentServerNode != nullptr) {
-                        // Securely read the name via our verified ServerTreeItem cast target
                         BString currentServerName(fCurrentServerNode->Text());
                         bool bgFound = false;
 
-                        // 1. Check primary/standard servers list
                         for (const auto& srv : cfg.servers) {
                             if (BString(srv.name.c_str()) == currentServerName) {
                                 fCustomChatLog->SetBackgroundImage(srv.backgroundImagePath.c_str());
@@ -6586,7 +6937,6 @@ public:
                             }
                         }
 
-                        // 2. Fallback to user-defined custom server profiles
                         if (!bgFound) {
                             for (const auto& srv : cfg.customServers) {
                                 if (BString(srv.name.c_str()) == currentServerName) {
@@ -6599,23 +6949,88 @@ public:
                         
                         fCustomChatLog->Invalidate();
                     }
-
                     // =========================================================================
 
-                    // Explicitly sync workspace visibility constraints down to Custom Canvas
+                    // --- INSERTION POINT: ADD THE NEW RE-RESOLVE CONTEXT CODE HERE ---
+                    if (fCurrentServerNode != nullptr) {
+                        BString currentServerName(fCurrentServerNode->Text());
+                        bool foundIndex = false;
+
+                        for (size_t i = 0; i < cfg.servers.size(); i++) {
+                            if (BString(cfg.servers[i].name.c_str()) == currentServerName) {
+                                selectedConfig = (int32)i;
+                                foundIndex = true;
+                                break;
+                            }
+                        }
+
+                        if (!foundIndex) {
+                            for (size_t i = 0; i < cfg.customServers.size(); i++) {
+                                if (BString(cfg.customServers[i].name.c_str()) == currentServerName) {
+                                    selectedConfig = (int32)(cfg.servers.size() + i);
+                                    foundIndex = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        ServerConfig* activeSrv = nullptr;
+                        if (foundIndex) {
+                            activeSrv = (selectedConfig < (int32)cfg.servers.size()) 
+                                ? &cfg.servers[selectedConfig] 
+                                : &cfg.customServers[selectedConfig - cfg.servers.size()];
+                        }
+
+                        if (activeSrv != nullptr) {
+                            targetServerListFontSize = activeSrv->serverListFontSize;
+                            targetChatLogFontSize    = activeSrv->chatLogFontSize;
+                            targetUserListFontSize   = activeSrv->userListFontSize;
+                        }
+
+                        // --- LIVE RESIZE CHAT VIEWS ---
+                        BFont tempFont;
+                        fChannelTree->GetFont(&tempFont);
+                        tempFont.SetSize(targetServerListFontSize);
+                        fChannelTree->SetFont(&tempFont, B_FONT_SIZE);
+                        for (int32 i = 0; i < fChannelTree->CountItems(); i++) {
+                            BListItem* it = fChannelTree->ItemAt(i);
+                            if (it) it->Update(fChannelTree, &tempFont);
+                        }
+                        fChannelTree->Invalidate();
+
+                        fChatLog->GetFont(&tempFont);
+                        tempFont.SetSize(targetChatLogFontSize);
+                        fChatLog->SetFont(&tempFont, B_FONT_SIZE);
+                        fChatLog->SetFontAndColor(&tempFont, B_FONT_SIZE);
+
+                        if (fCustomChatLog != nullptr) {
+                            fCustomChatLog->SetLineHeight(targetChatLogFontSize + 4.0f);
+                        }
+
+                        fTopicView->GetFont(&tempFont);
+                        tempFont.SetSize(targetChatLogFontSize);
+                        fTopicView->SetFont(&tempFont, B_FONT_SIZE);
+                        if (fTopicView->TextView()) {
+                            fTopicView->TextView()->SetFontAndColor(&tempFont, B_FONT_SIZE);
+                        }
+
+                        fUserList->GetFont(&tempFont);
+                        tempFont.SetSize(targetUserListFontSize);
+                        fUserList->SetFont(&tempFont, B_FONT_SIZE);
+                        fUserList->Invalidate();
+                    }
+                    // =========================================================================
+
                     if (fCustomChatLog != nullptr) {
                         fCustomChatLog->SetActiveChannel(fActiveBufferItem);
                     }
 
-                    
-                    // ACTION RESET: Check if the clicked item is a custom channel leaf node
                     ChannelTreeItem* chanItem = dynamic_cast<ChannelTreeItem*>(selectedItem);
                     if (chanItem != nullptr && chanItem->HasUnread()) {
                         chanItem->SetUnread(false);
-                        fChannelTree->InvalidateItem(selectedIdx); // Force view to drop bold look instantly
+                        fChannelTree->InvalidateItem(selectedIdx);
                     }
                     
-                    // 2. Clear visual modules completely before parsing history entries
                     fChatLog->SetText("");
                     if (fCustomChatLog != nullptr) {
                         fCustomChatLog->ClearAllLines();
@@ -6631,23 +7046,18 @@ public:
                     BString itemText(selectedItem->Text());
                     
                     if (isServerRootNode != nullptr) {
-                        // If the clicked object matches a server root node item entity, set the status banner
                         fTopicView->SetText("Network connection logs status feed.");
                     } else {
-                        // FIX: Clean the active tab text of any leading mode rank prefixes (@, +)
                         BString cleanedItemText = itemText;
                         cleanedItemText.Trim();
                         while (cleanedItemText.StartsWith("@") || cleanedItemText.StartsWith("+")) {
                             cleanedItemText.Remove(0, 1);
                         }
 
-                        // We only process cache matching if this row is a channel name
                         if (cleanedItemText.StartsWith("#") || cleanedItemText.StartsWith("&")) {
-                            // Scan your cache map by raw text names to bypass pointer/context drift
                             bool topicFoundInCache = false;
                             for (auto it = fChannelTopics.begin(); it != fChannelTopics.end(); ++it) {
                                 if (it->first != nullptr) {
-                                    // FIX: Strip rank prefixes from cache keys as well for exact string mapping
                                     BString cachedNodeText = it->first->Text();
                                     cachedNodeText.Trim();
                                     while (cachedNodeText.StartsWith("@") || cachedNodeText.StartsWith("+")) {
@@ -6667,12 +7077,12 @@ public:
                             }
                         }
 
-                        // Restore the active user list including their channel modes!
                         if (fChannelUsers.find(fActiveBufferItem) != fChannelUsers.end()) {
                             BObjectList<UserListItem, true>* userVector = fChannelUsers[fActiveBufferItem];
                             
                             if (userVector != nullptr) {
                                 BFont userListFont;
+
                                 fUserList->GetFont(&userListFont);
                                 userListFont.SetSize(cfg.userListFontSize);
 
@@ -6682,8 +7092,14 @@ public:
                                         bool userIsAway = cachedItem->IsAway();
                                         UserListItem* newUserItem = new UserListItem(cachedItem->Text(), userIsAway);
                                         
+                                        // Use the dynamically resolved target font size we computed earlier
                                         fUserList->AddItem(newUserItem);
-                                        newUserItem->Update(fUserList, &userListFont);
+                                        
+                                        BFont componentUserFont;
+                                        fUserList->GetFont(&componentUserFont);
+                                        // Crucial: Use our target size calculated in the synchronization pass
+                                        componentUserFont.SetSize(targetUserListFontSize);
+                                        newUserItem->Update(fUserList, &componentUserFont);
                                     }
                                 }
                                 // Sort Channel Operators
@@ -6710,7 +7126,7 @@ public:
                         bool emotesActive = true;
                         BString currentServerName(fCurrentServerNode->Text());
 
-                        // Scan through standard configurations for a profile name match
+                        // 1. Scan standard servers array
                         for (const auto& srv : cfg.servers) {
                             if (BString(srv.name.c_str()) == currentServerName) {
                                 emotesActive = srv.enableEmoticons;
@@ -6718,7 +7134,7 @@ public:
                             }
                         }
 
-                        // Scan through user-defined custom server profiles if no standard match was found
+                        // 2. Scan custom servers array if not found
                         for (const auto& srv : cfg.customServers) {
                             if (BString(srv.name.c_str()) == currentServerName) {
                                 emotesActive = srv.enableEmoticons;
@@ -6726,25 +7142,80 @@ public:
                             }
                         }
 
-                        // FIX: Toggle the layout-safe toggle button control visibility frame dynamically
-                        if (emotesActive) {
-                            fIconToggleButton->Show();
+                        // 3. Resolve active custom draw engine state for this network item pass
+                        ServerConfig* activeSrv = nullptr;
+                        if (selectedConfig < (int32)cfg.servers.size()) {
+                            activeSrv = &cfg.servers[selectedConfig];
+                        } else if ((size_t)(selectedConfig - cfg.servers.size()) < cfg.customServers.size()) {
+                            activeSrv = &cfg.customServers[selectedConfig - cfg.servers.size()];
+                        }
+                        bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+
+                        // 4. ROBUST VISIBILITY CHECK: Hide if emotes are off OR if the draw engine itself is disabled
+                        if (emotesActive && drawEngineActive) {
+                            if (fIconToggleButton->IsHidden()) {
+                                fIconToggleButton->Show();
+                            }
                         } else {
-                            fIconToggleButton->Hide();
+                            if (!fIconToggleButton->IsHidden()) {
+                                fIconToggleButton->Hide();
+                            }
                         }
 
-
-                        // Force layout engine to re-flow text controls over collapsed areas
+                        // 5. FORCE INSTANT RUNTIME LAYOUT RE-FLOW CALCULATIONS
                         this->InvalidateLayout(true);
+                        this->Layout(true); // Forces Haiku to redraw and re-flow widgets immediately
                     }
                     // --- END OF PICKER PANEL RE-FLOW PATCH ---
+
                     
+                    
+                    // =========================================================================
+                    // --- INSERTION POINT: DYNAMIC DRAW ENGINE VIEW SWAPPING PASS ---
+                    // =========================================================================
+                    // 1. Resolve our exact server state profile target pointer
+                    ServerConfig* activeSrv = nullptr;
+                    if (selectedConfig < (int32)cfg.servers.size()) {
+                        activeSrv = &cfg.servers[selectedConfig];
+                    } else if ((size_t)(selectedConfig - cfg.servers.size()) < cfg.customServers.size()) {
+                        activeSrv = &cfg.customServers[selectedConfig - cfg.servers.size()];
+                    }
+
+                    bool currentDrawState = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
+                    
+                    BView* standardChatScroll = fChatLog->Parent();       
+                    BView* customChatScroll = fCustomChatLog->Parent(); 
+                    BLayout* containerLayout = fChatContainer->GetLayout();
+
+                    if (containerLayout != nullptr && standardChatScroll != nullptr && customChatScroll != nullptr) {
+                        if (currentDrawState) {
+                            if (standardChatScroll->Parent() == fChatContainer) {
+                                containerLayout->RemoveView(standardChatScroll);
+                            }
+                            if (customChatScroll->Parent() != fChatContainer) {
+                                containerLayout->AddView(customChatScroll);
+                            }
+                        } else {
+                            if (customChatScroll->Parent() == fChatContainer) {
+                                containerLayout->RemoveView(customChatScroll);
+                            }
+                            if (standardChatScroll->Parent() != fChatContainer) {
+                                containerLayout->AddView(standardChatScroll);
+                            }
+                        }
+                        fChatContainer->InvalidateLayout(true);
+                    }
+                    // =========================================================================
+
+
                     // Force the standard scrollbar viewport directly back down to the bottom
-                    if (!cfg.useCustomDrawFunction) {
+                    // MODIFIED: Uses contextual engine choice variable instead of global config flag
+                    if (!currentDrawState) {
                         int32 newLength = fChatLog->TextLength();
                         fChatLog->Select(newLength, newLength);
                         fChatLog->ScrollToSelection();
                     } else if (fCustomChatLog != nullptr) {
+                        fCustomChatLog->RecalculateAllLineWraps();
                         fCustomChatLog->Invalidate();
                     }
                 }
@@ -7053,6 +7524,60 @@ GetActiveSocket(ServerTreeItem* contextServer)
     
     return (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
 }
+
+
+void WriteLogToFile(BStringItem* itemNode, const BString& rawLineText) {
+    if (itemNode == nullptr || rawLineText.Length() == 0) return;
+
+    // 1. Resolve our exact server state profile target pointer context
+    size_t activeIdx = (size_t)selectedConfig;
+    ServerConfig* activeSrv = nullptr;
+    if (activeIdx < cfg.servers.size()) {
+        activeSrv = &cfg.servers[activeIdx];
+    } else if ((size_t)(activeIdx - cfg.servers.size()) < cfg.customServers.size()) {
+        activeSrv = &cfg.customServers[activeIdx - cfg.servers.size()];
+    }
+
+    // Fast return if logging is completely turned off for this specific server context
+    if (activeSrv == nullptr || !activeSrv->logChatsToFile) return;
+
+    // 2. Build and guarantee that the 'cricket/logs/' settings directory exists layout safely
+    BPath path;
+    if (find_directory(B_USER_SETTINGS_DIRECTORY, &path) != B_OK) return;
+    
+    path.Append("cricket/logs");
+    create_directory(path.Path(), 0755); // Native Haiku folder generator utility
+
+    // 3. Clean up the target filename string safely 
+    // Replaces network name slash blocks or special channel tags to create clean filenames
+    BString serverNameClean = activeSrv->name.c_str();
+    serverNameClean.ReplaceAll("/", "_");
+    serverNameClean.ReplaceAll(" ", "_");
+
+    BString channelNameClean = itemNode->Text();
+    channelNameClean.ReplaceAll("/", "_"); // Strip illegal path tokens
+
+    BString fullFileName;
+    fullFileName.SetToFormat("%s_%s.log", serverNameClean.String(), channelNameClean.String());
+    path.Append(fullFileName.String());
+
+    // 4. Generate a clean [YYYY-MM-DD HH:MM:SS] timestamp tag
+    time_t now = time(nullptr);
+    struct tm* tstruct = localtime(&now);
+    char timeBuffer[40];
+    strftime(timeBuffer, sizeof(timeBuffer), "[%Y-%m-%d %H:%M:%S] ", tstruct);
+
+    // 5. Open and append the stream data straight onto disk
+    std::ofstream logFile(path.Path(), std::ios_base::app);
+    if (logFile.is_open()) {
+        BString cleanedText = rawLineText;
+        cleanedText.Trim(); // Remove trailing system returns before storing
+        
+        logFile << timeBuffer << cleanedText.String() << "\n";
+        logFile.close();
+    }
+}
+
 
 
 void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
