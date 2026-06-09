@@ -61,7 +61,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.16 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.17 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -1020,7 +1020,10 @@ void CustomChatView::MessageReceived(BMessage* message) {
             break;
         }
 
+
+
         case MSG_CLEAR_CUSTOM_BUFFER: {
+            // 1. Loop backward and purge only rows matching our current active room context node
             for (int32 i = fLines.CountItems() - 1; i >= 0; i--) {
                 StyledLine* line = fLines.ItemAt(i);
                 if (line != nullptr && line->itemNode == fActiveChannelNode) {
@@ -1028,6 +1031,7 @@ void CustomChatView::MessageReceived(BMessage* message) {
                 }
             }
 
+            // 2. Alert the parent main window to completely wipe out the background text string cache maps
             if (Window() != nullptr && fActiveChannelNode != nullptr) {
                 BMessage clearCacheMsg('clch'); 
                 clearCacheMsg.AddPointer("active_node", fActiveChannelNode); 
@@ -1038,6 +1042,13 @@ void CustomChatView::MessageReceived(BMessage* message) {
             Invalidate();
             break;
         }
+
+
+        
+        
+        
+        
+        
 
         case B_COLORS_UPDATED: {
             SetViewColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
@@ -6587,6 +6598,25 @@ public:
         break;
     }
 
+
+        case 'clch': {
+            void* nodePtr = nullptr;
+            if (message->FindPointer("active_node", &nodePtr) == B_OK && nodePtr != nullptr) {
+                BStringItem* targetNode = static_cast<BStringItem*>(nodePtr);
+                
+                // 1. Purge the text buffer memory map cache for this specific room node
+                // This stops RebuildActiveChannelBuffer() from re-populating text on tab switches
+                if (fTextBuffers.find(targetNode) != fTextBuffers.end()) {
+                    fTextBuffers[targetNode] = ""; 
+                }
+                
+                // 2. Also clear out your channel history user topics cache maps if tracked here
+                if (fChannelTopics.find(targetNode) != fChannelTopics.end()) {
+                    fChannelTopics[targetNode] = "";
+                }
+            }
+            break;
+        }
 
 
 
