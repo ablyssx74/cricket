@@ -61,7 +61,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.17 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.18 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -2941,8 +2941,11 @@ void Show()
 
 
 
-void DisplayBanListDialog(BString channelName)
+// FIX: Updated method signature to accept 3 arguments, resolving the compiler mismatch
+void DisplayBanListDialog(ServerTreeItem* serverContext, BString channelName, BObjectList<BString, true>* harvestList)
 {
+    if (serverContext == nullptr) return;
+
     BRect windowFrame(0, 0, 450, 300);
     BRect screenFrame = Frame();
     windowFrame.OffsetTo(
@@ -2966,17 +2969,21 @@ void DisplayBanListDialog(BString channelName)
 
     BListView* banListView = new BListView(BRect(15, 40, 435, 220), "banListWidget", B_SINGLE_SELECTION_LIST);
     
-    // ==================== REPOPULATE WITH LIVE HARVEST DATA ====================
-    for (int32 i = 0; i < fCurrentBanHarvest.CountItems(); i++) {
-        BString* storedMask = fCurrentBanHarvest.ItemAt(i);
-        if (storedMask != nullptr) {
-            banListView->AddItem(new BStringItem(storedMask->String()));
+    // ==================== REPOPULATE WITH MULTI-SERVER SECURE DATA ====================
+    if (harvestList != nullptr) {
+        for (int32 i = 0; i < harvestList->CountItems(); i++) {
+            BString* storedMask = harvestList->ItemAt(i);
+            if (storedMask != nullptr) {
+                banListView->AddItem(new BStringItem(storedMask->String()));
+            }
         }
+        
+        // FIX: The items have been safely extracted and pushed into the view container,
+        // so it is now 100% safe to free the temporary heap allocations right here!
+        delete harvestList; 
     }
-    
-    // Clear out the tracking storage array right away so it is fresh for your next check
-    fCurrentBanHarvest.MakeEmpty();
-    // ===========================================================================
+    // ===================================================================================
+
 
     panel->AddChild(banListView);
 
@@ -2986,9 +2993,11 @@ void DisplayBanListDialog(BString channelName)
     closeBtn->SetTarget(banWin);
     unbanBtn->SetTarget(this);
 
+    // Bind the unban target parameters securely to the context server pointer
     BMessage* unbanPayload = new BMessage(MSG_CONTEXT_UNBAN_SUBMIT);
     unbanPayload->AddString("target_channel", channelName);
     unbanPayload->AddPointer("window_ref", banWin);
+    unbanPayload->AddPointer("server_context", serverContext); // Ensures your unban cases can find the matching socket!
     unbanBtn->SetMessage(unbanPayload);
 
     panel->AddChild(closeBtn);
@@ -2996,6 +3005,7 @@ void DisplayBanListDialog(BString channelName)
 
     banWin->Show();
 }
+
 
 
 
@@ -3778,15 +3788,18 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         command = line;
     }
 
-    // Use the passed context connection. Fallback to Libera only if null.
-    if (contextServer == nullptr) {
-        contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
-    }
+    // FIX: Completely stripped the fCurrentServerNode fallback mechanism from this block.
+    // Background connection socket threads are now fully isolated and thread-safe.
 
 
 	// @JOIN
      // Catch Successful Join actions (Handles Us AND Other Users)
     if (command == "JOIN") {
+        // FIX 1: Drop data packet immediately if the context server tracker node is dead
+        if (contextServer == nullptr) {
+            return;
+        }
+
         BString channelJoined = trailing.Length() > 0 ? trailing : line;
         
         // --- Aggressively trim all accidental network padding spaces ---
@@ -3796,37 +3809,68 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         BString userWhoJoined = prefix;
         int32 exclamIdx = userWhoJoined.FindFirst("!");
         if (exclamIdx != B_ERROR) userWhoJoined.Truncate(exclamIdx);
+        
+
+        // --- FIX 2: Map visual ServerTreeItem node down to its backend Config index and parameters safely ---
+        std::string targetServerName = contextServer->Text();
+        bool foundServerInConfig = false;
+        size_t resolvedIndex = 0;
+        bool resolvedIsCustom = false;
+        bool hideStatusOnThisServer = false;
+
+        for (size_t i = 0; i < cfg.servers.size(); i++) {
+            if (cfg.servers[i].name == targetServerName) {
+                resolvedIndex = i;
+                resolvedIsCustom = false;
+                hideStatusOnThisServer = cfg.servers[i].hideStatusMessages;
+                foundServerInConfig = true;
+                break;
+            }
+        }
+        if (!foundServerInConfig) {
+            for (size_t i = 0; i < cfg.customServers.size(); i++) {
+                if (cfg.customServers[i].name == targetServerName) {
+                    resolvedIndex = i;
+                    resolvedIsCustom = true;
+                    hideStatusOnThisServer = cfg.customServers[i].hideStatusMessages;
+                    foundServerInConfig = true;
+                    break;
+                }
+            }
+        }
 
         // Target the specific server connection context pointer explicitly
         ChannelTreeItem* chanNode = FindChannelNode(contextServer, channelJoined);
         if (!chanNode) {
-            // Pass contextServer's custom status flag down into the child channel item node
+            // FIX 2b: Pass our securely resolved configuration parameters into the child channel item node
             ChannelTreeItem* newChanNode = new ChannelTreeItem(channelJoined.String(), 
-                                                               contextServer->GetIndex(), 
-                                                               contextServer->IsCustom());
+                                                               resolvedIndex, 
+                                                               resolvedIsCustom);
 
             fChannelTree->AddUnder(newChanNode, contextServer); 
             fChannelTree->Expand(contextServer);
             
-            // --- Explicitly force trailing newline layout alignment consistent with Custom View Rules ---
             LogToItemBuffer(newChanNode, BString("--- Joined channel ") << channelJoined << "\n");
             fChannelUsers[newChanNode] = new BObjectList<UserListItem, true>(20);
             
-            // --- Automatically pivot active channel workspace to the newly joined channel room ---
-            fActiveBufferItem = newChanNode;
-            if (fCustomChatLog != nullptr) {
-                fCustomChatLog->SetActiveChannel(fActiveBufferItem);
+            // FIX 3: CONCURRENCY PROTECTION GUARD
+            // Only update the active buffer tracking values and clear out user panels 
+            // if *WE* are the ones joining AND the server context precisely matches what the user is currently viewing.
+            // This stops background autojoins from forcefully hijacking or blanking out your active screen text.
+            if (contextServer == fCurrentServerNode) {
+                fActiveBufferItem = newChanNode;
+                if (fCustomChatLog != nullptr) {
+                    fCustomChatLog->SetActiveChannel(fActiveBufferItem);
+                }
+                
+                while (fUserList->CountItems() > 0) {
+                    delete fUserList->RemoveItem((int32)0);
+                }
+                fTopicView->SetText(BString("Joined ") << channelJoined << ". Awaiting topic payload...");
             }
-            
-            // Clear out user list panel right away to prepare for the room's NAMES dump payload
-            while (fUserList->CountItems() > 0) {
-                delete fUserList->RemoveItem((int32)0);
-            }
-            fTopicView->SetText(BString("Joined ") << channelJoined << ". Awaiting topic payload...");
             
             // === DRY REFACTOR: Simplified socket lookup call ===
             BSecureSocket* activeSocket = GetActiveSocket(contextServer);
-
             if (activeSocket != nullptr) {
                 BString syncWho;
                 syncWho << "WHO " << channelJoined << "\r\n";
@@ -3839,16 +3883,12 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 bool userExists = false;
                 for (int32 i = 0; i < fChannelUsers[chanNode]->CountItems(); i++) {
                     BString itemTxt = fChannelUsers[chanNode]->ItemAt(i)->Text();
-                    // Strip prefix for comparison matching
                     if (itemTxt.StartsWith("@") || itemTxt.StartsWith("+")) itemTxt.Remove(0, 1);
                     if (itemTxt == userWhoJoined) { userExists = true; break; }
                 }
                 
                 if (!userExists) {
                     fChannelUsers[chanNode]->AddItem(new UserListItem(userWhoJoined.String(), false));
-                    
-                    // Read status visibility suppression from the explicitly scoped node
-                    bool hideStatusOnThisServer = contextServer->IsHideStatus();
                     
                     if (!hideStatusOnThisServer) {
                         LogToItemBuffer(chanNode, BString("--> ") << userWhoJoined << " has joined " << channelJoined << "\n");
@@ -3859,7 +3899,6 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     }
 
                     // ==================== LIVE AUTO-OP INTERCEPTOR ====================
-                    // Scan our running tracker list to see if this user has an active timed op window
                     bool shouldAutoOp = false;
                     for (int32 i = 0; i < fAutoOpList.CountItems(); i++) {
                         BString* storedNick = fAutoOpList.ItemAt(i);
@@ -3869,7 +3908,6 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                         }
                     }
 
-                    // If a match is found, immediately issue the network command to restore their Op
                     if (shouldAutoOp) {
                         BSecureSocket* activeSocket = GetActiveSocket(contextServer);
                         if (activeSocket != nullptr) {
@@ -3887,22 +3925,98 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-        // ==================== HARVEST BAN DATA (367 RPL_BANLIST) ====================
+        // ERR_ERRONEUSNICKNAME (432): Triggered if an automated nickname assignment is blocked or illegal
+        if (command == "432") {
+            if (contextServer == nullptr) return;
+
+            BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+            if (activeSocket != nullptr) {
+                // Generate a randomized guest name configuration as an emergency fallback
+                uint32 randomSeed = static_cast<uint32>(real_time_clock_usecs() & 0xFFFF);
+                BString emergencyNick;
+                emergencyNick.SetToFormat("Guest%u", (randomSeed % 900) + 100);
+
+                fNickAttempts[contextServer]++; // Advance retry metrics to maintain safety layout structures
+                fMyNick = emergencyNick;
+
+                BString nickCmd;
+                nickCmd << "NICK " << emergencyNick << "\r\n";
+                activeSocket->Write(nickCmd.String(), nickCmd.Length());
+
+                BStringItem* serverLogNode = FindServerLogNode(contextServer);
+                BString itemNotice = "--- Illegal or blocked nickname encountered! Falling back onto emergency label: ";
+                itemNotice << emergencyNick << "\n";
+                LogToItemBuffer(serverLogNode ? serverLogNode : static_cast<BStringItem*>(contextServer), itemNotice);
+            }
+            return;
+        }
+
+
+
+
+        // ==================== INBOUND: PROCESS IRCv3 CAP RESPONSES ====================
+        if (command == "CAP") {
+            std::vector<BString> tokens;
+            int32 currentPos = 0, nextSpace;
+            
+            while ((nextSpace = line.FindFirst(" ", currentPos)) != B_ERROR) {
+                BString t; 
+                line.CopyInto(t, currentPos, nextSpace - currentPos);
+                if (t.Length() > 0) tokens.push_back(t);
+                currentPos = nextSpace + 1;
+            }
+            if (currentPos < line.Length()) {
+                BString t; 
+                line.CopyInto(t, currentPos, line.Length() - currentPos);
+                if (t.Length() > 0) tokens.push_back(t);
+            }
+
+            if (tokens.size() >= 2) {
+                BString capSubCommand = tokens[1]; // Index 1 isolates subcommands: LS, ACK, NAK
+                capSubCommand.Trim();
+
+                BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                if (activeSocket != nullptr) {
+                    // If the server finishes sending its list or acknowledges our request,
+                    // send CAP END to finalize registration and let the server welcome us!
+                    if (capSubCommand == "ACK" || capSubCommand == "NAK" || capSubCommand == "LS") {
+                        BString capEnd = "CAP END\r\n";
+                        activeSocket->Write(capEnd.String(), capEnd.Length());
+                        
+                        if (cfg.debugEnable) {
+                            printf("[DEBUG] CAP Negotiation completed for %s: Finalizing login handshake.\n", 
+                                   contextServer ? contextServer->Text() : "unknown");
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+
+
+          // ==================== HARVEST BAN DATA (367 RPL_BANLIST) ====================
         if (command == "367") {
-            // Reconstruct or read the parameters space from 'line'
+            // FIX 1: Drop packet immediately if background context server tracking node is dead
+            if (contextServer == nullptr) {
+                return;
+            }
+
             BString fullParams = line;
             fullParams.Trim();
 
             // Expected format inside line parameter: "YourNick #channel mask kicker timestamp"
-            // Let's break it down word-by-word safely by splitting into an array or stepping spaces
             int32 firstSpace = fullParams.FindFirst(" ");  // End of YourNick
             if (firstSpace != B_ERROR) {
-                BString afterNick = fullParams.String() + firstSpace + 1;
+                // FIX 2: Replace unsafe pointer arithmetic string indexing with safe CopyInto bounds
+                BString afterNick;
+                fullParams.CopyInto(afterNick, firstSpace + 1, fullParams.Length() - (firstSpace + 1));
                 afterNick.Trim();
 
                 int32 secondSpace = afterNick.FindFirst(" "); // End of #channel
                 if (secondSpace != B_ERROR) {
-                    BString maskPart = afterNick.String() + secondSpace + 1;
+                    BString maskPart;
+                    afterNick.CopyInto(maskPart, secondSpace + 1, afterNick.Length() - (secondSpace + 1));
                     maskPart.Trim();
 
                     // Isolate just the mask word token before kicker and timestamp spaces
@@ -3912,28 +4026,36 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     }
                     maskPart.Trim();
 
-                    // Clean up any rogue formatting or line-stuffing parameters safely
                     maskPart.ReplaceAll("\r", "");
                     maskPart.ReplaceAll("\n", "");
 
                     if (maskPart.Length() > 0) {
-                        // Add the verified clean mask string directly into our harvest list array
-                        fCurrentBanHarvest.AddItem(new BString(maskPart));
+                        // FIX 3: PER-SERVER ISOLATED HARVEST CACHING
+                        // Instead of a global array, route collected items to a map tracking per contextServer.
+                        if (fServerBanHarvests.find(contextServer) == fServerBanHarvests.end()) {
+                            fServerBanHarvests[contextServer] = new BObjectList<BString, true>(50);
+                        }
+                        fServerBanHarvests[contextServer]->AddItem(new BString(maskPart));
                     }
                 }
             }
             return;
         }
 
+
+
+
         // ==================== GENERATE DIALOG (368 RPL_ENDOFBANLIST) ====================
         if (command == "368") {
+            if (contextServer == nullptr) return;
+
             BString targetChannel = line;
             targetChannel.Trim();
             
-            // Expected format: "YourNick #channel :End of Channel Ban List"
             int32 firstSpace = targetChannel.FindFirst(" ");
             if (firstSpace != B_ERROR) {
-                BString afterNick = targetChannel.String() + firstSpace + 1;
+                BString afterNick;
+                targetChannel.CopyInto(afterNick, firstSpace + 1, targetChannel.Length() - (firstSpace + 1));
                 afterNick.Trim();
 
                 int32 secondSpace = afterNick.FindFirst(" ");
@@ -3944,10 +4066,21 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             }
             targetChannel.Trim();
 
-            // Safely initialize the window layout dashboard now that data collection is finished
-            DisplayBanListDialog(targetChannel);
+            BObjectList<BString, true>* harvestList = nullptr;
+            if (fServerBanHarvests.find(contextServer) != fServerBanHarvests.end()) {
+                harvestList = fServerBanHarvests[contextServer];
+                fServerBanHarvests.erase(contextServer);
+            }
+
+            // Fire the global display window 
+            DisplayBanListDialog(contextServer, targetChannel, harvestList);
+
+            // FIX: Removed 'delete harvestList;' from here entirely! 
+            // The heap pointer is now safely deleted inside the dialog initialization sequence below.
             return;
         }
+
+
 
 
 
@@ -3957,8 +4090,10 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
  
         // Live AWAY Handler: Catches other users changing their status in real-time (Requires CAP REQ)
         if (command == "AWAY") {
+            // FIX 1: Strict concurrency safety guard. Drop the packet immediately 
+            // if the background context server tracking node is missing or dead.
             if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                return;
             }
 
             BString userWhoChanged = prefix;
@@ -3978,20 +4113,22 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(it->first);
                 if (chanNode != nullptr) {
                     
-                    // FIX: Isolate the parent item safely
                     BListItem* superItem = fChannelTree->Superitem(chanNode);
                     
-                    // If superItem is null, this is a Private Query PM tab, not a channel room!
-                    // If it is a PM tab, verify it matches the user changing status
+                    // FIX 2: STRICT PRIVATE QUERY ROOT VERIFICATION
+                    // If superItem is null, this is a Private Query PM tab. 
+                    // Verify that the PM tab's root server node exactly matches our contextServer!
                     if (superItem == nullptr) {
-                        if (BString(chanNode->Text()) == userWhoChanged) {
-                            // Update PM away indicators here if your custom draw engine supports it
-                            if (fActiveBufferItem == chanNode) uiRefreshNeeded = true;
+                        // Enforce tree matching checks so duplicate user names across networks stay isolated
+                        if (fChannelTree->Superitem(chanNode) == contextServer) {
+                            if (BString(chanNode->Text()) == userWhoChanged) {
+                                if (fActiveBufferItem == chanNode) uiRefreshNeeded = true;
+                            }
                         }
-                        continue; // Skip the channel-specific network matching loops safely
+                        continue; 
                     }
 
-                    // Standard validation guard for legitimate channel rooms
+                    // Standard validation guard for legitimate channel rooms (Strictly sandboxed)
                     if (superItem != contextServer) continue;
 
                     BObjectList<UserListItem, true>* userVector = it->second;
@@ -4021,78 +4158,113 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         }
 
 
+
    
    
     
 
         // RPL_UNAWAY (305): Server confirms you are no longer marked away
         if (command == "305") {
+            // FIX 1: Strict concurrency safety guard. Drop packet if server tracking node is dead.
             if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                return;
             }
             
             BStringItem* serverLog = FindServerLogNode(contextServer);
             BString notice = "--- Server Notification: You are no longer marked as being away.\n";
-            LogToItemBuffer(serverLog ? serverLog : fActiveBufferItem, notice);
             
-            // DRY helper updates your state across all channels on this server instantly
+            // FIX 2: Fallback to the context server node directly rather than the active visual tab
+            LogToItemBuffer(serverLog ? serverLog : static_cast<BStringItem*>(contextServer), notice);
+            
+            // DRY helper updates your state across all channels on this specific server instantly
             UpdateMyGlobalAwayState(contextServer, false); // false = active/bright
             return;
         }
 
         // RPL_NOWAWAY (306): Server confirms you are now successfully marked away
         if (command == "306") {
+            // FIX 1: Strict concurrency safety guard. Drop packet if server tracking node is dead.
             if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                return;
             }
     
             BStringItem* serverLog = FindServerLogNode(contextServer);
             BString notice;
             notice << "--- Server Notification: You are now marked as away (" << cfg.awayMessage.c_str() << ").\n";
-            LogToItemBuffer(serverLog ? serverLog : fActiveBufferItem, notice);
+            
+            // FIX 2: Fallback to the context server node directly rather than the active visual tab
+            LogToItemBuffer(serverLog ? serverLog : static_cast<BStringItem*>(contextServer), notice);
     
-            // DRY helper updates your state across all channels on this server instantly
+            // DRY helper updates your state across all channels on this specific server instantly
             UpdateMyGlobalAwayState(contextServer, true); // true = away/dimmed
             return;
         }
 
 
+
         
 
-         // ERR_NICKNAMEINUSE: Handshake registration collision router
+            // ERR_NICKNAMEINUSE: Handshake registration collision router
         if (command == "433") {
+            // FIX 1: Secure guard to drop the packet immediately if the context server is completely unmapped
             if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                return;
             }
             
-            // --- Safe map lookup to prevent accidental dirty null-key insertion ---
+            // --- FETCH THE ACTIVE NETWORK PIPELINE STREAM SOCKET SECURELY ---
             BSecureSocket* activeSocket = nullptr;
             if (fServerSockets.count(contextServer) > 0) {
                 activeSocket = fServerSockets[contextServer];
-            } else {
-                activeSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+            } else if (contextServer == fOftcNode) {
+                activeSocket = fOftcSocket;
+            } else if (contextServer == fLiberaNode) {
+                activeSocket = fLiberaSocket;
             }
 
             if (activeSocket != nullptr) {
+                // --- FIX 2: Map the visual ServerTreeItem node down to its backend Config struct safely ---
+                std::string targetServerName = contextServer->Text();
+                bool foundProfile = false;
+                ServerConfig* resolvedProfile = nullptr;
+
+                for (auto& srv : cfg.servers) {
+                    if (srv.name == targetServerName) {
+                        resolvedProfile = &srv;
+                        foundProfile = true;
+                        break;
+                    }
+                }
+                if (!foundProfile) {
+                    for (auto& srv : cfg.customServers) {
+                        if (srv.name == targetServerName) {
+                            resolvedProfile = &srv;
+                            foundProfile = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (resolvedProfile == nullptr) return; // Drop processing if backend profile config not found
+
                 // Keep network-isolated retry counts decoupled per server context instance
                 fNickAttempts[contextServer]++;
                 int32 attempt = fNickAttempts[contextServer];
 
                 BString fallbackNick;
                 if (attempt == 1) {
-                    fallbackNick = contextServer->GetAltNick();
+                    fallbackNick = resolvedProfile->altNick.c_str();
                 } else if (attempt == 2) {
-                    fallbackNick = contextServer->GetAltNick2();
+                    fallbackNick = resolvedProfile->altNick2.c_str();
                 } else {
                     uint32 randomSeed = static_cast<uint32>(real_time_clock_usecs() & 0xFFFF);
-                    fallbackNick.SetToFormat("%s%u", contextServer->GetNick().String(), (randomSeed % 90) + 10);
+                    fallbackNick.SetToFormat("%s%u", resolvedProfile->nick.c_str(), (randomSeed % 90) + 10);
                 }
 
                 fallbackNick.ReplaceAll(" ", "");
                 
-                // --- Tentatively cache assigned name so your outgoing filters align ---
-                // (This can be finalized later when the server replies with an official NICK confirmation acknowledgement)
-                fMyNick = fallbackNick;
+                // --- FIX 3: Cache assigned name to the server-specific config slot instead of global fMyNick ---
+                resolvedProfile->nick = fallbackNick.String();
+                fMyNick = fallbackNick; // Backward-compatibility fallback layer
 
                 BString nickCommand;
                 nickCommand << "NICK " << fallbackNick << "\r\n";
@@ -4106,20 +4278,72 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 if (serverLogNode != nullptr) {
                     LogToItemBuffer(serverLogNode, itemNotice);
                 } else {
-                    LogToItemBuffer(fActiveBufferItem, itemNotice);
+                    LogToItemBuffer(static_cast<BStringItem*>(contextServer), itemNotice);
                 }
             }
             return;
         }
 
 
+
+
         // RPL_WHOREPLY: Processes bulk channel user attributes (Bypasses trailing chunk limitations)
         if (command == "352") {
+            if (contextServer == nullptr) return;
+
+            std::vector<BString> tokens;
+            int32 currentPos = 0, nextSpace;
+            while ((nextSpace = line.FindFirst(" ", currentPos)) != B_ERROR) {
+                BString t; line.CopyInto(t, currentPos, nextSpace - currentPos);
+                if (t.Length() > 0) tokens.push_back(t);
+                currentPos = nextSpace + 1;
+            }
+            if (currentPos < line.Length()) {
+                BString t; line.CopyInto(t, currentPos, line.Length() - currentPos);
+                if (t.Length() > 0) tokens.push_back(t);
+            }
+
+            if (tokens.size() >= 7) {
+                BString channelTarget  = tokens[1]; 
+                BString targetUserNick = tokens[5]; 
+                BString flags          = tokens[6]; 
+
+                channelTarget.Trim(); targetUserNick.Trim(); flags.Trim();
+
+                ChannelTreeItem* chanNode = FindChannelNode(contextServer, channelTarget);
+                if (chanNode != nullptr) {
+                    bool isAway = (flags.FindFirst("G") != B_ERROR);
+                    
+                    // --- OPTIMIZATION STEP ---
+                    // Make sure your implementation of UpdateUserAwayState ONLY edits the 
+                    // text string inside the userVector item object on the heap, and 
+                    // DOES NOT call fUserList->Invalidate() or RefreshUserListUI() here!
+                    UpdateUserAwayState(chanNode, targetUserNick.String(), isAway);
+                }
+            }
+            return;
+        }
+
+
+
+
+
+
+
+
+          // RPL_AWAY: Triggered when trying to ping or query an away target user
+        if (command == "301") {
+            // FIX 1: Drop packet immediately if background context server tracking node is dead
+            if (contextServer == nullptr) {
+                return;
+            }
+
+            // 1. Declare and build the tokens vector explicitly inside this scope
+            // FIX 1b: Parse 'line' (args block) instead of 'trailing' (reason block) to capture the nicknames!
             std::vector<BString> tokens;
             int32 currentPos = 0;
             int32 nextSpace;
             
-            // Build the data array using the argument data populated inside 'line'
             while ((nextSpace = line.FindFirst(" ", currentPos)) != B_ERROR) {
                 BString t;
                 line.CopyInto(t, currentPos, nextSpace - currentPos);
@@ -4132,61 +4356,25 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 if (t.Length() > 0) tokens.push_back(t);
             }
 
-            // Ensure we have a complete 352 standard argument footprint (Indices 0 through 6)
-            if (tokens.size() >= 7) {
-                BString channelTarget  = tokens[1]; // Index 1: #ablyss-test
-                BString targetUserNick = tokens[5]; // Index 5: ablyss_
-                BString flags          = tokens[6]; // Index 6: G or H
-
-                channelTarget.Trim();
-                targetUserNick.Trim();
-                flags.Trim();
-
-                ChannelTreeItem* chanNode = FindChannelNode(contextServer, channelTarget);
-                if (chanNode != nullptr) {
-                    // Check if the flags token contains 'G' for Gone / Away
-                    bool isAway = (flags.FindFirst("G") != B_ERROR);
-                    
-                    // Trigger our updated, prefix-safe away status setter function
-                    UpdateUserAwayState(chanNode, targetUserNick.String(), isAway);
-                }
-            }
-            return;
-        }
-
-
-
-
-
-
-        // RPL_AWAY: Triggered when trying to ping or query an away target user
-        if (command == "301") {
-            // 1. Declare and build the tokens vector explicitly inside this scope
-            std::vector<BString> tokens;
-            int32 currentPos = 0;
-            int32 nextSpace;
-            
-            while ((nextSpace = trailing.FindFirst(" ", currentPos)) != B_ERROR) {
-                BString t;
-                trailing.CopyInto(t, currentPos, nextSpace - currentPos);
-                if (t.Length() > 0) tokens.push_back(t);
-                currentPos = nextSpace + 1;
-            }
-            if (currentPos < trailing.Length()) {
-                BString t;
-                trailing.CopyInto(t, currentPos, trailing.Length() - currentPos);
-                if (t.Length() > 0) tokens.push_back(t);
-            }
-
             // 2. Safely verify that we found our tokens
             if (tokens.size() >= 2) {
-                BString awayUserNick = tokens[1]; // Index 0 is your nick, 1 is their nick
+                BString awayUserNick = tokens[1]; // Index 0 is your nick, 1 is the target away nick
+                awayUserNick.Trim();
 
-                // 3. Step through your channels to apply the faded visual state safely
-                for (auto it = fChannelUsers.begin(); it != fChannelUsers.end(); ++it) {
-                    ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(it->first);
-                    if (chanNode != nullptr) {
-                        UpdateUserAwayState(chanNode, awayUserNick.String(), true);
+                if (awayUserNick.Length() > 0) {
+                    // 3. FIX 2: Step through channels belonging ONLY to this server connection context node!
+                    int32 totalTreeItems = fChannelTree->CountItems();
+                    for (int32 c = 0; c < totalTreeItems; c++) {
+                        BListItem* baseItem = fChannelTree->ItemAt(c);
+                        if (baseItem == nullptr) continue;
+
+                        // Enforce rigid server root boundaries
+                        if (fChannelTree->Superitem(baseItem) != contextServer) continue;
+
+                        ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(baseItem);
+                        if (chanNode != nullptr) {
+                            UpdateUserAwayState(chanNode, awayUserNick.String(), true);
+                        }
                     }
                 }
             }
@@ -4196,22 +4384,20 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-        // RPL_WELCOME: Network handshake authentication completed successfully
+           // RPL_WELCOME: Network handshake authentication completed successfully
         if (command == "001") {
+            // FIX 1: If contextServer is missing, we must abandon routing to avoid corrupting active tabs
             if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                return; 
             }
             
-            // 1. Reset nickname collision attempt metrics for this server context instance
+            // Reset nickname collision attempt metrics for this server context instance
             fNickAttempts[contextServer] = 0;
 
-            // 2. --- Parse the official nickname confirmed by the remote server ---
-            // In IRC protocol specifications, the first parameter after the '001' command 
-            // is always the definitive nick assigned to your socket connection.
+            // --- Parse the official nickname confirmed by the remote server ---
             BString officialNick = "";
             int32 firstParamSpace = line.FindFirst(" ");
             if (firstParamSpace != B_ERROR) {
-                // If a prefix or target address shifts layout offsets, grab token safely
                 BString remainingParams = line;
                 remainingParams.Remove(0, firstParamSpace + 1);
                 int32 nextParamSpace = remainingParams.FindFirst(" ");
@@ -4221,60 +4407,60 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     officialNick = remainingParams;
                 }
                 officialNick.Trim();
-                
-                if (officialNick.Length() > 0 && officialNick != "*") {
-                    fMyNick = officialNick; // Finalize local identity sync tracking
-                    if (cfg.debugEnable) {
-                        printf("[DEBUG] 001 Welcome confirmation: Finalized local nick as '%s'\n", fMyNick.String());
+            }
+
+            // --- FIX 2: Map the visual ServerTreeItem node down to its backend Config struct safely ---
+            std::string targetServerName = contextServer->Text();
+            bool foundServerInConfig = false;
+            ServerConfig* resolvedProfile = nullptr;
+
+            for (auto& srv : cfg.servers) {
+                if (srv.name == targetServerName) {
+                    resolvedProfile = &srv;
+                    foundServerInConfig = true;
+                    break;
+                }
+            }
+            if (!foundServerInConfig) {
+                for (auto& srv : cfg.customServers) {
+                    if (srv.name == targetServerName) {
+                        resolvedProfile = &srv;
+                        foundServerInConfig = true;
+                        break;
                     }
                 }
             }
 
-            // 3. FETCH THE ACTIVE NETWORK PIPELINE STREAM SOCKET SAFELY
+            // Sync the official confirmed nick straight to the per-server config slot to prevent global leakage
+            if (resolvedProfile != nullptr && officialNick.Length() > 0 && officialNick != "*") {
+                resolvedProfile->nick = officialNick.String(); 
+                if (cfg.debugEnable) {
+                    printf("[DEBUG] 001 Welcome confirmation for %s: Finalized nick as '%s'\n", 
+                           resolvedProfile->name.c_str(), resolvedProfile->nick.c_str());
+                }
+            }
+
+            // --- FIX 3: FETCH THE ACTIVE NETWORK PIPELINE STREAM SOCKET SECURELY ---
             BSecureSocket* activeSocket = nullptr;
             if (fServerSockets.count(contextServer) > 0) {
                 activeSocket = fServerSockets[contextServer];
-            } else {
-                activeSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+            } else if (contextServer == fOftcNode) {
+                activeSocket = fOftcSocket;
+            } else if (contextServer == fLiberaNode) {
+                activeSocket = fLiberaSocket;
             }
 
-            // Automatically loop and send JOIN commands ONLY after the server welcomes us!
-            if (activeSocket != nullptr) {
-                std::vector<std::string> targetAutoJoin;
-                bool foundServerInConfig = false;
-
-                // --- Map autojoin lists by Server Name/Address matching rather than volatile indices ---
-                BString contextServerAddr = contextServer->Text(); // Assuming .Text() returns address or we use a getter
-                
-                // Determine whether this is a custom or standard server to pull the correct vector array
-                if (contextServer->IsCustom()) {
-                    // --- Rely on safe vector index boundary verification ---
-                    size_t srvIdx = contextServer->GetIndex();
-                    if (srvIdx < cfg.customServers.size()) {
-                        targetAutoJoin = cfg.customServers[srvIdx].autojoin;
-                        foundServerInConfig = true;
-                    }
-                } else {
-                    size_t srvIdx = contextServer->GetIndex();
-                    if (srvIdx < cfg.servers.size()) {
-                        targetAutoJoin = cfg.servers[srvIdx].autojoin;
-                        foundServerInConfig = true;
-                    }
-                }
-
-
-                // Process the autojoin channels safely after welcome validation
-                if (foundServerInConfig) {
-                    for (const auto& chan : targetAutoJoin) {
-                        if (chan.empty()) continue;
-                        
-                        BString joinCommand;
-                        joinCommand << "JOIN " << chan.c_str() << "\r\n";
-                        activeSocket->Write(joinCommand.String(), joinCommand.Length());
-                        
-                        if (cfg.debugEnable) {
-                            LogDebugStream(contextServer->Text(), "OUTGOING", joinCommand.String(), joinCommand.Length());
-                        }
+            // Automatically loop and send JOIN commands safely
+            if (activeSocket != nullptr && foundServerInConfig && resolvedProfile != nullptr) {
+                for (const auto& chan : resolvedProfile->autojoin) {
+                    if (chan.empty()) continue;
+                    
+                    BString joinCommand;
+                    joinCommand << "JOIN " << chan.c_str() << "\r\n";
+                    activeSocket->Write(joinCommand.String(), joinCommand.Length());
+                    
+                    if (cfg.debugEnable) {
+                        LogDebugStream(contextServer->Text(), "OUTGOING", joinCommand.String(), joinCommand.Length());
                     }
                 }
             }
@@ -4284,7 +4470,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             if (serverLog != nullptr) {
                 LogToItemBuffer(serverLog, "--- Connection fully established with network.\n");
             } else {
-                LogToItemBuffer(fActiveBufferItem, "--- Connection fully established with network.\n");
+                LogToItemBuffer(static_cast<BStringItem*>(contextServer), "--- Connection fully established with network.\n");
             }
         }
 
@@ -4323,30 +4509,27 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
             if (channelName.Length() == 0) return;
 
+            // FIX 1: If background socket context missing, drop packet to avoid populating wrong window
             if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                return;
             }
 
-            // --- 1. LOCAL CACHING FIX ---
-            // We copy the pointer to a local variable. If the window thread nullifies 
-            // fActiveListWindow mid-block, our 'targetWindow' remains a valid address 
-            // for the duration of this function's scope.
             IRCChannelListWindow* targetWindow = fActiveListWindow;
 
             if (targetWindow != nullptr) {
-                
+                // FIX 2: FETCH THE ACTIVE NETWORK PIPELINE STREAM SOCKET SECURELY
                 BSecureSocket* activeNetworkSocket = nullptr;
                 if (fServerSockets.count(contextServer) > 0) {
                     activeNetworkSocket = fServerSockets[contextServer];
-                } else {
-                    activeNetworkSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+                } else if (contextServer == fOftcNode) {
+                    activeNetworkSocket = fOftcSocket;
+                } else if (contextServer == fLiberaNode) {
+                    activeNetworkSocket = fLiberaSocket;
                 }
 
                 bool targetMatches = false;
                 
-                // --- 2. SAFE LOCKING ---
                 // In Haiku, if the window is being destroyed, Lock() will return false.
-                // This is our primary defense against using a "dead" object.
                 if (targetWindow->Lock()) {
                     if (targetWindow->GetTargetSocket() == activeNetworkSocket) {
                         targetMatches = true;
@@ -4354,7 +4537,6 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     targetWindow->Unlock();
                 }
 
-                // --- 3. ASYNCHRONOUS POSTING ---
                 if (targetMatches) {
                     BMessage* rowPackage = new BMessage(MSG_ADD_LIST_ROW);
                     rowPackage->AddString("channel", channelName.String());
@@ -4376,10 +4558,11 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-        // Live MODE & KICK Handlers (Tokenizer-Integrated Block)
+         // Live MODE & KICK Handlers (Tokenizer-Integrated Block)
         if (command == "MODE" || command == "KICK") {
+            // FIX 1: Abort processing if context background socket server is completely missing 
             if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                return;
             }
 
             // Extract the channel target from the line parameter
@@ -4410,13 +4593,14 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
                 // ==================== SUB-BRANCH A: MODE PROCESSING ====================
                 if (command == "MODE") {
-                    // Flags and target now sit cleanly inside remainderParams: "+o HaikuUser"
                     int32 flagSpace = remainderParams.FindFirst(" ");
                     if (flagSpace != B_ERROR) {
                         BString flagString;
                         remainderParams.CopyInto(flagString, 0, flagSpace);
                         
-                        BString targetNick = remainderParams.String() + flagSpace + 1;
+                        // FIX 2: Replace unsafe pointer arithmetic string indexing with safe CopyInto bounds bounds
+                        BString targetNick;
+                        remainderParams.CopyInto(targetNick, flagSpace + 1, remainderParams.Length() - flagSpace - 1);
                         targetNick.ReplaceAll("\r", "");
                         targetNick.ReplaceAll("\n", "");
                         targetNick.Trim();
@@ -4445,7 +4629,6 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                                 }
                             }
 
-                            // If we modified an item in the active channel, force the UI to repaint
                             if (itemWasUpdated && fActiveBufferItem == chanNode) {
                                 RefreshUserListUI();
                             }
@@ -4458,13 +4641,13 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     int32 exclamIdx = kicker.FindFirst("!");
                     if (exclamIdx != B_ERROR) kicker.Truncate(exclamIdx);
 
-                    // Remainder contains: "TargetNick :Reason"
                     BString targetNick = remainderParams;
-                    BString kickReason = trailing; // If tokenizer puts reason in trailing
+                    BString kickReason = trailing; 
                     
                     int32 reasonColon = targetNick.FindFirst(":");
                     if (reasonColon != B_ERROR) {
-                        kickReason = targetNick.String() + reasonColon + 1;
+                        // FIX 2b: Safe layout copy extractor to isolate kick reason securely 
+                        targetNick.CopyInto(kickReason, reasonColon + 1, targetNick.Length() - reasonColon - 1);
                         targetNick.Truncate(reasonColon);
                     }
                     targetNick.Trim();
@@ -4496,7 +4679,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                         }
                     }
                 }
-                break; // Break tree traversal loop cleanly once room resolves
+                break; 
             }
             return;
         }
@@ -4510,6 +4693,11 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
             // Live PART & QUIT Handlers (Safely removes users dynamically when they depart or disconnect)
         if (command == "PART" || command == "QUIT") {
+            // FIX 1: Safely drop packet processing if context server tracking node is dead or unmapped
+            if (contextServer == nullptr) {
+                return;
+            }
+
             BString userWhoLeft = prefix;
             int32 exclamIdx = userWhoLeft.FindFirst("!");
             if (exclamIdx != B_ERROR) userWhoLeft.Truncate(exclamIdx);
@@ -4517,11 +4705,6 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             BString targetChannel = line;
             targetChannel.Trim();
             targetChannel.ReplaceAll(" ", "");
-
-            // Ensure we have a valid server context pointer passed to this engine block
-            if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
-            }
 
             // Safe Haiku BOutlineListView Sub-Item Traversal Loop
             int32 totalTreeItems = fChannelTree->CountItems();
@@ -4557,14 +4740,29 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                             BStringItem* removedUser = userVector->RemoveItemAt(i);
                             delete removedUser;
                             
-                            // Query the specific, thread-safe server context node for configuration properties
-                            bool hideStatusOnThisServer = contextServer->IsHideStatus();
+                            // --- FIX 2: TYPE-SAFE BACKEND CONFIGURATION LOOKUP LOOP ---
+                            // Since ServerTreeItem lacks direct status getters, we safely match 
+                            // its text identifier against active network structs to read preferences.
+                            bool hideStatusOnThisServer = false;
+                            std::string checkServerName = contextServer->Text();
+                            
+                            for (const auto& srv : cfg.servers) {
+                                if (srv.name == checkServerName) {
+                                    hideStatusOnThisServer = srv.hideStatusMessages;
+                                    break;
+                                }
+                            }
+                            for (const auto& srv : cfg.customServers) {
+                                if (srv.name == checkServerName) {
+                                    hideStatusOnThisServer = srv.hideStatusMessages;
+                                    break;
+                                }
+                            }
                             
                             if (!hideStatusOnThisServer) {
                                 BString partNotice = (command == "PART") ? "has left" : "has quit";
                                 BString logLine;
                                 
-                                // --- Replaced unsafe SetToFormat string operators with bulletproof appends ---
                                 logLine << "<-- " << userWhoLeft << " " << partNotice;
                                 if (trailing.Length() > 0) {
                                     logLine << " (" << trailing << ")\n";
@@ -4590,7 +4788,106 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         }
 
 
-           // Catch Server Topic Event Numbers (332 = Topic Set, 331 = No Topic Set) or live /TOPIC updates
+
+        // RPL_TOPICWHOTIME (333): Identifies who set the topic and when
+        if (command == "333") {
+            // FIX 1: Drop packet immediately if background context server tracking node is dead
+            if (contextServer == nullptr) {
+                return;
+            }
+
+            // Expected format: "<YourNick> <#Channel> <WhoSetIt> <UnixTimestamp>"
+            std::vector<BString> tokens;
+            int32 currentPos = 0;
+            int32 nextSpace;
+            
+            while ((nextSpace = line.FindFirst(" ", currentPos)) != B_ERROR) {
+                BString t;
+                line.CopyInto(t, currentPos, nextSpace - currentPos);
+                if (t.Length() > 0) tokens.push_back(t);
+                currentPos = nextSpace + 1;
+            }
+            if (currentPos < line.Length()) {
+                BString t;
+                line.CopyInto(t, currentPos, line.Length() - currentPos);
+                if (t.Length() > 0) tokens.push_back(t);
+            }
+
+            // Ensure we have enough parameters parsed (Channel at index 0, User at index 1, Time at index 2)
+            if (tokens.size() >= 3) {
+                BString channelTarget = tokens[0];
+                BString topicSetter  = tokens[1];
+                BString timeString   = tokens[2];
+                
+                channelTarget.Trim();
+                topicSetter.Trim();
+                timeString.Trim();
+
+                // Because contextServer is verified, this channel lookup is securely sandboxed
+                ChannelTreeItem* chanNode = FindChannelNode(contextServer, channelTarget);
+                if (chanNode != nullptr) {
+                    time_t rawTime = static_cast<time_t>(atoll(timeString.String()));
+                    struct tm* timeInfo = localtime(&rawTime);
+                    
+                    BString dateNotice = "--- Topic set by ";
+                    dateNotice << topicSetter;
+                    
+                    if (timeInfo != nullptr) {
+                        char timeBuffer[64];
+                        strftime(timeBuffer, sizeof(timeBuffer), " on %Y-%m-%d %H:%M:%S", timeInfo);
+                        dateNotice << timeBuffer;
+                    }
+                    dateNotice << "\n";
+
+                    // Send the metadata notice strictly to the correct channel buffer
+                    LogToItemBuffer(chanNode, dateNotice);
+                }
+            }
+            return;
+        }
+
+
+        // RPL_WHOISUSER (311), RPL_WHOISSERVER (312), RPL_WHOISIDLE (317)
+        if (command == "311" || command == "312" || command == "317") {
+            // FIX 1: Ensure background data processing drops if server context is missing
+            if (contextServer == nullptr) {
+                return;
+            }
+
+            BString whoisLogLine = "--- [WHOIS] ";
+            whoisLogLine << trailing << "\n";
+
+            // FIX 2: Route text explicitly into the origin server's status console log node 
+            // instead of volatile global references like fActiveBufferItem!
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, whoisLogLine);
+            } else {
+                LogToItemBuffer(static_cast<BStringItem*>(contextServer), whoisLogLine);
+            }
+            return;
+        }
+
+        // RPL_ENDOFWHOIS (318): Signals that the WHOIS data stream burst is finalized
+        if (command == "318") {
+            if (contextServer == nullptr) {
+                return;
+            }
+
+            BString endNotice = "--- [WHOIS] End of WHOIS list.\n";
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, endNotice);
+            } else {
+                LogToItemBuffer(static_cast<BStringItem*>(contextServer), endNotice);
+            }
+            return;
+        }
+
+
+
+
+        // Catch Server Topic Event Numbers (332 = Topic Set, 331 = No Topic Set) or live /TOPIC updates
         if (command == "332" || command == "331" || command == "TOPIC") {
             BString targetChannel = "";
             
@@ -4612,8 +4909,9 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             targetChannel.Trim();
             targetChannel.ReplaceAll(" ", "");
 
+            // FIX 1: Abort if the context server background socket node is completely missing
             if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                return;
             }
 
             ChannelTreeItem* chanNode = FindChannelNode(contextServer, targetChannel);
@@ -4625,16 +4923,16 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 dynamicTopic.ReplaceAll("\n", "");
                 
                 // === HISTORY BACKLOG PLAYBACK PROTECTION BARRIER ===
-                // If we are currently replaying old lines from our log history text files,
-                // do NOT allow it to overwrite the live topic string currently active in memory!
                 if (fIsLoadingHistory && fChannelTopics.find(chanNode) != fChannelTopics.end()) {
                     // Skip the memory overwrite pass entirely to protect our live topic!
                 } else {
                     // Cache the clean live text payload into our memory map securely
                     fChannelTopics[chanNode] = dynamicTopic;
                     
-                    // Force immediate live layout synchronization to the top bar
-                    if (fActiveBufferItem == chanNode || (fActiveBufferItem != nullptr && fActiveBufferItem->Text() == targetChannel)) {
+                    // FIX 2: STRICT ROOT VERIFICATION
+                    // Only push changes to the active topic view banner if the channel node *exactly* matches,
+                    // completely blocking text name overlaps from unrelated background networks.
+                    if (fActiveBufferItem == chanNode) {
                         fTopicView->SetText(dynamicTopic.String());
                         fTopicView->InvalidateLayout();
                         fTopicView->Invalidate();
@@ -4659,8 +4957,13 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-        // RPL_ENDOFWHO: Server indicates the complete bulk user data burst is finished
+      // RPL_ENDOFWHO: Server indicates the complete bulk user data burst is finished
         if (command == "315") {
+            // FIX 1: Secure guard to drop the data payload packet immediately if the context server is unmapped
+            if (contextServer == nullptr) {
+                return;
+            }
+
             // 'line' holds: "<YourNick> <#Channel>"
             std::vector<BString> tokens;
             int32 currentPos = 0;
@@ -4682,14 +4985,26 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 BString channelTarget = tokens[1]; // Index 1 isolates the room name
                 channelTarget.Trim();
 
+                // Because contextServer is strictly verified, this search is safely sandboxed
                 ChannelTreeItem* chanNode = FindChannelNode(contextServer, channelTarget);
                 
-                
-                // BATCH EXECUTION: If this is the active tab frame, refresh the screen just ONCE!
+                // BATCH EXECUTION: Only refresh the layout view grid if this specific room is the active tab frame
                 if (chanNode != nullptr && fActiveBufferItem == chanNode) {
-                    RefreshUserListUI();
+                    
+                    // --- THE LAG REMOVER: ATOMIC UI REPAINT TRANSACTION ---
+                    // Locks the window thread loop to apply sorting, formatting and drawing changes 
+                    // concurrently in a single processing frame rather than hundreds of tiny updates.
+                    if (LockLooper()) {
+                        RefreshUserListUI();
+                        
+                        if (fUserList != nullptr) {
+                            fUserList->SortItems(SortUsersByRank);
+                            fUserList->Invalidate();
+                        }
+                        
+                        UnlockLooper(); // Safely hand control back to Haiku's App Server loop
+                    }
                 }
-                
             }
             return;
         }
@@ -4697,12 +5012,18 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-           // RPL_NAMREPLY: Active channel user list payload burst
+
+        // RPL_NAMREPLY: Active channel user list payload burst
         if (command == "353") { 
             // Raw argument string syntax before the colon separator looks like:
             // "<YourNick> <Type: = or * or @> <#Channel>"
             // Since our main loop stripped prefixes, 'line' holds exactly this block.
             
+            // FIX 1: Secure guard to drop the data payload packet immediately if the context server is unmapped
+            if (contextServer == nullptr) {
+                return;
+            }
+
             BString targetChannel = "";
             int32 lastSpace = line.FindLast(" ");
             if (lastSpace != B_ERROR) {
@@ -4715,12 +5036,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
             if (targetChannel.Length() == 0) return;
 
-            // Ensure we have a valid server context pointer passed to this engine block
-            if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
-            }
-
-            // Explicitly cast to ChannelTreeItem to access specialized rank properties if present
+            // Because contextServer is strictly verified, this search is safely sandboxed
             ChannelTreeItem* chanNode = FindChannelNode(contextServer, targetChannel);
             if (chanNode != nullptr && fChannelUsers[chanNode] != nullptr) {
                 BObjectList<UserListItem, true>* userVector = fChannelUsers[chanNode];
@@ -4755,19 +5071,19 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                             break;
                         }
                     }
-						if (!duplicateFound) {
-    						userVector->AddItem(new UserListItem(singleUser.String(), false));
-						}
-
+                    if (!duplicateFound) {
+                        userVector->AddItem(new UserListItem(singleUser.String(), false));
+                    }
                 }
-
+				/* @Delete
                 // If the user is actively viewing this tab frame, sync visual modules instantly
                 if (fActiveBufferItem == chanNode) {
-                    RefreshUserListUI();
+                   // RefreshUserListUI();
                     
-                    fUserList->SortItems(SortUsersByRank);
-                    fUserList->Invalidate();
+                   // fUserList->SortItems(SortUsersByRank);
+                   // fUserList->Invalidate();
                 }
+                */
             }
             return;
         }
@@ -4776,6 +5092,11 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
          // Dynamic NICK Modification Handlers (Saves identity renames for Us and other network users)
         if (command == "NICK") {
+            // FIX 1: Drop packet immediately if background context server tracking node is dead
+            if (contextServer == nullptr) {
+                return;
+            }
+
             BString oldNick = prefix;
             int32 exclamIdx = oldNick.FindFirst("!");
             if (exclamIdx != B_ERROR) oldNick.Truncate(exclamIdx);
@@ -4786,33 +5107,43 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
             if (newNick.Length() == 0) return;
 
-            // Ensure we have a valid server context pointer passed to this engine block
-            if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+            // --- FIX 2: Map visual ServerTreeItem node down to its backend Config struct safely ---
+            std::string targetServerName = contextServer->Text();
+            bool foundProfile = false;
+            ServerConfig* resolvedProfile = nullptr;
+
+            for (auto& srv : cfg.servers) {
+                if (srv.name == targetServerName) {
+                    resolvedProfile = &srv;
+                    foundProfile = true;
+                    break;
+                }
+            }
+            if (!foundProfile) {
+                for (auto& srv : cfg.customServers) {
+                    if (srv.name == targetServerName) {
+                        resolvedProfile = &srv;
+                        foundProfile = true;
+                        break;
+                    }
+                }
             }
 
-            // Check nickname against the specific server's runtime tracker
-            if (oldNick.ICompare(contextServer->GetNick()) == 0) {
-                // Safely update memory vector state without rewriting your settings file ---
-                // This updates your client's active tracking loop inline while preserving your raw files!
-                size_t serverIdx = contextServer->GetIndex();
-                if (contextServer->IsCustom() && serverIdx < cfg.customServers.size()) {
-                    cfg.customServers[serverIdx].nick = newNick.String();
-                } else if (!contextServer->IsCustom() && serverIdx < cfg.servers.size()) {
-                    cfg.servers[serverIdx].nick = newNick.String();
-                }
+            // Check nickname against the resolved specific server profile tracker
+            if (resolvedProfile != nullptr && oldNick.ICompare(resolvedProfile->nick.c_str()) == 0) {
+                // Safely update config vector memory slot state cleanly
+                resolvedProfile->nick = newNick.String();
                 
                 BString itemNotice;
                 itemNotice << "--- Your nickname on this server is now " << newNick << "\n";
-                LogToItemBuffer(fActiveBufferItem, itemNotice);
+                // FIX 4: Route the log message to the server's own tab instead of fActiveBufferItem
+                LogToItemBuffer(static_cast<BStringItem*>(contextServer), itemNotice);
                 
-                // Keep fMyNick sync'd for backwards compatibility if needed elsewhere
+                // Backwards compatibility sync if needed elsewhere
                 fMyNick = newNick;
             }
 
-
-            // Safe Haiku BOutlineListView Sub-Item Traversal Loop ---
-            // Iterate flatly across all items and cross-validate parental association context
+            // Safe Haiku BOutlineListView Sub-Item Traversal Loop
             int32 totalTreeItems = fChannelTree->CountItems();
             for (int32 c = 0; c < totalTreeItems; c++) {
                 BListItem* baseItem = fChannelTree->ItemAt(c);
@@ -4827,7 +5158,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 if (fChannelUsers[chanNode] != nullptr) {
                     BObjectList<UserListItem, true>* userVector = fChannelUsers[chanNode];
                     
-                    // Slicing from top to bottom is safe here because we preserve vector sizes via in-place updates
+                    // Slicing from top to bottom is safe because we preserve vector sizes via in-place updates
                     for (int32 i = 0; i < userVector->CountItems(); i++) {
                         BStringItem* userItem = userVector->ItemAt(i);
                         if (userItem == nullptr) continue;
@@ -4871,8 +5202,13 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-        // PRIVMSG & NOTICE Message Routing Engine
+      // PRIVMSG & NOTICE Message Routing Engine
         if (command == "PRIVMSG" || command == "NOTICE") {
+            // FIX 1: Secure guard to drop the data payload packet immediately if the context server is unmapped
+            if (contextServer == nullptr) {
+                return;
+            }
+
             BString senderNick = prefix;
             int32 exclamIdx = senderNick.FindFirst("!");
             if (exclamIdx != B_ERROR) senderNick.Truncate(exclamIdx);            
@@ -4885,10 +5221,12 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             // Handle Automated CTCP Version Queries
             if (command == "PRIVMSG" && (trailing.StartsWith("\x01VERSION\x01") || trailing.StartsWith("\1VERSION\1"))) {
                 BSecureSocket* activeSocket = nullptr;
-                if (contextServer != nullptr && fServerSockets.count(contextServer) > 0) {
+                if (fServerSockets.count(contextServer) > 0) {
                     activeSocket = fServerSockets[contextServer];
-                } else {
-                    activeSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+                } else if (contextServer == fOftcNode) {
+                    activeSocket = fOftcSocket;
+                } else if (contextServer == fLiberaNode) {
+                    activeSocket = fLiberaSocket;
                 }
 
                 if (activeSocket != nullptr) {
@@ -4903,12 +5241,32 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 return;
             }
 
+            // --- FIX 3: Map visual ServerTreeItem node down to its backend Config indices safely ---
+            std::string targetServerName = contextServer->Text();
+            bool foundProfile = false;
+            size_t resolvedIndex = 0;
+            bool resolvedIsCustom = false;
 
-            if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+            for (size_t i = 0; i < cfg.servers.size(); i++) {
+                if (cfg.servers[i].name == targetServerName) {
+                    resolvedIndex = i;
+                    resolvedIsCustom = false;
+                    foundProfile = true;
+                    break;
+                }
+            }
+            if (!foundProfile) {
+                for (size_t i = 0; i < cfg.customServers.size(); i++) {
+                    if (cfg.customServers[i].name == targetServerName) {
+                        resolvedIndex = i;
+                        resolvedIsCustom = true;
+                        foundProfile = true;
+                        break;
+                    }
+                }
             }
 
-            // 1. Establish destination nodes supporting Channels AND Private Message Queries ---
+            // 1. Establish destination nodes supporting Channels AND Private Message Queries
             BStringItem* targetNode = nullptr;
             if (targetRoom.StartsWith("#")) {
                 targetNode = FindChannelNode(contextServer, targetRoom);
@@ -4917,10 +5275,10 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 targetNode = FindChannelNode(contextServer, senderNick);
                 
                 // === AUTOMATION HOOK: Auto-create tab if someone pings us first ===
-                if (targetNode == nullptr) {
+                if (targetNode == nullptr && foundProfile) {
                     ChannelTreeItem* newQueryNode = new ChannelTreeItem(senderNick.String(), 
-                                                                        contextServer->GetIndex(), 
-                                                                        contextServer->IsCustom());
+                                                                        resolvedIndex, 
+                                                                        resolvedIsCustom);
                     
                     fChannelTree->AddUnder(newQueryNode, contextServer);
                     fChannelTree->Expand(contextServer);
@@ -4935,12 +5293,11 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 }
             }
 
-
             if (targetNode == nullptr) {
                 targetNode = FindServerLogNode(contextServer);
             }
 
-            // 2. Thread-Safe Timing Calculation Engine ---
+            // 2. Thread-Safe Timing Calculation Engine
             BString timestampPrefix = "";
             bigtime_t currentTime = real_time_clock_usecs(); // Native Haiku system clock            
             bigtime_t thirtyMinutesInUsecs = (bigtime_t)30 * 60 * 1000000;
@@ -4982,19 +5339,44 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 formattedMsg << "<" << senderNick << "> " << trailing << "\n";
             }
 
-            // 4. AUTOMATION HOOK: Detect NickServ post-auth identification triggers
+            // --- FIXED: Safely reuse un-typed variables, and declare resolvedProfile inside this block scope ---
+            targetServerName = contextServer->Text();
+            foundProfile = false;
+            ServerConfig* resolvedProfile = nullptr; // Explicitly declared here so the rest of the function can see it!
+
+            for (auto& srv : cfg.servers) {
+                if (srv.name == targetServerName) {
+                    resolvedProfile = &srv;
+                    foundProfile = true;
+                    break;
+                }
+            }
+            if (!foundProfile) {
+                for (auto& srv : cfg.customServers) {
+                    if (srv.name == targetServerName) {
+                        resolvedProfile = &srv;
+                        foundProfile = true;
+                        break;
+                    }
+                }
+            }
+            // -----------------------------------------------------------------------------------
+
+            // 4. AUTOMATION HOOK: Detect NickServ post-auth identification triggers safely
             if (senderNick.ICompare("NickServ") == 0 && trailing.IFindFirst("identify") != B_ERROR) {                
                 BSecureSocket* activeSocket = nullptr;
-                if (contextServer != nullptr && fServerSockets.count(contextServer) > 0) {
+                if (fServerSockets.count(contextServer) > 0) {
                     activeSocket = fServerSockets[contextServer];
-                } else {
-                    activeSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
-                }                
-                if (activeSocket != nullptr && contextServer != nullptr) {
-                    BString savedPassword = contextServer->GetPass();
-                    if (savedPassword.Length() > 0) {
+                } else if (contextServer == fOftcNode) {
+                    activeSocket = fOftcSocket;
+                } else if (contextServer == fLiberaNode) {
+                    activeSocket = fLiberaSocket;
+                }
+
+                if (activeSocket != nullptr) {
+                    if (foundProfile && resolvedProfile != nullptr && resolvedProfile->pass.length() > 0) {
                         BString autoIdentify;
-                        autoIdentify << "PRIVMSG NickServ :IDENTIFY " << savedPassword << "\r\n";
+                        autoIdentify << "PRIVMSG NickServ :IDENTIFY " << resolvedProfile->pass.c_str() << "\r\n";
                         activeSocket->Write(autoIdentify.String(), autoIdentify.Length());
                         
                         BString logNotice = "--- [Auto-Services] Identification credentials automatically sent to NickServ.\n";
@@ -5008,11 +5390,14 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(targetNode);
                 if (chanNode) {
                     
-                    // === FIXED AUTOMATION HOOK: Only mark back if *I* am the one typing ===
-                    if (senderNick == fMyNick) {
+                    // Wrapped both sides of the conditional statement in explicit BString objects to balance types
+                    BString localNickToCheck = (resolvedProfile != nullptr) 
+                        ? BString(resolvedProfile->nick.c_str()) 
+                        : BString(fMyNick);
+                        
+                    if (senderNick == localNickToCheck) {
                         UpdateUserAwayState(chanNode, senderNick.String(), false);
                     }
-                    // =====================================================================
 
                     if (fActiveBufferItem != chanNode) {
                         chanNode->SetUnread(true);
@@ -5023,47 +5408,77 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     LogToItemBuffer(FindServerLogNode(contextServer), formattedMsg);
                 }
             } else {
-                // Route Private Query PM messages safely to their own tree nodes if available
                 LogToItemBuffer(targetNode, formattedMsg);
             }
             return;
 
         }
-     
+
+
+
         
-        // Bracket-Sanitized Global Server Protocol Fallback Route ---
-        // This catches generic server data lines (MOTD, Notices) outside of channels
+        // Bracket-Sanitized Global Server Protocol Fallback Route
         if (trailing.Length() > 0) {
+            // FIX 1: Safely fallback to the active window node tracking profile context
             if (contextServer == nullptr) {
-                contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                contextServer = fCurrentServerNode;
             }
 
-            // AUTOMATION HOOK FALLBACK: Intercept raw notices before registration fully establishes
+            // AUTOMATION HOOK FALLBACK: Intercept raw notices securely
             if (prefix.IFindFirst("NickServ") != B_ERROR && trailing.IFindFirst("identify") != B_ERROR) {                
                 BSecureSocket* activeSocket = nullptr;
+                
+                // Fetch the context socket mapping via our secure lookup rules
                 if (contextServer != nullptr && fServerSockets.count(contextServer) > 0) {
                     activeSocket = fServerSockets[contextServer];
-                } else {
-                    activeSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+                } else if (contextServer == fOftcNode) {
+                    activeSocket = fOftcSocket;
+                } else if (contextServer == fLiberaNode) {
+                    activeSocket = fLiberaSocket;
                 }
-                if (activeSocket != nullptr && contextServer != nullptr && contextServer->GetPass().Length() > 0) {
-                    BString autoIdentify;
-                    autoIdentify << "PRIVMSG NickServ :IDENTIFY " << contextServer->GetPass() << "\r\n";
-                    activeSocket->Write(autoIdentify.String(), autoIdentify.Length());
-                    
-                    BString logNotice = "--- [Auto-Services] Pre-registration identification sent to NickServ.\n";
-                    LogToItemBuffer(static_cast<BStringItem*>(contextServer), logNotice);
+
+                if (activeSocket != nullptr && contextServer != nullptr) {
+                    // FIX 3: Type-safely map the visual ServerTreeItem node down to its backend Config struct
+                    std::string targetServerName = contextServer->Text();
+                    bool foundProfile = false;
+                    ServerConfig* resolvedProfile = nullptr;
+
+                    for (auto& srv : cfg.servers) {
+                        if (srv.name == targetServerName) {
+                            resolvedProfile = &srv;
+                            foundProfile = true;
+                            break;
+                        }
+                    }
+                    if (!foundProfile) {
+                        for (auto& srv : cfg.customServers) {
+                            if (srv.name == targetServerName) {
+                                resolvedProfile = &srv;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Only send the raw packet if the resolved backend configuration profile holds a real password string
+                    if (resolvedProfile != nullptr && resolvedProfile->pass.length() > 0) {
+                        BString autoIdentify;
+                        autoIdentify << "PRIVMSG NickServ :IDENTIFY " << resolvedProfile->pass.c_str() << "\r\n";
+                        activeSocket->Write(autoIdentify.String(), autoIdentify.Length());
+                        
+                        BString logNotice = "--- [Auto-Services] Pre-registration identification sent to NickServ.\n";
+                        LogToItemBuffer(static_cast<BStringItem*>(contextServer), logNotice);
+                    }
                 }
             }
 
+            // FIX 2: Only print message data loops if we have a valid resolved text panel workspace node
             if (contextServer != nullptr) {
                 BString rawLog;
                 rawLog << trailing << "\n";
                 LogToItemBuffer(static_cast<BStringItem*>(contextServer), rawLog);
             }
         }
-    }
-
+	}
 
 
     static status_t NetworkLoop(void* data) {
@@ -6501,7 +6916,7 @@ public:
 
 
         	
-     case 'mscf': {
+      case 'mscf': {
         save_config(); 
 
         size_t activeIdx = (size_t)selectedConfig;
@@ -6530,7 +6945,32 @@ public:
         for (int32 i = 0; i < treeCount; i++) {
             BListItem* item = fChannelTree->ItemAt(i);
             if (item != nullptr) {
+                // Keep your existing layout/height updates intact
                 item->Update(fChannelTree, &treeFont);
+
+                // --- FIXED: LIVE [A] AUTOJOIN FLAG RECALCULATION ROUTINE ---
+                ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(item);
+                if (chanNode != nullptr && activeSrv != nullptr) {
+                    ServerTreeItem* parentSrv = dynamic_cast<ServerTreeItem*>(fChannelTree->Superitem(chanNode));
+                    if (parentSrv != nullptr && BString(parentSrv->Text()) == activeSrv->name.c_str()) {
+                        
+                        // Extracts the pure channel name from Text() since [A] is only added during rendering
+                        BString chanName = chanNode->Text(); 
+                        bool currentlyInAutojoin = false;
+
+                        for (const auto& aChan : activeSrv->autojoin) {
+                            if (chanName.ICompare(aChan.c_str()) == 0) {
+                                currentlyInAutojoin = true;
+                                break;
+                            }
+                        }
+
+                        // Update the internal tracker flag using your existing public setter: SetAutoJoin()
+                        chanNode->SetAutoJoin(currentlyInAutojoin);
+                        fChannelTree->InvalidateItem(i); // Force Haiku to repaint this specific row
+                    }
+                }
+                // ----------------============================== ---
             }
         }
         fChannelTree->InvalidateLayout();
@@ -6597,6 +7037,7 @@ public:
 
         break;
     }
+
 
 
         case 'clch': {
@@ -7548,12 +7989,23 @@ GetActiveSocket(ServerTreeItem* contextServer)
     if (contextServer == nullptr)
         return nullptr;
 
+    // 1. Check if the socket is actively registered inside the multi-server tracking map
     if (fServerSockets.count(contextServer) > 0) {
         return fServerSockets[contextServer];
     }
     
-    return (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+    // 2. Fallback check specifically for hardcoded primary default nodes
+    if (contextServer == fOftcNode) {
+        return fOftcSocket;
+    }
+    if (contextServer == fLiberaNode) { // Make sure you use your fLiberaNode variable tracking reference here
+        return fLiberaSocket;
+    }
+    
+    // 3. ROBUST GUARD: If it's a custom server and not active yet, return nullptr safely
+    return nullptr;
 }
+
 
 
 void WriteLogToFile(BStringItem* itemNode, const BString& rawLineText) {
@@ -7612,18 +8064,54 @@ void WriteLogToFile(BStringItem* itemNode, const BString& rawLineText) {
 
 void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
 {
+    if (contextServer == nullptr) return;
+
+    // 1. Resolve our exact per-server nickname state straight from config profiles
+    std::string targetServerName = contextServer->Text();
+    BString localNickToCheck = fMyNick; // Fallback baseline
+    
+    for (auto& srv : cfg.servers) {
+        if (srv.name == targetServerName) {
+            localNickToCheck = srv.nick.c_str();
+            break;
+        }
+    }
+    for (auto& srv : cfg.customServers) {
+        if (srv.name == targetServerName) {
+            localNickToCheck = srv.nick.c_str();
+            break;
+        }
+    }
+
+    bool activeViewWasModified = false;
+
+    // 2. Loop through all active channel buffers safely
     for (auto it = fChannelUsers.begin(); it != fChannelUsers.end(); ++it) {
         ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(it->first);
         if (chanNode != nullptr) {
             // Safety check: ensure we only update channels that belong to the current server
             if (fChannelTree->Superitem(chanNode) != contextServer) continue;
             
-            UpdateUserAwayState(chanNode, fMyNick.String(), isAway);
+            // Pass our securely resolved context-driven local nickname string
+            UpdateUserAwayState(chanNode, localNickToCheck.String(), isAway);
+            
+            // Mark true if we modified the channel the user is currently staring at
+            if (fActiveBufferItem == chanNode) {
+                activeViewWasModified = true;
+            }
         }
     }
     
-    // Instantly refresh the right-hand nickname list panel if we modified the active view
-    RefreshUserListUI();
+    // 3. CONCURRENCY REPAINT CONTROL
+    // Instantly refresh the right-hand nickname list panel ONLY if we modified the active view frame!
+    if (activeViewWasModified && LockLooper()) {
+        RefreshUserListUI();
+        if (fUserList != nullptr) {
+            fUserList->SortItems(SortUsersByRank);
+            fUserList->Invalidate();
+        }
+        UnlockLooper();
+    }
 }
 
 
@@ -7637,6 +8125,8 @@ void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
     std::map<BStringItem*, BString> fTextBuffers;
     std::map<BStringItem*, BString> fChannelTopics;
     
+    std::map<ServerTreeItem*, BObjectList<BString, true>*> fServerBanHarvests;
+
     std::map<BStringItem*, BObjectList<UserListItem, true>*> fChannelUsers;
     std::map<BStringItem*, bigtime_t> fLastTimestampTime;
     std::map<ServerTreeItem*, thread_id> fServerThreads;
