@@ -64,7 +64,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.19 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.20 (Haiku OS)";
 }
 
 
@@ -2347,6 +2347,8 @@ private:
 // @ChannelTreeItem
 class ChannelTreeItem : public BStringItem {
 public:
+
+
     // Accept an additional bool isCustom parameter (defaults to false)
     ChannelTreeItem(const char* text, size_t serverIndex, bool isCustom = false) 
         : BStringItem(text), fServerIndex(serverIndex), fIsCustom(isCustom), fHasUnread(false), fAutoJoin(false) {
@@ -2382,8 +2384,7 @@ public:
     bool IsAutoJoin() const { return fAutoJoin; }
     size_t GetServerIndex() const { return fServerIndex; }
     bool   IsCustom() const { return fIsCustom; } 
-   // void SetTopic(const char* topic) { fChannelTopic = topic; }
-   //  BString GetTopic() const { return fChannelTopic; }
+
 
     // Override the native drawing framework loop
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
@@ -2435,7 +2436,18 @@ class ServerTreeItem : public BStringItem {
 public:
     ServerTreeItem(const char* text, size_t configIndex, bool isChannel = false, bool isCustom = false) 
         : BStringItem(text), fConfigIndex(configIndex), fIsChannel(isChannel), fIsCustom(isCustom) {
+        	
+    	// 1. Declare the persistent memory variable field inside the class body
+    	BString fSupportedCaps;
+       
         
+        // --- DATA-DRIVEN CAPABILITIES INIT: Dynamic Server Mode Class Allocations ---
+        // Pre-populates clean defaults matching common standard IRC specs (Libera/OFTC/Charybdis)
+        fTypeAModes = "eIbq"; // Type A: Lists (Bans, Quiets, Exceptions)
+        fTypeBModes = "k";    // Type B: Channel Password Access Keys
+        fTypeCModes = "l";    // Type C: User Count Maximum Limits
+        fTypeDModes = "cimnpstz"; // Type D: Parameterless Flags (Moderated, Secret, Invite-Only)
+
         // Safety bounds check to pull structural configs securely
         if (fIsCustom) {
             if (fConfigIndex < cfg.customServers.size()) {
@@ -2517,15 +2529,15 @@ public:
     size_t GetIndex() const { return fConfigIndex; }
     bool   IsCustom() const { return fIsCustom; }
     bool   IsChannel() const { return fIsChannel; }
-    
+    bool fHasIdentifiedThisSession;
     bool IsAutoConnect() const { return fAutoConnect; }
     void SetAutoConnect(bool autoConnect) { fAutoConnect = autoConnect; }
     bool IsAutoReconnect() const { return fAutoReconnect; }
     void SetAutoReconnect(bool autoReconnect) { fAutoReconnect = autoReconnect; }
     bool IsHideStatus() const { return fHideStatus; }
     void SetHideStatus(bool hide) { fHideStatus = hide; }
-	void SetIndex(size_t idx) { fConfigIndex = idx; }
-	
+    void SetIndex(size_t idx) { fConfigIndex = idx; }
+    
     // DrawItem that centers text and indents channels perfectly at any font size
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
         owner->PushState();
@@ -2561,14 +2573,22 @@ public:
         owner->PopState();
     }
 
+    // --- NEW: Public data variables to map incoming server mode definitions dynamically ---
+    BString fTypeAModes; // Lists (Always expects parameter)
+    BString fTypeBModes; // Keys  (Always expects parameter)
+    BString fTypeCModes; // Limits (Expects parameter ONLY on setting +)
+    BString fTypeDModes; // Settings (Never expects parameter)
+
 private:
     size_t fConfigIndex;
     bool fAutoConnect;
     bool fAutoReconnect;
     bool fHideStatus = false;
     bool fIsChannel; 
-    bool fIsCustom; // <-- Tracks whether this item references custom array configs
+    bool fIsCustom; 
+    
 };
+
 
 
 
@@ -3128,7 +3148,7 @@ public:
     virtual ~ChannelModesDialog() {}
 
     ChannelModesDialog(BWindow* parent, BSecureSocket* socket, const BString& channelName, bool isOperator)
-        : BWindow(BRect(0, 0, 380, 260), "Channel Modes Management", B_TITLED_WINDOW_LOOK, 
+        : BWindow(BRect(0, 0, 460, 360), "Channel Modes Management", B_TITLED_WINDOW_LOOK, 
                   B_MODAL_SUBSET_WINDOW_FEEL, B_NOT_ZOOMABLE | B_NOT_RESIZABLE) {
         
         fParentWindow = parent;
@@ -3140,8 +3160,8 @@ public:
 
         // Center smoothly relative to the main workspace window layout boundaries
         BRect parentFrame = parent->Frame();
-        MoveTo(parentFrame.left + (parentFrame.Width() - 380) / 2,
-               parentFrame.top + (parentFrame.Height() - 260) / 2);
+        MoveTo(parentFrame.left + (parentFrame.Width() - 460) / 2,
+               parentFrame.top + (parentFrame.Height() - 360) / 2);
 
         // Master canvas setup
         BView* panel = new BView(Bounds(), "modesPanel", B_FOLLOW_ALL, B_WILL_DRAW);
@@ -3151,23 +3171,37 @@ public:
         // Header Title Prompt
         BString titleStr = "Manage Modes for ";
         titleStr << fChannelName;
-        BTextView* titleText = new BTextView(BRect(15, 15, 365, 40), "title", BRect(0,0,350,20), B_FOLLOW_ALL, B_WILL_DRAW);
+        BTextView* titleText = new BTextView(BRect(15, 15, 445, 40), "title", BRect(0,0,430,20), B_FOLLOW_ALL, B_WILL_DRAW);
         titleText->SetText(titleStr.String());
         titleText->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
         titleText->MakeEditable(false);
         titleText->MakeSelectable(false);
         panel->AddChild(titleText);
 
-        // Channel Mode Toggle Checkboxes
-        fModeratedCheck = new BCheckBox(BRect(20, 50, 180, 75), "mod", "Moderated (+m)", nullptr);
-        fSecretCheck    = new BCheckBox(BRect(20, 80, 180, 105), "sec", "Secret Channel (+s)", nullptr);
-        fInviteCheck    = new BCheckBox(BRect(20, 110, 180, 135), "inv", "Invite Only (+i)", nullptr);
-        fTopicCheck     = new BCheckBox(BRect(20, 140, 180, 165), "top", "Ops Topic Only (+t)", nullptr);
+        // Column 1: Channel Mode Toggle Checkboxes (Type D Flags)
+        fModeratedCheck = new BCheckBox(BRect(20, 50, 210, 75), "mod", "Moderated (+m)", nullptr);
+        fSecretCheck    = new BCheckBox(BRect(20, 80, 210, 105), "sec", "Secret Channel (+s)", nullptr);
+        fInviteCheck    = new BCheckBox(BRect(20, 110, 210, 135), "inv", "Invite Only (+i)", nullptr);
+        fTopicCheck     = new BCheckBox(BRect(20, 140, 210, 165), "top", "Ops Topic Only (+t)", nullptr);
+        fNoExtCheck     = new BCheckBox(BRect(20, 170, 210, 195), "noext", "No Ext. Msgs (+n)", nullptr);
+        fNoColorCheck   = new BCheckBox(BRect(20, 200, 210, 225), "nocol", "Block Colors (+c)", nullptr);
 
         panel->AddChild(fModeratedCheck);
         panel->AddChild(fSecretCheck);
         panel->AddChild(fInviteCheck);
         panel->AddChild(fTopicCheck);
+        panel->AddChild(fNoExtCheck);
+        panel->AddChild(fNoColorCheck);
+
+        // Column 2: Explicit Text Inputs (Type B & C Arguments Configuration)
+        fKeyInput   = new BTextControl(BRect(230, 50, 440, 75), "key_in", "Room Key:", "", nullptr);
+        fLimitInput = new BTextControl(BRect(230, 90, 440, 115), "lim_in", "User Limit:", "", nullptr);
+        
+        fKeyInput->SetDivider(panel->StringWidth("Room Key: ") + 5);
+        fLimitInput->SetDivider(panel->StringWidth("User Limit: ") + 5);
+        
+        panel->AddChild(fKeyInput);
+        panel->AddChild(fLimitInput);
 
         // Operator Restriction Enforcement Guard Step
         if (!fIsOperator) {
@@ -3175,8 +3209,12 @@ public:
             fSecretCheck->SetEnabled(false);
             fInviteCheck->SetEnabled(false);
             fTopicCheck->SetEnabled(false);
+            fNoExtCheck->SetEnabled(false);
+            fNoColorCheck->SetEnabled(false);
+            fKeyInput->SetEnabled(false);
+            fLimitInput->SetEnabled(false);
 
-            BTextView* warnText = new BTextView(BRect(20, 175, 360, 205), "warn", BRect(0,0,340,30), B_FOLLOW_ALL, B_WILL_DRAW);
+            BTextView* warnText = new BTextView(BRect(20, 240, 440, 280), "warn", BRect(0,0,420,40), B_FOLLOW_ALL, B_WILL_DRAW);
             warnText->SetText("Warning: You must have operator status (@) to change these flags.");
             warnText->SetFont(be_plain_font);
             warnText->SetHighColor(220, 100, 100);
@@ -3187,8 +3225,8 @@ public:
         }
 
         // Action Buttons Setup
-        BButton* cancelBtn = new BButton(BRect(160, 215, 255, 242), "cancel", "Cancel", new BMessage('mdcn'));
-        BButton* applyBtn = new BButton(BRect(265, 215, 360, 242), "apply", "Apply", new BMessage('mdap'));
+        BButton* cancelBtn = new BButton(BRect(240, 315, 335, 342), "cancel", "Cancel", new BMessage('mdcn'));
+        BButton* applyBtn = new BButton(BRect(345, 315, 440, 342), "apply", "Apply", new BMessage('mdap'));
         
         cancelBtn->SetTarget(this);
         applyBtn->SetTarget(this);
@@ -3201,7 +3239,7 @@ public:
         panel->AddChild(cancelBtn);
         panel->AddChild(applyBtn);
 
-        // FIX: Register this live window instance pointer with the main loop instantly
+        // Register this live window instance pointer with the main loop instantly
         if (fParentWindow != nullptr) {
             BMessage registerMsg('rgmd');
             registerMsg.AddPointer("dialog_ptr", this);
@@ -3209,7 +3247,7 @@ public:
             fParentWindow->PostMessage(&registerMsg);
         }
 
-        // FIX: Query the server for the current channel state right at window boot
+        // Query the server for the current channel state right at window boot
         if (fSocket != nullptr) {
             BString queryCmd;
             queryCmd << "MODE " << fChannelName << "\r\n";
@@ -3217,18 +3255,22 @@ public:
         }
     }
 
-    // Public controller method so your network message reader can toggle checked states live
-    void UpdateCheckedStates(bool m, bool s, bool i, bool t) {
+    // Public setter method so your main network parser can toggle states dynamically
+    void UpdateCheckedStates(bool m, bool s, bool i, bool t, bool n, bool c, const char* key, const char* limit) {
         if (Lock()) {
             fModeratedCheck->SetValue(m ? B_CONTROL_ON : B_CONTROL_OFF);
             fSecretCheck->SetValue(s ? B_CONTROL_ON : B_CONTROL_OFF);
             fInviteCheck->SetValue(i ? B_CONTROL_ON : B_CONTROL_OFF);
             fTopicCheck->SetValue(t ? B_CONTROL_ON : B_CONTROL_OFF);
+            fNoExtCheck->SetValue(n ? B_CONTROL_ON : B_CONTROL_OFF);
+            fNoColorCheck->SetValue(c ? B_CONTROL_ON : B_CONTROL_OFF);
+            
+            fKeyInput->SetText(key ? key : "");
+            fLimitInput->SetText(limit ? limit : "");
             Unlock();
         }
     }
 
-    // FIX: Safely unmap window references from the parent thread before final destruct
     virtual bool QuitRequested() override {
         BMessage unregisterMsg('unmd');
         if (fParentWindow != nullptr) {
@@ -3245,22 +3287,39 @@ public:
             }
             case 'mdap': {
                 if (fSocket != nullptr && fIsOperator) {
-                    // Process each flag atomically to ensure the server updates successfully
-                    BString cmdM;
-                    cmdM << "MODE " << fChannelName << " " << ((fModeratedCheck->Value() == B_CONTROL_ON) ? "+m" : "-m") << "\r\n";
-                    fSocket->Write(cmdM.String(), cmdM.Length());
+                    // Send Type D toggle updates atomically over the wire
+                    BString cmdM; cmdM << "MODE " << fChannelName << " " << ((fModeratedCheck->Value() == B_CONTROL_ON) ? "+m" : "-m") << "\r\n"; fSocket->Write(cmdM.String(), cmdM.Length());
+                    BString cmdS; cmdS << "MODE " << fChannelName << " " << ((fSecretCheck->Value() == B_CONTROL_ON) ? "+s" : "-s") << "\r\n"; fSocket->Write(cmdS.String(), cmdS.Length());
+                    BString cmdI; cmdI << "MODE " << fChannelName << " " << ((fInviteCheck->Value() == B_CONTROL_ON) ? "+i" : "-i") << "\r\n"; fSocket->Write(cmdI.String(), cmdI.Length());
+                    BString cmdT; cmdT << "MODE " << fChannelName << " " << ((fTopicCheck->Value() == B_CONTROL_ON) ? "+t" : "-t") << "\r\n"; fSocket->Write(cmdT.String(), cmdT.Length());
+                    BString cmdN; cmdN << "MODE " << fChannelName << " " << ((fNoExtCheck->Value() == B_CONTROL_ON) ? "+n" : "-n") << "\r\n"; fSocket->Write(cmdN.String(), cmdN.Length());
+                    BString cmdC; cmdC << "MODE " << fChannelName << " " << ((fNoColorCheck->Value() == B_CONTROL_ON) ? "+c" : "-c") << "\r\n"; fSocket->Write(cmdC.String(), cmdC.Length());
 
-                    BString cmdS;
-                    cmdS << "MODE " << fChannelName << " " << ((fSecretCheck->Value() == B_CONTROL_ON) ? "+s" : "-s") << "\r\n";
-                    fSocket->Write(cmdS.String(), cmdS.Length());
+                    // Type B Parameter: Channel Access Key
+                    BString keyStr = fKeyInput->Text();
+                    keyStr.Trim();
+                    if (keyStr.Length() > 0) {
+                        BString cmdKey;
+                        cmdKey << "MODE " << fChannelName << " +k " << keyStr << "\r\n";
+                        fSocket->Write(cmdKey.String(), cmdKey.Length());
+                    } else {
+                        BString cmdKey;
+                        cmdKey << "MODE " << fChannelName << " -k *\r\n";
+                        fSocket->Write(cmdKey.String(), cmdKey.Length());
+                    }
 
-                    BString cmdI;
-                    cmdI << "MODE " << fChannelName << " " << ((fInviteCheck->Value() == B_CONTROL_ON) ? "+i" : "-i") << "\r\n";
-                    fSocket->Write(cmdI.String(), cmdI.Length());
-
-                    BString cmdT;
-                    cmdT << "MODE " << fChannelName << " " << ((fTopicCheck->Value() == B_CONTROL_ON) ? "+t" : "-t") << "\r\n";
-                    fSocket->Write(cmdT.String(), cmdT.Length());
+                    // Type C Parameter: User Join Limit Cap
+                    BString limStr = fLimitInput->Text();
+                    limStr.Trim();
+                    if (limStr.Length() > 0) {
+                        BString cmdLim;
+                        cmdLim << "MODE " << fChannelName << " +l " << limStr << "\r\n";
+                        fSocket->Write(cmdLim.String(), cmdLim.Length());
+                    } else {
+                        BString cmdLim;
+                        cmdLim << "MODE " << fChannelName << " -l\r\n";
+                        fSocket->Write(cmdLim.String(), cmdLim.Length());
+                    }
                 }
                 Quit();
                 break;
@@ -3281,7 +3340,13 @@ private:
     BCheckBox*      fSecretCheck;
     BCheckBox*      fInviteCheck;
     BCheckBox*      fTopicCheck;
+    BCheckBox*      fNoExtCheck;
+    BCheckBox*      fNoColorCheck;
+    
+    BTextControl*   fKeyInput;
+    BTextControl*   fLimitInput;
 };
+
 
 
 class OpDurationWindow : public BWindow {
@@ -3431,6 +3496,149 @@ private:
     BObjectList<BString, true>* fHistoryList;
     int32*                      fHistoryIndex;
 };
+
+
+class ChannelKeyPromptWindow : public BWindow {
+public:
+    ChannelKeyPromptWindow(BWindow* parent, BSecureSocket* socket, const BString& channelName)
+        : BWindow(BRect(0, 0, 360, 130), "Channel Key Required", B_MODAL_WINDOW_LOOK, 
+                  B_MODAL_SUBSET_WINDOW_FEEL, B_NOT_ZOOMABLE | B_NOT_RESIZABLE) {
+        
+        fSocket = socket;
+        fChannelName = channelName;
+
+        AddToSubset(parent);
+
+        // Center smoothly relative to the main app window layout bounds
+        BRect parentFrame = parent->Frame();
+        MoveTo(parentFrame.left + (parentFrame.Width() - 360) / 2,
+               parentFrame.top + (parentFrame.Height() - 130) / 2);
+
+        BView* panel = new BView(Bounds(), "bgPanel", B_FOLLOW_ALL, B_WILL_DRAW);
+        panel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        AddChild(panel);
+
+        // Informative Label
+        BString promptText;
+        promptText << "'" << fChannelName << "' requires an access key to join:";
+        BTextView* promptLabel = new BTextView(BRect(15, 12, 345, 35), "prompt", BRect(0, 0, 330, 20), B_FOLLOW_LEFT | B_FOLLOW_TOP, B_WILL_DRAW);
+        promptLabel->SetText(promptText.String());
+        promptLabel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        promptLabel->MakeEditable(false);
+        promptLabel->MakeSelectable(false);
+        panel->AddChild(promptLabel);
+
+        // Key Input Field (Masks typing for password privacy)
+        fKeyInput = new BTextControl(BRect(15, 45, 345, 75), "key_field", "Key / Password:", "", nullptr);
+        fKeyInput->SetDivider(panel->StringWidth("Key / Password: ") + 5);
+        BTextView* tv = fKeyInput->TextView();
+        if (tv != nullptr) {
+            tv->HideTyping(true); // Masks input as bullets/asterisks
+        }
+        panel->AddChild(fKeyInput);
+
+        // Buttons
+        BButton* cancelBtn = new BButton(BRect(155, 90, 245, 115), "cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
+        BButton* joinBtn = new BButton(BRect(255, 90, 345, 115), "join", "Join", new BMessage('jkey'));
+        
+        cancelBtn->SetTarget(this);
+        joinBtn->SetTarget(this);
+        joinBtn->MakeDefault(true);
+
+        panel->AddChild(cancelBtn);
+        panel->AddChild(joinBtn);
+        
+        fKeyInput->MakeFocus(true);
+    }
+
+    void MessageReceived(BMessage* message) override {
+        if (message->what == 'jkey') {
+            BString key = fKeyInput->Text();
+            key.Trim();
+
+            if (fSocket != nullptr && key.Length() > 0) {
+                // Construct and write the canonical passworded JOIN command stream
+                BString joinCmd;
+                joinCmd << "JOIN " << fChannelName << " " << key << "\r\n";
+                fSocket->Write(joinCmd.String(), joinCmd.Length());
+            }
+            Quit();
+        } else {
+            BWindow::MessageReceived(message);
+        }
+    }
+
+private:
+    BSecureSocket* fSocket;
+    BString        fChannelName;
+    BTextControl*  fKeyInput;
+};
+
+
+
+class ChannelInviteOnlyWindow : public BWindow {
+public:
+    ChannelInviteOnlyWindow(BWindow* parent, BSecureSocket* socket, const BString& channelName)
+        : BWindow(BRect(0, 0, 380, 180), "Channel Entry Bounced", B_MODAL_WINDOW_LOOK, 
+                  B_MODAL_SUBSET_WINDOW_FEEL, B_NOT_ZOOMABLE | B_NOT_RESIZABLE) { // STRETCHED: Window height to 180
+        
+        fSocket = socket;
+        fChannelName = channelName;
+
+        AddToSubset(parent);
+
+        BRect parentFrame = parent->Frame();
+        MoveTo(parentFrame.left + (parentFrame.Width() - 380) / 2,
+               parentFrame.top + (parentFrame.Height() - 180) / 2);
+
+        BView* panel = new BView(Bounds(), "bgPanel", B_FOLLOW_ALL, B_WILL_DRAW);
+        panel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        AddChild(panel);
+
+        // EXPANDED: Changed height to 110, and updated the internal text rect (the 3rd argument) to 105
+        BTextView* promptLabel = new BTextView(BRect(15, 15, 365, 110), "prompt", BRect(0, 0, 340, 105), B_FOLLOW_LEFT | B_FOLLOW_TOP, B_WILL_DRAW);
+        BString alertText;
+        alertText << "Cannot join '" << fChannelName << "' because it is marked Invite-Only (+i).\n\n"
+                  << "Would you like to send a KNOCK request to the channel operators?";
+        promptLabel->SetText(alertText.String());
+        promptLabel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        promptLabel->MakeEditable(false);
+        promptLabel->MakeSelectable(false);
+        panel->AddChild(promptLabel);
+
+        // SHIFTED DOWN: Moved action buttons to Y=135 to leave plenty of breathing room
+        BButton* cancelBtn = new BButton(BRect(175, 135, 265, 160), "cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
+        BButton* knockBtn = new BButton(BRect(275, 135, 365, 160), "knock", "Knock", new BMessage('knok'));
+        
+        cancelBtn->SetTarget(this);
+        knockBtn->SetTarget(this);
+        knockBtn->MakeDefault(true);
+
+        panel->AddChild(cancelBtn);
+        panel->AddChild(knockBtn);
+    }
+
+
+
+    void MessageReceived(BMessage* message) override {
+        if (message->what == 'knok') {
+            if (fSocket != nullptr) {
+                // Deliver the canonical IRC KNOCK payload over the wire
+                BString knockCmd;
+                knockCmd << "KNOCK " << fChannelName << " :Requesting entry via Cricket client\r\n";
+                fSocket->Write(knockCmd.String(), knockCmd.Length());
+            }
+            Quit();
+        } else {
+            BWindow::MessageReceived(message);
+        }
+    }
+
+private:
+    BSecureSocket* fSocket;
+    BString        fChannelName;
+};
+
 
 
 
@@ -4111,7 +4319,7 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         
         // HIDE COMPLETELY ENFORCEMENT: Only generate and append these items if you are an Operator
         if (iamOperator) {
-            menu->AddSeparatorItem();
+            
 
             // 2. Channel Modes Controller Window Trigger
             BMessage* modesWindowMsg = new BMessage(MSG_CONTEXT_SHOW_MODES);
@@ -4685,6 +4893,23 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
     if (line.Length() == 0 || line.StartsWith("PING")) return;
 
+    // =========================================================================
+    // FIX: IRCv3 TAG STRIPPER (Handles server-time prefixes seamlessly)
+    // =========================================================================
+    BString msgTags = "";
+    if (line.StartsWith("@")) {
+        int32 firstSpace = line.FindFirst(" ");
+        if (firstSpace != B_ERROR) {
+            // Isolate the tags block into 'msgTags' if you want to parse timestamps later
+            line.CopyInto(msgTags, 0, firstSpace);
+            
+            // Cleanly slice the tags off the front of the active processing line
+            line.Remove(0, firstSpace + 1);
+            line.Trim();
+        }
+    }
+    // =========================================================================
+
     BString prefix = "", command = "", trailing = "";
     int32 trailingIdx = line.FindFirst(" :");
     if (trailingIdx != B_ERROR) {
@@ -4713,41 +4938,102 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         if (command == "324" || command == "MODE") {
             BString targetChannel = "";
             BString activeFlags = "";
+            BString tokenTrail = "";
+            BString channelKey = "";
+            BString channelLimit = "";
 
             if (command == "324") {
                 // RPL_CHANNELMODEIS Format: :server 324 yournick #channel +flags [args]
-                // 'line' contains the string following the numeric code, e.g., "yournick #channel +mnt"
                 BString payload = line;
                 payload.Trim();
                 
                 int32 firstSpace = payload.FindFirst(" ");
                 if (firstSpace != B_ERROR) {
-                    // Extract past 'yournick' parameter boundary
-                    payload.Remove(0, firstSpace + 1); 
+                    payload.Remove(0, firstSpace + 1); // Skip past yournick
                     
                     int32 secondSpace = payload.FindFirst(" ");
                     if (secondSpace != B_ERROR) {
                         payload.CopyInto(targetChannel, 0, secondSpace);
-                        payload.CopyInto(activeFlags, secondSpace + 1, payload.Length() - (secondSpace + 1));
                         
-                        // Strip trailing argument spaces out if they exist
-                        int32 flagEndSpace = activeFlags.FindFirst(" ");
-                        if (flagEndSpace != B_ERROR) activeFlags.Truncate(flagEndSpace);
+                        BString remaining = "";
+                        payload.CopyInto(remaining, secondSpace + 1, payload.Length() - (secondSpace + 1));
+                        remaining.Trim();
+
+                        // Isolate flags string from any trailing parameter args
+                        int32 thirdSpace = remaining.FindFirst(" ");
+                        if (thirdSpace == B_ERROR) {
+                            activeFlags = remaining;
+                        } else {
+                            remaining.CopyInto(activeFlags, 0, thirdSpace);
+                            remaining.CopyInto(tokenTrail, thirdSpace + 1, remaining.Length() - (thirdSpace + 1));
+                            tokenTrail.Trim();
+                        }
                     }
                 }
             } 
             else if (command == "MODE") {
-                // Format: :nick!user@host MODE #channel +m
-                // 'line' contains the target channel name, 'trailing' contains the added/removed mode flags
+                // Format: :nick!user@host MODE #channel +m [args]
                 targetChannel = line;
                 targetChannel.Trim();
                 
-                // Strip out any trailing parameter fields from the target line if it has spaces
                 int32 lineSpace = targetChannel.FindFirst(" ");
-                if (lineSpace != B_ERROR) targetChannel.Truncate(lineSpace);
+                if (lineSpace != B_ERROR) {
+                    targetChannel.Truncate(lineSpace);
+                }
                 
+                // For a live MODE command broadcast, parameters are appended in the 'trailing' or extra args context
                 activeFlags = trailing;
                 activeFlags.Trim();
+                
+                int32 flagSpace = activeFlags.FindFirst(" ");
+                if (flagSpace != B_ERROR) {
+                    activeFlags.CopyInto(tokenTrail, flagSpace + 1, activeFlags.Length() - (flagSpace + 1));
+                    activeFlags.Truncate(flagSpace);
+                    tokenTrail.Trim();
+                }
+            }
+
+            // =========================================================================
+            // DATA-DRIVEN TOKEN LAYER ENGINE: Extract key/limit arguments dynamically
+            // =========================================================================
+            if (contextServer != nullptr && activeFlags.Length() > 0 && tokenTrail.Length() > 0) {
+                bool addingMode = true;
+                int32 currentTokenIdx = 0;
+
+                for (int32 i = 0; i < activeFlags.Length(); i++) {
+                    char modeChar = activeFlags[i];
+                    if (modeChar == '+') { addingMode = true; continue; }
+                    if (modeChar == '-') { addingMode = false; continue; }
+
+                    // Check if this specific character expects an argument token on this network
+                    bool expectsParam = (contextServer->fTypeAModes.FindFirst(modeChar) != B_ERROR) ||
+                                        (contextServer->fTypeBModes.FindFirst(modeChar) != B_ERROR) ||
+                                        (addingMode && contextServer->fTypeCModes.FindFirst(modeChar) != B_ERROR);
+
+                    if (expectsParam) {
+                        // Isolate and pop the next available space-separated word parameter out of the trail
+                        BString paramWord = "";
+                        int32 nextSpace = tokenTrail.FindFirst(" ", currentTokenIdx);
+                        
+                        if (nextSpace == B_ERROR) {
+                            tokenTrail.CopyInto(paramWord, currentTokenIdx, tokenTrail.Length() - currentTokenIdx);
+                            currentTokenIdx = tokenTrail.Length();
+                        } else {
+                            tokenTrail.CopyInto(paramWord, currentTokenIdx, nextSpace - currentTokenIdx);
+                            currentTokenIdx = nextSpace + 1;
+                        }
+                        paramWord.Trim();
+
+                        // Map extracted word parameters to our dialog inputs securely
+                        if (paramWord.Length() > 0) {
+                            if (modeChar == 'k') {
+                                channelKey = paramWord;
+                            } else if (modeChar == 'l') {
+                                channelLimit = paramWord;
+                            }
+                        }
+                    }
+                }
             }
 
             // Sync the states up to the checkbox view container smoothly
@@ -4756,10 +5042,19 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 bool hasS = (activeFlags.FindFirst("s") != B_ERROR);
                 bool hasI = (activeFlags.FindFirst("i") != B_ERROR);
                 bool hasT = (activeFlags.FindFirst("t") != B_ERROR);
+                bool hasN = (activeFlags.FindFirst("n") != B_ERROR);
+                bool hasC = (activeFlags.FindFirst("c") != B_ERROR);
 
-                fActiveModesDialog->UpdateCheckedStates(hasM, hasS, hasI, hasT);
+                // Pass the live extracted key and limit text parameters cleanly
+                fActiveModesDialog->UpdateCheckedStates(
+                    hasM, hasS, hasI, hasT, hasN, hasC,
+                    channelKey.Length() > 0 ? channelKey.String() : nullptr,
+                    channelLimit.Length() > 0 ? channelLimit.String() : nullptr
+                );
             }
         }
+
+
 
 
 
@@ -4894,6 +5189,325 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         }
         return;
     }
+    
+    
+    
+            // =========================================================================
+        // HANDLER FOR NUMERIC 396: RPL_HOSTHIDDEN (Cloaked Hostname Update)
+        // =========================================================================
+        if (command == "396") {
+            if (contextServer == nullptr) return;
+
+            // Incoming Format: :server 396 YourNick user/cloakedhost :is now your hidden host
+            // 'line' contains: "YourNick user/cloakedhost"
+            // 'trailing' contains: "is now your hidden host (set by services.)"
+
+            BString hostPayload = line;
+            hostPayload.Trim();
+
+            BString hiddenHost = "";
+            int32 spaceIdx = hostPayload.FindFirst(" ");
+            if (spaceIdx != B_ERROR) {
+                // Isolate the cloaked hostname parameter following your nickname
+                hostPayload.CopyInto(hiddenHost, spaceIdx + 1, hostPayload.Length() - (spaceIdx + 1));
+                hiddenHost.Trim();
+            } else {
+                hiddenHost = "user/cloaked"; // Structural fallback
+            }
+
+            // Reconstruct a perfectly formatted, clear, unclipped status notification line
+            BString cloakedNotice;
+            cloakedNotice.SetToFormat("--> Network Security: '%s' %s\n", hiddenHost.String(), trailing.String());
+
+            // Route the completed string straight into your server's status log tab
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, cloakedNotice);
+            } else {
+                LogToItemBuffer(fActiveBufferItem, cloakedNotice);
+            }
+            return;
+        }
+
+    
+    
+    
+  
+        // =========================================================================
+        // HANDLER FOR INCOMING KNOCK ALERTS (Numeric 710 For Channel Operators)
+        // =========================================================================
+        if (command == "710") {
+            BString targetChannel = "";
+            BString knockerNick = "";
+            
+            // Raw line contains: "YourNick #channel knocker!user@host"
+            BString lineData(line);
+            lineData.Trim();
+            
+            // 1. Strip your own nickname (the first token)
+            int32 firstSpace = lineData.FindFirst(" ");
+            if (firstSpace != B_ERROR) {
+                BString remainder;
+                lineData.CopyInto(remainder, firstSpace + 1, lineData.Length() - (firstSpace + 1));
+                remainder.Trim();
+                
+                // 2. Extract the channel (the second token)
+                int32 secondSpace = remainder.FindFirst(" ");
+                if (secondSpace != B_ERROR) {
+                    remainder.CopyInto(targetChannel, 0, secondSpace);
+                    
+                    // 3. Extract the knocker identity (the third token)
+                    BString knockerIdentity;
+                    remainder.CopyInto(knockerIdentity, secondSpace + 1, remainder.Length() - (secondSpace + 1));
+                    knockerIdentity.Trim();
+                    
+                    // Isolate nickname from hostmask
+                    int32 nickEnd = knockerIdentity.FindFirst("!");
+                    if (nickEnd != B_ERROR) {
+                        knockerIdentity.CopyInto(knockerNick, 0, nickEnd);
+                    } else {
+                        knockerNick = knockerIdentity;
+                    }
+                } else {
+                    targetChannel = remainder; // Fallback if line cuts short
+                }
+            }
+
+            targetChannel.Trim();
+            knockerNick.Trim();
+
+            // Format a clean, standard IRC notification string
+            BString styledNotice;
+            styledNotice << "--> [KNOCK] " << knockerNick << " " << trailing << "\n";
+
+            // Locate the channel node in your Haiku UI tree
+            ChannelTreeItem* targetedChanNode = nullptr;
+            for (int32 i = 0; i < fChannelTree->CountItems(); i++) {
+                ChannelTreeItem* item = dynamic_cast<ChannelTreeItem*>(fChannelTree->ItemAt(i));
+                if (item != nullptr && BString(item->Text()).ICompare(targetChannel) == 0) {
+                    if (fChannelTree->Superitem(item) == contextServer) {
+                        targetedChanNode = item;
+                        break;
+                    }
+                }
+            }
+
+            // Route to the specific channel tab if found, otherwise use fallback
+            if (targetedChanNode != nullptr) {
+                LogToItemBuffer(targetedChanNode, styledNotice);
+            } else {
+                LogToItemBuffer(fActiveBufferItem, styledNotice);
+            }
+
+            // =========================================================================
+            // ASYNCHRONOUS BALERT POPUP DISPATCH
+            // =========================================================================
+            if (knockerNick.Length() > 0 && targetChannel.Length() > 0) {
+                BString alertText;
+                alertText << "User " << knockerNick << " is knocking on " << targetChannel 
+                          << ".\nDo you want to invite them into the channel?";
+                
+                // Swap B_WARNING_NOTIFICATION with the correct constant B_WARNING_ALERT
+                BAlert* knockAlert = new BAlert("Incoming Knock", alertText.String(), "Ignore", "Invite User", 
+                    nullptr, B_WIDTH_AS_USUAL, B_WARNING_ALERT);
+
+                    
+                // Shortcut: Hitting 'Enter' fires off the Invite button automatically
+                knockAlert->SetShortcut(1, B_ENTER);
+
+                // Package target names inside the asynchronous reply tracking payload
+                BMessage* replyMessage = new BMessage('hknc'); // Handle KNock Choice
+                replyMessage->AddString("knocker", knockerNick);
+                replyMessage->AddString("channel", targetChannel);
+                
+                // Pass a pointer to the active server node context so the response handler knows the origin network
+                replyMessage->AddPointer("server_context", contextServer);
+                
+                // Go(BInvoker) fires the alert independently, fully eliminating deadlocks
+                knockAlert->Go(new BInvoker(replyMessage, this));
+            }
+        }
+
+
+
+    
+            // =========================================================================
+        // HANDLER FOR INCOMING INVITATIONS (Auto-Join Trigger)
+        // =========================================================================
+        if (command == "INVITE") {
+            if (contextServer == nullptr) return;
+
+            // Incoming Format: :OperatorNick!user@host INVITE YourNick :#channel
+            // 'line' holds parameters following the command: "YourNick"
+            // 'trailing' holds the target room destination: "#channel"
+            
+            BString invitedTarget = line;
+            invitedTarget.Trim();
+            
+            BString targetChannel = trailing;
+            targetChannel.Trim();
+
+            // Strip leading colons from trailing parameter frames if present
+            if (targetChannel.StartsWith(":")) {
+                targetChannel.Remove(0, 1);
+                targetChannel.Trim();
+            }
+
+            // Verify that YOU are the one being invited before executing an auto-join
+            if (fMyNick.ICompare(invitedTarget) == 0 && targetChannel.Length() > 0) {
+                
+                // Locate the active authenticated secure writing socket connection link
+                BSecureSocket* activeSocket = nullptr;
+                auto it = fServerSockets.find(contextServer);
+                if (it != fServerSockets.end()) {
+                    activeSocket = it->second;
+                }
+
+                if (activeSocket != nullptr) {
+                    // Print a friendly automated action status log notice back to your console layout
+                    BString autoJoinNotice;
+                    autoJoinNotice.SetToFormat("--> [INVITE] Auto-joining channel '%s'...\n", targetChannel.String());
+                    LogToItemBuffer(fActiveBufferItem, autoJoinNotice);
+
+                    // Format and transmit the standard canonical raw IRC JOIN payload line string
+                    BString joinCommand;
+                    joinCommand << "JOIN " << targetChannel << "\r\n";
+                    
+                    activeSocket->Write(joinCommand.String(), joinCommand.Length());
+                    printf("[DEBUG SOCKET] Automated response execution: JOIN written to socket stream for %s\n", targetChannel.String());
+                }
+            }
+        }
+
+    
+    
+    
+        // =========================================================================
+        // HANDLER FOR NUMERIC 473: ERR_INVITEONLYCHAN
+        // =========================================================================
+        if (command == "473") {
+            // Numeric 473 structure looks like: :server 473 yournick #channel :Cannot join channel (+i)
+            // 'line' holds the parameters following the code: "yournick #channel"
+            BString payload = line;
+            payload.Trim();
+
+            int32 spaceIdx = payload.FindFirst(" ");
+            if (spaceIdx != B_ERROR) {
+                BString bouncedChannel = "";
+                payload.CopyInto(bouncedChannel, spaceIdx + 1, payload.Length() - (spaceIdx + 1));
+                bouncedChannel.Trim();
+
+                // Strip out trailing server comments if present
+                int32 commentIdx = bouncedChannel.FindFirst(" ");
+                if (commentIdx != B_ERROR) {
+                    bouncedChannel.Truncate(commentIdx);
+                }
+
+                // Resolve the associated network secure writing socket
+                BSecureSocket* activeSocket = nullptr;
+                auto it = fServerSockets.find(contextServer);
+                if (it != fServerSockets.end()) {
+                    activeSocket = it->second;
+                }
+
+                if (activeSocket != nullptr && bouncedChannel.Length() > 0) {
+                    // Log notice to the current active chat buffer buffer
+                    BString notice;
+                    notice.SetToFormat("(!) Network Alert: '%s' is Invite-Only. Prompting for option...\n", bouncedChannel.String());
+                    LogToItemBuffer(fActiveBufferItem, notice);
+
+                    // Launch the custom modal notification framework asynchronously
+                    ChannelInviteOnlyWindow* inviteWin = new ChannelInviteOnlyWindow(this, activeSocket, bouncedChannel);
+                    inviteWin->Show();
+                }
+            }
+        }
+
+    
+    
+    
+        // =========================================================================
+        // HANDLER FOR NUMERIC 475: ERR_BADCHANNELKEY
+        // =========================================================================
+        if (command == "475") {
+            // Numeric 475 structure looks like: :server 475 yournick #channel :Cannot join channel (+k)
+            // 'line' holds the parameters following the code: "yournick #channel"
+            BString payload = line;
+            payload.Trim();
+
+            int32 spaceIdx = payload.FindFirst(" ");
+            if (spaceIdx != B_ERROR) {
+                BString badChannel = "";
+                payload.CopyInto(badChannel, spaceIdx + 1, payload.Length() - (spaceIdx + 1));
+                badChannel.Trim();
+
+                // Strip out trailing server comment fragments if present
+                int32 commentIdx = badChannel.FindFirst(" ");
+                if (commentIdx != B_ERROR) {
+                    badChannel.Truncate(commentIdx);
+                }
+
+                // Safely resolve the associated network secure writing socket
+                BSecureSocket* activeSocket = nullptr;
+                auto it = fServerSockets.find(contextServer);
+                if (it != fServerSockets.end()) {
+                    activeSocket = it->second;
+                }
+
+                if (activeSocket != nullptr && badChannel.Length() > 0) {
+                    // Inform the local room log buffer cleanly
+                    BString notice;
+                    notice.SetToFormat("(!) Network Alert: '%s' requires an access key. Prompting for password...\n", badChannel.String());
+                    LogToItemBuffer(fActiveBufferItem, notice);
+
+                    // Launch the modal password collection dialog framework asynchronously
+                    ChannelKeyPromptWindow* promptWin = new ChannelKeyPromptWindow(this, activeSocket, badChannel);
+                    promptWin->Show();
+                }
+            }
+        }
+
+    
+    
+
+        if (command == "005") { // RPL_ISUPPORT Capabilities Broadcast
+            // 'line' looks like: "yournick CHANMODES=eIqb,k,l,cimnpstzMRS PREFIX=(ov)@+ ..."
+            int32 modePos = line.FindFirst("CHANMODES=");
+            if (modePos != B_ERROR) {
+                BString modeString;
+                // 1. Copy out the trailing raw block sequence securely
+                line.CopyInto(modeString, modePos + 10, line.Length() - (modePos + 10));
+                
+                // 2. FIX FIRST: Find the very first space delimiter ending this specific parameter
+                // and truncate it immediately. This strips away all trailing network junk parameters!
+                int32 endSpace = modeString.FindFirst(" ");
+                if (endSpace != B_ERROR) {
+                    modeString.Truncate(endSpace);
+                }
+                
+                // Now modeString is strictly guaranteed to be clean (e.g., "eIqb,k,l,cimnpstzMRS")
+                int32 firstComma  = modeString.FindFirst(",");
+                int32 secondComma = modeString.FindFirst(",", firstComma + 1);
+                int32 thirdComma  = modeString.FindFirst(",", secondComma + 1);
+                
+                // 3. Populate your dynamic server configurations safely from a pristine string
+                if (firstComma != B_ERROR && secondComma != B_ERROR && thirdComma != B_ERROR) {
+                    modeString.CopyInto(contextServer->fTypeAModes, 0, firstComma);
+                    modeString.CopyInto(contextServer->fTypeBModes, firstComma + 1, secondComma - (firstComma + 1));
+                    modeString.CopyInto(contextServer->fTypeCModes, secondComma + 1, thirdComma - (secondComma + 1));
+                    modeString.CopyInto(contextServer->fTypeDModes, thirdComma + 1, modeString.Length() - (thirdComma + 1));
+                    
+                    if (cfg.debugEnable) {
+                        printf("[DEBUG] Dynamic CHANMODES parsed for %s -> A:%s | B:%s | C:%s | D:%s\n",
+                            contextServer->Text(), contextServer->fTypeAModes.String(), 
+                            contextServer->fTypeBModes.String(), contextServer->fTypeCModes.String(), 
+                            contextServer->fTypeDModes.String());
+                    }
+                }
+            }
+        }
+
+
 
 
 
@@ -4926,7 +5540,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-        // ==================== INBOUND: PROCESS IRCv3 CAP RESPONSES ====================
+        // ==================== INBOUND: SMART PROTOCOL FEATURE CAP NEGOTIATION ====================
         if (command == "CAP") {
             std::vector<BString> tokens;
             int32 currentPos = 0, nextSpace;
@@ -4949,21 +5563,69 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
                 BSecureSocket* activeSocket = GetActiveSocket(contextServer);
                 if (activeSocket != nullptr) {
-                    // If the server finishes sending its list or acknowledges our request,
-                    // send CAP END to finalize registration and let the server welcome us!
-                    if (capSubCommand == "ACK" || capSubCommand == "NAK" || capSubCommand == "LS") {
+                    
+                    if (capSubCommand == "LS") {
+                        // Gather incoming capabilities directly into local string space
+                        BString localCapBuffer;
+                        localCapBuffer << " " << trailing << " ";
+                        localCapBuffer.Trim();
+
+                        // Check if more chunks follow (IRCv3 multi-line LS support)
+                        bool hasMoreChunks = false;
+                        if (tokens.size() >= 3 && tokens[2] == "*") {
+                            hasMoreChunks = true;
+                        }
+
+                        if (!hasMoreChunks) {
+                            // --- SMART FEATURE MATCH CHECKLIST ---
+                            const char* clientChecklist[] = {
+                                "away-notify", 
+                                "multi-prefix", 
+                                "server-time", 
+                                "chghost"
+                            };
+                            int32 checklistSize = sizeof(clientChecklist) / sizeof(clientChecklist[0]);
+                            
+                            BString dynamicRequestFlags = "";
+                            for (int32 i = 0; i < checklistSize; i++) {
+                                BString lookForMatch = "";
+                                lookForMatch << " " << clientChecklist[i] << " ";
+                                
+                                // Scan the local text block parameter buffer safely!
+                                if (localCapBuffer.IFindFirst(lookForMatch) != B_ERROR) {
+                                    if (dynamicRequestFlags.Length() > 0) dynamicRequestFlags << " ";
+                                    dynamicRequestFlags << clientChecklist[i];
+                                }
+                            }
+
+                            // If we matched overlapping features, fire the dynamic request payload
+                            if (dynamicRequestFlags.Length() > 0) {
+                                BString reqCommand;
+                                reqCommand << "CAP REQ :" << dynamicRequestFlags << "\r\n";
+                                activeSocket->Write(reqCommand.String(), reqCommand.Length());
+                                printf("[DEBUG CAP] Smart Match Request sent: %s", reqCommand.String());
+                            } else {
+                                BString capEnd = "CAP END\r\n";
+                                activeSocket->Write(capEnd.String(), capEnd.Length());
+                            }
+                        }
+                        
+                    } else if (capSubCommand == "ACK" || capSubCommand == "NAK") {
+                        // Finalize the handshake gate pass safely
                         BString capEnd = "CAP END\r\n";
                         activeSocket->Write(capEnd.String(), capEnd.Length());
                         
                         if (cfg.debugEnable) {
                             printf("[DEBUG] CAP Negotiation completed for %s: Finalizing login handshake.\n", 
-                                   contextServer ? contextServer->Text() : "unknown");
+                                   contextServer ? contextServer->Text() : "Libera/OFTC");
                         }
                     }
                 }
             }
             return;
         }
+
+
 
 
 
@@ -6332,10 +6994,13 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     }
                 }
             }
-            // -----------------------------------------------------------------------------------
-
+            
+            // =========================================================================
+            // DYNAMIC ANTI-FLOOD GATEWAY: CHANNELS SERVICES AUTHENTICATION HANDLER
+            // =========================================================================
             // 4. AUTOMATION HOOK: Detect NickServ post-auth identification triggers safely
-            if (senderNick.ICompare("NickServ") == 0 && trailing.IFindFirst("identify") != B_ERROR) {                
+            // FIX: Using StartsWith to match "NickServ!services@..." hostmasks correctly!
+            if (senderNick.StartsWith("NickServ") && trailing.IFindFirst("identify") != B_ERROR) {                
                 BSecureSocket* activeSocket = nullptr;
                 if (fServerSockets.count(contextServer) > 0) {
                     activeSocket = fServerSockets[contextServer];
@@ -6346,16 +7011,80 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 }
 
                 if (activeSocket != nullptr) {
-                    if (foundProfile && resolvedProfile != nullptr && resolvedProfile->pass.length() > 0) {
-                        BString autoIdentify;
-                        autoIdentify << "PRIVMSG NickServ :IDENTIFY " << resolvedProfile->pass.c_str() << "\r\n";
-                        activeSocket->Write(autoIdentify.String(), autoIdentify.Length());
+                    // Check if we already tried to identify or hit a failure this session
+                    // to prevent NickServ from triggering a socket KILL
+                    if (contextServer != nullptr && contextServer->fHasIdentifiedThisSession) {
+                        return;
+                    }
+
+                    // Find the matching configuration struct for the active connection context
+                    const ServerConfig* activeProfile = nullptr;
+                    
+                    // Look through standard servers
+                    for (const auto& srv : cfg.servers) {
+                        if (contextServer != nullptr && BString(srv.host.c_str()).ICompare(contextServer->GetHost()) == 0) {
+                            activeProfile = &srv;
+                            break;
+                        }
+                    }
+                    
+                    // Fallback to custom servers array if not found yet
+                    if (activeProfile == nullptr) {
+                        for (const auto& srv : cfg.customServers) {
+                            if (contextServer != nullptr && BString(srv.host.c_str()).ICompare(contextServer->GetHost()) == 0) {
+                                activeProfile = &srv;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Validate our identity rules if a profile match was established
+                    if (activeProfile != nullptr && activeProfile->pass.length() > 0) {
+                        BString currentActiveNick = contextServer ? contextServer->GetNick() : fMyNick;
                         
-                        BString logNotice = "--- [Auto-Services] Identification credentials automatically sent to NickServ.\n";
-                        LogToItemBuffer(FindServerLogNode(contextServer), logNotice);
+                        // Convert configuration strings to clean processing containers
+                        BString primaryConfigNick(activeProfile->nick.c_str());
+                        BString altConfigNick(activeProfile->altNick.c_str());
+                        BString altConfigNick2(activeProfile->altNick2.c_str());
+
+                        // INTEGRITY RULE GATING: Only send password if your active name is your primary registered handle
+                        if (currentActiveNick.ICompare(primaryConfigNick) == 0) {
+                            
+                            BString autoIdentify;
+                            autoIdentify << "PRIVMSG NickServ :IDENTIFY " << activeProfile->pass.c_str() << "\r\n";
+                            activeSocket->Write(autoIdentify.String(), autoIdentify.Length());
+                            
+                            // Close the gate variable instantly for this session
+                            if (contextServer != nullptr) {
+                                contextServer->fHasIdentifiedThisSession = true;
+                            }
+                            
+                            BString logNotice = "--- [Auto-Services] Identification credentials automatically sent to NickServ.\n";
+                            LogToItemBuffer(FindServerLogNode(contextServer), logNotice);
+                            
+                        } else {
+                            // Close the gate variant if it's an alternate nick to kill the spam loop instantly
+                            if (contextServer != nullptr) {
+                                contextServer->fHasIdentifiedThisSession = true;
+                            }
+                            printf("[ANTI-FLOOD] Aborted automated authentication: Active handle '%s' is an alternate nickname variant.\n",
+                                   currentActiveNick.String());
+                        }
                     }
                 }
             }
+            
+            // =========================================================================
+            // ANTI-FLOOD HOOK 2: Catch explicit failure notices instantly
+            // =========================================================================
+            if (senderNick.StartsWith("NickServ") && (trailing.IFindFirst("Identify failed") != B_ERROR || trailing.IFindFirst("incorrect password") != B_ERROR)) {
+                if (contextServer != nullptr) {
+                    contextServer->fHasIdentifiedThisSession = true; // Turn off the machine!
+                    printf("[ANTI-FLOOD] NickServ failure warning detected. Identity authentication loop halted completely.\n");
+                }
+            }
+
+
 
             // 5. Route structured messages to their designated text buffers
             if (targetRoom.StartsWith("#")) {
@@ -6491,15 +7220,18 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             }
         }
 
-        // ==================== NEW: IRCv3 CAPABILITY NEGOTIATION ====================
-        // Request the capability listing and register for away status events immediately
-        BString capHandshake;
-        capHandshake << "CAP LS 302\r\nCAP REQ :away-notify\r\n";
+
+        // ==================== NEW: INITIALIZE CAP INTAKE STREAM ====================
+        // We only request the menu listings here. The smart parser loop will cross-check
+        // the capabilities and request exact matched intersections asynchronously!
+        BString capHandshake = "CAP LS 302\r\n";
         localSocket->Write(capHandshake.String(), capHandshake.Length());
         if (cfg.debugEnable) {
             LogDebugStream(targetNode->Text(), "OUTGOING", capHandshake.String(), capHandshake.Length());
         }
-        // ===========================================================================
+        // ============================================================================
+
+
 
         // 2. Dynamic Nickname Handshake Configuration
         BString nickHandshake;
@@ -6526,7 +7258,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         }
         // ===========================================================================
 
-        char buffer[512];
+        char buffer[1024]; // Cleanly absorbs high-traffic floods
         ssize_t bytesRead;
         BString lineBuffer;
         
@@ -6537,30 +7269,48 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 LogDebugStream(targetNode->Text(), "INCOMING", buffer, bytesRead);
             }
 
-            lineBuffer << buffer;
+            // 1. Explicitly append raw network bytes using length bounds to prevent null-truncation
+            lineBuffer.Append(buffer, bytesRead);
 
             int32 newlinePos;
+            // 2. ONLY split incoming data arrays where genuine network line breaks exist!
             while ((newlinePos = lineBuffer.FindFirst("\n")) != B_ERROR) {
                 BString line;
                 lineBuffer.CopyInto(line, 0, newlinePos + 1);
                 lineBuffer.Remove(0, newlinePos + 1);
                 
-                if (line.StartsWith("PING")) {
-                    BString pong = line;
+                // Clean up string boundary endings safely without stripping internal spaces
+                BString cleanLine = line;
+                cleanLine.ReplaceAll("\r", "");
+                cleanLine.ReplaceAll("\n", "");
+                cleanLine.Trim();
+
+                if (cleanLine.Length() == 0) continue;
+
+                // Handle Protocol PING matches instantly inside the low-level socket thread
+                if (cleanLine.StartsWith("PING")) {
+                    BString pong = cleanLine;
                     pong.Replace("PING", "PONG", 1);
+                    pong << "\r\n"; // Maintain rigid protocol trailing compliance
                     localSocket->Write(pong.String(), pong.Length());
+                    
                     if (cfg.debugEnable) {
                         LogDebugStream(targetNode->Text(), "OUTGOING", pong.String(), pong.Length());
                     }
                     continue;
                 }
 
+                // 3. Forward the perfect, un-mangled raw server line up to your window thread parser
                 BMessage* reply = new BMessage(MSG_IRC_RECEIVED);
-                reply->AddString("text", line.String());
+                reply->AddString("text", cleanLine.String());
                 reply->AddPointer("server_node", targetNode);
                 window->PostMessage(reply);
             }
         }
+
+
+
+        
 
         // 4. Thread and Socket Cleanup State Reset
         bool triggerReconnect = targetNode->IsAutoReconnect();
@@ -6590,6 +7340,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         delete localSocket;
         return B_OK;
     }
+
 
 
 
@@ -6686,6 +7437,42 @@ public:
 	//@messagereceived
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
+
+
+        // =========================================================================
+        // NEW: HANDLING BALERT BUTTON SELECTION RESPONSE PIPELINE
+        // =========================================================================
+        case 'hknc': {
+            int32 buttonIndex;
+            if (message->FindInt32("which", &buttonIndex) == B_OK && buttonIndex == 1) {
+                // Button 1 is "Invite User"
+                BString knocker = message->FindString("knocker");
+                BString channel = message->FindString("channel");
+                void* serverPtr = nullptr;
+                
+                if (message->FindPointer("server_context", &serverPtr) == B_OK && serverPtr != nullptr) {
+                    ServerTreeItem* serverCtx = static_cast<ServerTreeItem*>(serverPtr);
+                    
+                    // Match the active authenticated secure socket for this server context connection
+                    BSecureSocket* activeSocket = nullptr;
+                    auto it = fServerSockets.find(serverCtx);
+                    if (it != fServerSockets.end()) {
+                        activeSocket = it->second;
+                    }
+                    
+                    // Fire the invite command directly across the encrypted line stream!
+                    if (activeSocket != nullptr && knocker.Length() > 0 && channel.Length() > 0) {
+                        BString rawInvite;
+                        rawInvite << "INVITE " << knocker << " " << channel << "\r\n";
+                        
+                        activeSocket->Write(rawInvite.String(), rawInvite.Length());
+                        printf("[DEBUG POPUP] Invite payload sent via socket stream for user: %s\n", knocker.String());
+                    }
+                }
+            }
+            break;
+        }
+
 
 
 		case 'rgmd': // Register Modes Dialog
