@@ -770,36 +770,85 @@ void CustomChatView::ParseTextAndIcons(const BString& text, const text_run_array
                     continue;
                 }
 
-                // If configuration is active, interpret styling. If unchecked, we silently strip!
+                BString tagContent;
+                runText.CopyInto(tagContent, tagOpen + 1, tagClose - tagOpen - 1);
+
+                // --- FOOLPROOF VALIDATION CHECK ---
+                bool isValidTag = false;
                 if (colorCodesEnabled) {
-                    BString tagContent;
-                    runText.CopyInto(tagContent, tagOpen + 1, tagClose - tagOpen - 1);
-
-                    if (tagContent.StartsWith("C:")) {
-                        tagContent.Remove(0, 2);
-                        int32 commaIdx = tagContent.FindFirst(",");
-                        BString fgToken = (commaIdx != B_ERROR) ? tagContent.Truncate(commaIdx) : tagContent;
-                        fgToken.Trim();
-
-                        int32 pIdx = atoi(fgToken.String());
-                        if (pIdx >= 0 && pIdx < 16) activeColor = ircPalette[pIdx];
-                    } 
-                    else if (tagContent == "B") {
-                        activeFont.SetFace(B_BOLD_FACE);
-                    } 
-                    else if (tagContent == "R" || tagContent == "C:Reset") {
-                        activeColor = (runs != nullptr) ? runs->runs[i].color : ui_color(B_DOCUMENT_TEXT_COLOR);
-                        activeFont.SetFace(B_REGULAR_FACE);
-                    } 
-                    else if (tagContent == "U") {
-                        activeFont.SetFace(B_UNDERSCORE_FACE);
+                    if (tagContent == "B" || tagContent == "R" || tagContent == "C:Reset" || tagContent.StartsWith("C:")) {
+                        isValidTag = true;
                     }
                 }
 
-                currentPos = tagClose + 1; // Skips printing tag characters entirely
+                // Check for timestamp fallback rules
+                bool looksLikeTimestamp = false;
+                if (!isValidTag && tagContent.Length() > 0) {
+                    int32 digitCount = 0;
+                    int32 localColonCount = 0;
+                    for (int32 cIdx = 0; cIdx < tagContent.Length(); cIdx++) {
+                        char c = tagContent.ByteAt(cIdx);
+                        if (isdigit(c)) digitCount++;
+                        else if (c == ':') localColonCount++;
+                    }
+                    if (digitCount >= 2 && localColonCount >= 1) {
+                        isValidTag = true; 
+                        looksLikeTimestamp = true;
+                    }
+                }
+
+                // If it's a valid formatting tag OR a recognized timestamp, process it
+                if (isValidTag) {
+                    if (colorCodesEnabled) {
+                        if (tagContent.StartsWith("C:") && tagContent != "C:Reset") {
+                            BString tempContent = tagContent;
+                            tempContent.Remove(0, 2);
+                            int32 commaIdx = tempContent.FindFirst(",");
+                            BString fgToken = (commaIdx != B_ERROR) ? tempContent.Truncate(commaIdx) : tempContent;
+                            fgToken.Trim();
+
+                            int32 pIdx = atoi(fgToken.String());
+                            if (pIdx >= 0 && pIdx < 16) activeColor = ircPalette[pIdx];
+                        } 
+                        else if (tagContent == "B") {
+                            activeFont.SetFace(B_BOLD_FACE);
+                        } 
+                        else if (tagContent == "R" || tagContent == "C:Reset") {
+                            activeColor = (runs != nullptr) ? runs->runs[i].color : ui_color(B_DOCUMENT_TEXT_COLOR);
+                            activeFont.SetFace(B_REGULAR_FACE);
+                        }
+                    }
+                    
+                    // FIXED: Replaced the broken check with explicit flag mapping
+                    if (looksLikeTimestamp) { 
+                        StyledRunFragment* frag = new StyledRunFragment();
+                        frag->type = FRAG_TEXT;
+                        runText.CopyInto(frag->subText, tagOpen, (tagClose - tagOpen) + 1);
+                        frag->font = activeFont;
+                        frag->color = activeColor;
+                        frag->width = activeFont.StringWidth(frag->subText.String());
+                        rawFragments->AddItem(frag);
+                    }
+
+                    currentPos = tagClose + 1;
+                }
+                // --- FALLBACK: It's regular text like [mycode], don't strip it! ---
+                else {
+                    StyledRunFragment* frag = new StyledRunFragment();
+                    frag->type = FRAG_TEXT;
+                    runText.CopyInto(frag->subText, tagOpen, (tagClose - tagOpen) + 1);
+                    frag->font = activeFont;
+                    frag->color = activeColor;
+                    frag->width = activeFont.StringWidth(frag->subText.String());
+                    rawFragments->AddItem(frag);
+
+                    currentPos = tagClose + 1;
+                }
             }
-            // 2. Process Emoticon Graphical Assets
-            else if (foundIcon != nullptr) {
+
+
+              // 2. Process Emoticon Token Fragment Block
+            else {
                 if (nextTrigger > currentPos) {
                     StyledRunFragment* frag = new StyledRunFragment();
                     frag->type = FRAG_TEXT;
@@ -809,37 +858,25 @@ void CustomChatView::ParseTextAndIcons(const BString& text, const text_run_array
                     frag->width = activeFont.StringWidth(frag->subText.String());
                     rawFragments->AddItem(frag);
                 }
-                
-                StyledRunFragment* frag = new StyledRunFragment();
-                frag->type = FRAG_ICON;
-                frag->iconData = foundIcon;
-                frag->font = activeFont;
-                frag->color = activeColor;
-                frag->width = fLineHeight; 
 
-                BRect renderBounds(0, 0, fLineHeight - 1.0f, fLineHeight - 1.0f);
-                frag->cachedBitmap = new BBitmap(renderBounds, B_RGBA32);
-                if (frag->cachedBitmap && frag->cachedBitmap->InitCheck() == B_OK) {
-                    BIconUtils::GetVectorIcon(foundIcon, 1024, frag->cachedBitmap);
+                if (foundIcon != nullptr) {
+                    float iconDimension = fLineHeight;
+                    BBitmap* cachedIcon = new BBitmap(BRect(0, 0, iconDimension - 1.0f, iconDimension - 1.0f), B_RGBA32);
+                    
+                    // Note: Assuming a standard 1024-byte buffer allocation rule for your vector icon resources
+                    if (cachedIcon->InitCheck() == B_OK && BIconUtils::GetVectorIcon(foundIcon, 1024, cachedIcon) == B_OK) {
+                        StyledRunFragment* frag = new StyledRunFragment();
+                        frag->type = FRAG_ICON;
+                        frag->cachedBitmap = cachedIcon;
+                        frag->width = iconDimension;
+                        rawFragments->AddItem(frag);
+                    } else {
+                        delete cachedIcon;
+                    }
+                    currentPos = nextTrigger + triggerLength;
+                } else {
+                    currentPos = nextTrigger;
                 }
-                
-                rawFragments->AddItem(frag);
-                currentPos = nextTrigger + triggerLength;
-            }
-            // 3. Process Standard Unformatted Text
-            else {
-                BString remainder;
-                runText.CopyInto(remainder, currentPos, runText.Length() - currentPos);
-                if (remainder.Length() > 0) {
-                    StyledRunFragment* frag = new StyledRunFragment();
-                    frag->type = FRAG_TEXT;
-                    frag->subText = remainder;
-                    frag->font = activeFont;
-                    frag->color = activeColor;
-                    frag->width = activeFont.StringWidth(remainder.String());
-                    rawFragments->AddItem(frag);
-                }
-                break;
             }
         }
     }
