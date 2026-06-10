@@ -13,6 +13,7 @@
 #include <Roster.h>
 #include <Slider.h> 
 #include <Box.h>
+#include <MessageFilter.h>
 
 // Storage, Path Finder & System File Kits
 #include <Directory.h>
@@ -44,6 +45,7 @@
 #include <CheckBox.h>
 #include <MenuField.h>
 #include <Cursor.h>  
+#include <vector>
 
 // Data Types, Sockets & Networking Kit Headers
 #include <String.h>
@@ -61,8 +63,64 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.18 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.19 (Haiku OS)";
 }
+
+
+// Define application messages
+enum {
+    MSG_START_SIRC       = 'strt',
+    MSG_SEND_MESSAGE     = 'send',
+    MSG_IRC_RECEIVED     = 'recv',
+    MSG_CONNECT_LIBERA   = 'cnlb',
+    MSG_TOGGLE_AUTOJOIN  = 'tgaj',
+    MSG_TOGGLE_AUTOCONNECT = 'tgac',
+    MSG_CONNECT_OFTC     = 'cnof',
+    MSG_OPEN_CHAN_LIST   = 'opcl',
+    MSG_ADD_LIST_ROW     = 'adlr',
+    MSG_CONTEXT_CHAN_LIST = 'cxcl',
+    MSG_CLEAR_LIST_ROW   = 'cllr',
+    MSG_TOGGLE_HIDE_STATUS = 'tghs',
+    MSG_CONTEXT_ABOUT      = 'cxab',
+    MSG_TOGGLE_AUTORECONNECT = 'tgar',
+    MSG_RECONNECT_SERVER = 'rcsv',
+    MSG_CONFIG_SAVE = 'cfsv',
+    MSG_CONFIG_CANCEL = 'cfcn',
+	MSG_CONTEXT_CONFIGURE_SERVER = 'mccs',
+	MSG_SAVE_CONFIG_FILE = 'mscf',
+	MSG_CONNECT_CUSTOM_SERVER = 'cncs', 
+	MSG_ADD_CUSTOM_SERVER_SUBMIT = 'acss',
+	MSG_DISCONNECT_SERVER = 'dscr',
+	MSG_TOGGLE_CUSTOM_DRAW = 'tgcd',
+	MSG_CLEAR_CUSTOM_BUFFER = 'clcb',
+	MSG_TOPIC_CHANGED = 'tpch',
+	MSG_CONTEXT_SET_AWAY = 'cxaw', 
+	MSG_USER_LIST_CONTEXT_CLICK = 'ulcx',
+	MSG_CONTEXT_PRIVMSG = 'cxpm',
+	MSG_EMOTE_CLICKED = 'emcl',
+	MSG_CONTEXT_OP = 'mCOP',
+	MSG_CONTEXT_OP_SUBMIT = 'mOPS',  
+    MSG_CONTEXT_TIMED_DEOP_TRIGGER = 'mTDO',
+    MSG_CONTEXT_DEOP = 'mCDO',
+    MSG_CONTEXT_VOICE = 'mCVO',
+    MSG_CONTEXT_DEVOICE = 'mCDV',
+    MSG_CONTEXT_KICK = 'mCKC',
+    MSG_CONTEXT_KICK_SUBMIT = 'mKCS',
+    MSG_CONTEXT_SHOW_BANS   = 'mSBN',
+    MSG_CONTEXT_UNBAN_SUBMIT = 'mUBS', 
+    MSG_TOGGLE_ICON_POPUP = 'tICP',
+    MSG_POPUP_WAS_DESTROYED = 'mPWD',
+    MSG_CONTEXT_SHOW_MODES = 'mCSM',
+};
+
+
+
+// Forward Declarations 
+class CricketWindow; 
+class ServerTreeItem; 
+
+
+
 
 using json = nlohmann::json;
 
@@ -371,64 +429,6 @@ void load_config() {
 
 
 
-
-// Define application messages
-enum {
-    MSG_START_SIRC       = 'strt',
-    MSG_SEND_MESSAGE     = 'send',
-    MSG_IRC_RECEIVED     = 'recv',
-    MSG_CONNECT_LIBERA   = 'cnlb',
-    MSG_TOGGLE_AUTOJOIN  = 'tgaj',
-    MSG_TOGGLE_AUTOCONNECT = 'tgac',
-    MSG_CONNECT_OFTC     = 'cnof',
-    MSG_OPEN_CHAN_LIST   = 'opcl',
-    MSG_ADD_LIST_ROW     = 'adlr',
-    MSG_CONTEXT_CHAN_LIST = 'cxcl',
-    MSG_CLEAR_LIST_ROW   = 'cllr',
-    MSG_TOGGLE_HIDE_STATUS = 'tghs',
-    MSG_CONTEXT_ABOUT      = 'cxab',
-    MSG_TOGGLE_AUTORECONNECT = 'tgar',
-    MSG_RECONNECT_SERVER = 'rcsv',
-    MSG_CONFIG_SAVE = 'cfsv',
-    MSG_CONFIG_CANCEL = 'cfcn',
-	MSG_CONTEXT_CONFIGURE_SERVER = 'mccs',
-	MSG_SAVE_CONFIG_FILE = 'mscf',
-	MSG_CONNECT_CUSTOM_SERVER = 'cncs', 
-	MSG_ADD_CUSTOM_SERVER_SUBMIT = 'acss',
-	MSG_DISCONNECT_SERVER = 'dscr',
-	MSG_TOGGLE_CUSTOM_DRAW = 'tgcd',
-	MSG_CLEAR_CUSTOM_BUFFER = 'clcb',
-	MSG_TOPIC_CHANGED = 'tpch',
-	MSG_CONTEXT_SET_AWAY = 'cxaw', 
-	MSG_USER_LIST_CONTEXT_CLICK = 'ulcx',
-	MSG_CONTEXT_PRIVMSG = 'cxpm',
-	MSG_EMOTE_CLICKED = 'emcl',
-	MSG_CONTEXT_OP = 'mCOP',
-	MSG_CONTEXT_OP_SUBMIT = 'mOPS',  
-    MSG_CONTEXT_TIMED_DEOP_TRIGGER = 'mTDO',
-    MSG_CONTEXT_DEOP = 'mCDO',
-    MSG_CONTEXT_VOICE = 'mCVO',
-    MSG_CONTEXT_DEVOICE = 'mCDV',
-    MSG_CONTEXT_KICK = 'mCKC',
-    MSG_CONTEXT_KICK_SUBMIT = 'mKCS',
-    MSG_CONTEXT_SHOW_BANS   = 'mSBN',
-    MSG_CONTEXT_UNBAN_SUBMIT = 'mUBS', 
-    MSG_TOGGLE_ICON_POPUP = 'tICP',
-    MSG_POPUP_WAS_DESTROYED = 'mPWD',
-
-};
-
-
-
-// Forward Declarations 
-class CricketWindow; 
-class ServerTreeItem; 
-
-
-
-
-
-
 class UserListItem : public BStringItem {
 public:
     UserListItem(const char* nickname, bool isAway = false)
@@ -553,7 +553,7 @@ private:
     void ParseTextAndIcons(const BString& text, const text_run_array* runs, BObjectList<StyledRunFragment, true>* rawFragments);
     void ComputeWrapForLine(StyledLine* line, float maxWidth, BObjectList<StyledRunFragment, true>* rawFragments);
     virtual void ScrollTo(BPoint point);
-    void ComputeWrapForLine(StyledLine* line, float maxWidth);
+    // @delete void ComputeWrapForLine(StyledLine* line, float maxWidth);
 	void UpdateScrollRange(bool scrollToBottom = false);
     BObjectList<StyledLine, true> fLines; 
     BStringItem*                  fActiveChannelNode;
@@ -564,13 +564,10 @@ private:
 
 
 
-
-// Constructor
-// Update Constructor to handle initial default allocation state 
 // Constructor
 // Update Constructor to handle initial default allocation state 
 CustomChatView::CustomChatView(BRect frame, const char* name, uint32 resizingMode, uint32 flags)
-    : BView(frame, name, resizingMode, flags | B_WILL_DRAW | B_FRAME_EVENTS | B_NAVIGABLE),
+    : BView(frame, name, resizingMode, flags | B_WILL_DRAW | B_FRAME_EVENTS | B_NAVIGABLE | B_FULL_UPDATE_ON_RESIZE),
       fLines(20),
       fBackgroundBitmap(nullptr),
       fBackgroundDimmingLevel(30) 
@@ -824,48 +821,52 @@ CustomChatView::~CustomChatView() {
 	delete fBackgroundBitmap; 
     fLines.MakeEmpty();
 }
-// Pipeline Line Addition Point
+
 void CustomChatView::AddStyledLine(BStringItem* itemNode, const BString& text, const text_run_array* runs) {
     if (itemNode == nullptr) return;
+    
+    BString cleanText = text;
+    cleanText.ReplaceAll("\r", " ");
+    cleanText.ReplaceAll("\n", " ");
 
-    // Create the line tagged to its specific target context
-    StyledLine* newLine = new StyledLine(itemNode, text, runs);
+    StyledLine* newLine = new StyledLine(itemNode, cleanText, runs);
     fLines.AddItem(newLine);
 
-    // Only spend CPU cycles compute-wrapping the text layout if it belongs to the visible channel
     if (itemNode == fActiveChannelNode) {
-        float maxWidth = Bounds().Width() - 20.0f;
+        // Enforce the standard 36px buffer so text wrapping matches your recalculation loop
+        float maxWidth = Bounds().Width() - 36.0f;
         if (maxWidth <= 50.0f) maxWidth = 50.0f;
 
-        // Build a temporary flat collection of fragments (Text + Emotes mixed)
         BObjectList<StyledRunFragment, true> rawFragments(10);
-        ParseTextAndIcons(text, runs, &rawFragments);
+        ParseTextAndIcons(cleanText, runs, &rawFragments);
 
-        // Compute the wrap based on those parsed tokens
         ComputeWrapForLine(newLine, maxWidth, &rawFragments);
         
+        // Pass 'true' so the view snaps down to show your newly processed line immediately
         UpdateScrollRange(true); 
         Invalidate();
     }
 }
 
 
+
+
 // Update Loop Filter Pass
 void CustomChatView::RecalculateAllLineWraps()
 {
-    float maxWidth = Bounds().Width() - 20.0f;
+    // FIX: Match the exact 36.0f padding used in AddStyledLine to stop the clipping
+    float maxWidth = Bounds().Width() - 36.0f;
     if (maxWidth <= 50.0f) maxWidth = 50.0f;
 
     for (int32 i = 0; i < fLines.CountItems(); i++) {
         StyledLine* line = fLines.ItemAt(i);
         
-        // Only spend CPU resources layout-wrapping lines for the active view context
         if (line->itemNode == fActiveChannelNode) {
-            // Re-parse the text and icons into fresh fragments for wrapping
+            // OPTIMIZATION: Instead of manually parsing every single line from scratch,
+            // construct a temporary list and use your pre-built logic pipelines.
             BObjectList<StyledRunFragment, true> rawFragments(10);
             ParseTextAndIcons(line->text, line->runs, &rawFragments);
 
-            // Call the updated 3-parameter function signature
             ComputeWrapForLine(line, maxWidth, &rawFragments);
         }
     }
@@ -936,15 +937,38 @@ void CustomChatView::ComputeWrapForLine(StyledLine* line, float maxWidth, BObjec
             BFont font = frag->font;
             float availableWidth = maxWidth - currentX;
             int32 charCount = 0;
+            int32 lastSpaceIdx = -1;
             int32 textLen = frag->subText.Length();
             const char* rawStr = frag->subText.String();
             
-            // High-performance string measurement boundary check using byte lengths directly
+            // Step safely through characters to find the smart layout break point
             for (int32 c = 1; c <= textLen; c++) {
-                if (font.StringWidth(rawStr, c) <= availableWidth) {
+                // Keep track of the last space character boundary seen on this line
+                if (rawStr[c - 1] == ' ' || rawStr[c - 1] == '\t' || rawStr[c - 1] == '-') {
+                    lastSpaceIdx = c;
+                }
+
+                float measuredWidth = font.StringWidth(rawStr, c);
+                if ((measuredWidth + 1.0f) <= availableWidth) {
                     charCount = c;
                 } else {
                     break;
+                }
+            }
+            
+            // INTELLIGENT WRAP CORRECTION: 
+            // If we found a space character inside the text block that fits, slice 
+            // at the word boundary instead of slicing midway through a word!
+            if (lastSpaceIdx > 0 && charCount < textLen && lastSpaceIdx <= charCount) {
+                charCount = lastSpaceIdx;
+            }
+            
+            // Infinite Loop Protection: If a single word or a long URL is simply too wide 
+            // to fit on an empty line row, force character-by-character slicing.
+            if (charCount == 0 && currentX == 0.0f && textLen > 0) {
+                charCount = 1;
+                while (charCount < textLen && ((rawStr[charCount] & 0xC0) == 0x80)) {
+                    charCount++;
                 }
             }
             
@@ -963,9 +987,15 @@ void CustomChatView::ComputeWrapForLine(StyledLine* line, float maxWidth, BObjec
             
             line->wrappedRows.AddItem(currentRow);
             
+            // Allocate a clean row container for the next line block row
             currentRow = new BObjectList<StyledRunFragment, true>(5);
-            currentRow->AddItem(frag);
-            currentX = frag->width;
+            currentX = 0.0f;
+
+            if (frag->subText.Length() > 0 || frag->type == FRAG_ICON) {
+                rawFragments->AddItem(frag, 0);
+            } else {
+                delete frag; 
+            }
         }
     }
     
@@ -976,10 +1006,15 @@ void CustomChatView::ComputeWrapForLine(StyledLine* line, float maxWidth, BObjec
     }
 }
 
+
+
+
 void CustomChatView::ScrollTo(BPoint point) {
     BView::ScrollTo(point);
     Invalidate(); 
 }
+
+
 
 
 
@@ -1043,12 +1078,6 @@ void CustomChatView::MessageReceived(BMessage* message) {
             break;
         }
 
-
-        
-        
-        
-        
-        
 
         case B_COLORS_UPDATED: {
             SetViewColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
@@ -1165,22 +1194,25 @@ void CustomChatView::Draw(BRect updateRect) {
     }
 
 
-
     // --- BRANCH B: INLINE CHAT RENDERING ---
     float currentY = 10.0f; 
     font_height fh;
     GetFontHeight(&fh);
     float fontAscent = fh.ascent;
 
+    SetDrawingMode(B_OP_ALPHA);
+
     for (int32 i = 0; i < fLines.CountItems(); i++) {
         StyledLine* line = fLines.ItemAt(i);
         if (!line || line->itemNode != fActiveChannelNode) continue;
 
-        for (int32 rowIdx = 0; rowIdx < line->wrappedRows.CountItems(); rowIdx++) {
+        int32 totalRows = line->wrappedRows.CountItems();
+
+        for (int32 rowIdx = 0; rowIdx < totalRows; rowIdx++) {
             BObjectList<StyledRunFragment, true>* row = line->wrappedRows.ItemAt(rowIdx);
             if (!row) continue;
 
-            if (currentY + fLineHeight >= updateRect.top && currentY <= updateRect.bottom) {
+            if (currentY + fLineHeight >= 0 && currentY <= Bounds().bottom) {
                 float currentX = 10.0f;
 
                 for (int32 fragIdx = 0; fragIdx < row->CountItems(); fragIdx++) {
@@ -1196,12 +1228,9 @@ void CustomChatView::Draw(BRect updateRect) {
                             renderColor = systemTextColor;
                         }
                         SetHighColor(renderColor);
+                         DrawString(frag->subText.String(), BPoint(currentX, currentY + fLineHeight - 2.0f));
                         
-                        SetDrawingMode(B_OP_ALPHA);
-                        DrawString(frag->subText.String(), BPoint(currentX, currentY + fLineHeight - 2.0f));
-                        SetDrawingMode(B_OP_COPY);
-                        
-                        currentX += StringWidth(frag->subText.String());
+                        currentX += frag->width;
                     } 
                     else if (frag->type == FRAG_ICON) {
                         BRect iconRect(currentX, 
@@ -1210,9 +1239,7 @@ void CustomChatView::Draw(BRect updateRect) {
                                        currentY + fLineHeight + fh.descent - 2.0f);
                         
                         if (frag->cachedBitmap != nullptr) {
-                            SetDrawingMode(B_OP_ALPHA);
                             DrawBitmap(frag->cachedBitmap, iconRect);
-                            SetDrawingMode(B_OP_COPY);
                         }
                         currentX += frag->width + 2.0f;
                     }
@@ -1221,6 +1248,11 @@ void CustomChatView::Draw(BRect updateRect) {
             currentY += fLineHeight;
         }
     }
+    
+    SetDrawingMode(B_OP_COPY);
+
+
+
 }
 
 
@@ -1714,10 +1746,17 @@ static int SortChannelsByUsers(const void* first, const void* second) {
 
 
 
-// 2. DECLARE THE WINDOW
+
+
+// Structure to preserve master data for instant filtering
+struct ChannelDataRecord {
+    BString name;
+    BString users;
+    BString topic;
+};
+
 class IRCChannelListWindow : public BWindow {
 public:
-    // Update the constructor signature to accept 4 arguments:
     IRCChannelListWindow(BWindow* owner, BSecureSocket* targetSocket, ServerTreeItem* serverItem, IRCChannelListWindow** tracker) 
         : BWindow(BRect(150, 150, 800, 650), "Network Channel List", 
                   B_DOCUMENT_WINDOW, B_ASYNCHRONOUS_CONTROLS) {
@@ -1725,16 +1764,22 @@ public:
         fOwnerWindow = owner;
         fSocket = targetSocket;
         fServerContext = serverItem; 
-        fTracker = tracker; // <-- ADDED: Save the tracking address safely
+        fTracker = tracker;
 
         fListView = new BListView("chan_list_view");
         fListView->SetInvocationMessage(new BMessage('join'));
         BScrollView* scrollPane = new BScrollView("scroll_list", fListView, 0, false, true);
-		
 
-        BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
-            .SetInsets(5)
-            .Add(scrollPane, 1.0)
+        // ADDED: Search/Filter bar input control
+        // Sends a message ('fltr') every time a character is typed or altered
+        fFilterControl = new BTextControl("filter_bar", "Filter by Keyword:", "", new BMessage('fltr'));
+        fFilterControl->SetModificationMessage(new BMessage('fltr'));
+
+        // Modern layout architecture group nesting
+        BLayoutBuilder::Group<>(this, B_VERTICAL, 5)
+            .SetInsets(8)
+            .Add(fFilterControl, 0.0) // Search bar at top, stays fixed height
+            .Add(scrollPane, 1.0)     // List view expands to consume space
             .End();
 
         if (fSocket != nullptr) {
@@ -1742,26 +1787,16 @@ public:
         }
     }
 
-    // Public getter required by the '322' protocol parser block
     BSecureSocket* GetTargetSocket() const { return fSocket; }
-
-    // Public getter to query the parent network server node if needed
     ServerTreeItem* GetServerContext() const { return fServerContext; }
     
-    // Force a complete recalculation of our column items during runtime window stretching
     void FrameResized(float newWidth, float newHeight) override {
-        // Call base class implementation first to keep Haiku layout structures aligned
         BWindow::FrameResized(newWidth, newHeight);
-
         if (fListView != nullptr) {
-            // 1. Tell the internal view layout parameters to invalidate their width geometries
             fListView->InvalidateLayout();
-            
-            // 2. Clear item height/width cache bounds and force every visible row item to call DrawItem()
             fListView->Invalidate();
         }
     }
-
 
     void DispatchMessage(BMessage* message, BHandler* handler) override {
         if (message->what == B_MOUSE_DOWN && handler == fListView) {
@@ -1779,6 +1814,10 @@ public:
                     if (selectedItem != nullptr) {
                         BPopUpMenu* menu = new BPopUpMenu("ChannelActions", false, false);
                         menu->AddItem(new BMenuItem("Join Channel", new BMessage('join')));
+                        
+                        // ADDED: Right-click filter text action helper option
+                        menu->AddItem(new BMenuItem("Clear Filter Bar", new BMessage('clrf')));
+                        
                         menu->SetTargetForItems(this);
                         menu->Go(fListView->ConvertToScreen(point), true, true, true);
                         return; 
@@ -1801,9 +1840,32 @@ public:
                     message->FindString("users", &userCount) == B_OK &&
                     message->FindString("topic", &topic) == B_OK) {
             
-                    fListView->AddItem(new ChannelRowItem(channelName, userCount, topic));
-                    fListView->SortItems(SortChannelsByUsers); 
+                    // 1. Cache item permanently in master layout vector structure
+                    ChannelDataRecord record = { channelName, userCount, topic };
+                    fMasterRecords.push_back(record);
+
+                    // 2. Evaluate if item passes active keyword query before adding to view canvas
+                    BString keyword = fFilterControl->Text();
+                    keyword.Trim();
+                    
+                    if (keyword.Length() == 0 || 
+                        BString(channelName).IFindFirst(keyword) != B_ERROR || 
+                        BString(topic).IFindFirst(keyword) != B_ERROR) {
+                        
+                        fListView->AddItem(new ChannelRowItem(channelName, userCount, topic));
+                        fListView->SortItems(SortChannelsByUsers); 
+                    }
                 }
+                break;
+            }
+
+            case 'fltr': { // ADDED: Keypress modification filtering pipeline engine
+                ApplyFilter();
+                break;
+            }
+
+            case 'clrf': { // ADDED: Clear filter box utility channel action hook
+                fFilterControl->SetText(""); // Will auto-trigger 'fltr' update loop pass
                 break;
             }
 
@@ -1829,28 +1891,55 @@ public:
         }
     }
 
-    // --- UPDATED: Swapped Quit() for QuitRequested() to clear pointer instantly ---
     bool QuitRequested() override {
+        // Clear active interface tracking items safely
         while (fListView->CountItems() > 0) {
-            BListItem* item = fListView->RemoveItem((int32)0);
-            delete item;
+            delete fListView->RemoveItem((int32)0);
         }
+        fMasterRecords.clear(); // Safe deletion flushes memory vector
 
-        // Instantly clears fActiveListWindow in the main thread thread-safely
         if (fTracker != nullptr) {
             *fTracker = nullptr;
         }
-
         return true; 
     }
 
 private:
-    BWindow*               fOwnerWindow;
-    BListView*             fListView;
-    BSecureSocket*         fSocket;
-    ServerTreeItem*        fServerContext; 
-    IRCChannelListWindow** fTracker; // <-- ADDED: Private variable to hold tracker reference
+    // ADDED: Filtering worker method
+    void ApplyFilter() {
+        if (fListView->LockLooper()) {
+            // 1. Flush display list items entirely
+            while (fListView->CountItems() > 0) {
+                delete fListView->RemoveItem((int32)0);
+            }
+
+            BString keyword = fFilterControl->Text();
+            keyword.Trim();
+
+            // 2. Repopulate with records matching the case-insensitive keyword search
+            for (const auto& rec : fMasterRecords) {
+                if (keyword.Length() == 0 || 
+                    rec.name.IFindFirst(keyword) != B_ERROR || 
+                    rec.topic.IFindFirst(keyword) != B_ERROR) {
+                    
+                    fListView->AddItem(new ChannelRowItem(rec.name.String(), rec.users.String(), rec.topic.String()));
+                }
+            }
+            
+            fListView->SortItems(SortChannelsByUsers);
+            fListView->UnlockLooper();
+        }
+    }
+
+    BWindow*                      fOwnerWindow;
+    BListView*                    fListView;
+    BTextControl*                 fFilterControl; // <-- ADDED: Input field tracker pointer
+    BSecureSocket*                fSocket;
+    ServerTreeItem*               fServerContext; 
+    IRCChannelListWindow**        fTracker;
+    std::vector<ChannelDataRecord> fMasterRecords; // <-- ADDED: Central structural backup container
 };
+
 
 
 
@@ -2233,13 +2322,7 @@ public:
                     return autojoinBox;
                 }(), 1.0)
             .End()
-
-
-
-
-
-
-            
+           
             
             .Add(fAutoConnectCheck)
             .Add(fAutoReconnectCheck)
@@ -2610,6 +2693,284 @@ private:
 
 
 
+class RightClickSingleClickFilter : public BMessageFilter {
+public:
+    RightClickSingleClickFilter(BHandler* targetHandler) 
+        : BMessageFilter(B_MOUSE_DOWN), fTargetHandler(targetHandler) {}
+
+    virtual filter_result Filter(BMessage* message, BHandler** target) {
+        int32 buttons;
+        BPoint point;
+        
+        // 1. Intercept ONLY the right mouse button click
+        if (message->FindInt32("buttons", &buttons) == B_OK && (buttons & B_SECONDARY_MOUSE_BUTTON)) {
+            if (message->FindPoint("where", &point) == B_OK) {
+                
+                // 2. Package the point up and bypass the list view logic completely
+                BMessage contextMsg(MSG_USER_LIST_CONTEXT_CLICK);
+                contextMsg.AddPoint("where", point);
+                fTargetHandler->Looper()->PostMessage(&contextMsg, fTargetHandler);
+                
+                return B_SKIP_MESSAGE; // Swallow it so BListView won't mess with selection or require double-clicks!
+            }
+        }
+        return B_DISPATCH_MESSAGE; // Let normal left clicks select items safely
+    }
+private:
+    BHandler* fTargetHandler;
+};
+
+
+
+class ChannelModesDialog : public BWindow {
+public:
+    virtual ~ChannelModesDialog() {}
+
+    ChannelModesDialog(BWindow* parent, BSecureSocket* socket, const BString& channelName, bool isOperator)
+        : BWindow(BRect(0, 0, 380, 260), "Channel Modes Management", B_TITLED_WINDOW_LOOK, 
+                  B_MODAL_SUBSET_WINDOW_FEEL, B_NOT_ZOOMABLE | B_NOT_RESIZABLE) {
+        
+        fParentWindow = parent;
+        fSocket = socket;
+        fChannelName = channelName;
+        fIsOperator = isOperator;
+
+        AddToSubset(parent);
+
+        // Center smoothly relative to the main workspace window layout boundaries
+        BRect parentFrame = parent->Frame();
+        MoveTo(parentFrame.left + (parentFrame.Width() - 380) / 2,
+               parentFrame.top + (parentFrame.Height() - 260) / 2);
+
+        // Master canvas setup
+        BView* panel = new BView(Bounds(), "modesPanel", B_FOLLOW_ALL, B_WILL_DRAW);
+        panel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        AddChild(panel);
+
+        // Header Title Prompt
+        BString titleStr = "Manage Modes for ";
+        titleStr << fChannelName;
+        BTextView* titleText = new BTextView(BRect(15, 15, 365, 40), "title", BRect(0,0,350,20), B_FOLLOW_ALL, B_WILL_DRAW);
+        titleText->SetText(titleStr.String());
+        titleText->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        titleText->MakeEditable(false);
+        titleText->MakeSelectable(false);
+        panel->AddChild(titleText);
+
+        // Channel Mode Toggle Checkboxes
+        fModeratedCheck = new BCheckBox(BRect(20, 50, 180, 75), "mod", "Moderated (+m)", nullptr);
+        fSecretCheck    = new BCheckBox(BRect(20, 80, 180, 105), "sec", "Secret Channel (+s)", nullptr);
+        fInviteCheck    = new BCheckBox(BRect(20, 110, 180, 135), "inv", "Invite Only (+i)", nullptr);
+        fTopicCheck     = new BCheckBox(BRect(20, 140, 180, 165), "top", "Ops Topic Only (+t)", nullptr);
+
+        panel->AddChild(fModeratedCheck);
+        panel->AddChild(fSecretCheck);
+        panel->AddChild(fInviteCheck);
+        panel->AddChild(fTopicCheck);
+
+        // Operator Restriction Enforcement Guard Step
+        if (!fIsOperator) {
+            fModeratedCheck->SetEnabled(false);
+            fSecretCheck->SetEnabled(false);
+            fInviteCheck->SetEnabled(false);
+            fTopicCheck->SetEnabled(false);
+
+            BTextView* warnText = new BTextView(BRect(20, 175, 360, 205), "warn", BRect(0,0,340,30), B_FOLLOW_ALL, B_WILL_DRAW);
+            warnText->SetText("Warning: You must have operator status (@) to change these flags.");
+            warnText->SetFont(be_plain_font);
+            warnText->SetHighColor(220, 100, 100);
+            warnText->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+            warnText->MakeEditable(false);
+            warnText->MakeSelectable(false);
+            panel->AddChild(warnText);
+        }
+
+        // Action Buttons Setup
+        BButton* cancelBtn = new BButton(BRect(160, 215, 255, 242), "cancel", "Cancel", new BMessage('mdcn'));
+        BButton* applyBtn = new BButton(BRect(265, 215, 360, 242), "apply", "Apply", new BMessage('mdap'));
+        
+        cancelBtn->SetTarget(this);
+        applyBtn->SetTarget(this);
+        applyBtn->MakeDefault(true);
+
+        if (!fIsOperator) {
+            applyBtn->SetEnabled(false);
+        }
+
+        panel->AddChild(cancelBtn);
+        panel->AddChild(applyBtn);
+
+        // FIX: Register this live window instance pointer with the main loop instantly
+        if (fParentWindow != nullptr) {
+            BMessage registerMsg('rgmd');
+            registerMsg.AddPointer("dialog_ptr", this);
+            registerMsg.AddString("channel_target", fChannelName);
+            fParentWindow->PostMessage(&registerMsg);
+        }
+
+        // FIX: Query the server for the current channel state right at window boot
+        if (fSocket != nullptr) {
+            BString queryCmd;
+            queryCmd << "MODE " << fChannelName << "\r\n";
+            fSocket->Write(queryCmd.String(), queryCmd.Length());
+        }
+    }
+
+    // Public controller method so your network message reader can toggle checked states live
+    void UpdateCheckedStates(bool m, bool s, bool i, bool t) {
+        if (Lock()) {
+            fModeratedCheck->SetValue(m ? B_CONTROL_ON : B_CONTROL_OFF);
+            fSecretCheck->SetValue(s ? B_CONTROL_ON : B_CONTROL_OFF);
+            fInviteCheck->SetValue(i ? B_CONTROL_ON : B_CONTROL_OFF);
+            fTopicCheck->SetValue(t ? B_CONTROL_ON : B_CONTROL_OFF);
+            Unlock();
+        }
+    }
+
+    // FIX: Safely unmap window references from the parent thread before final destruct
+    virtual bool QuitRequested() override {
+        BMessage unregisterMsg('unmd');
+        if (fParentWindow != nullptr) {
+            fParentWindow->PostMessage(&unregisterMsg);
+        }
+        return BWindow::QuitRequested();
+    }
+
+    void MessageReceived(BMessage* message) override {
+        switch (message->what) {
+            case 'mdcn': {
+                Quit();
+                break;
+            }
+            case 'mdap': {
+                if (fSocket != nullptr && fIsOperator) {
+                    // Process each flag atomically to ensure the server updates successfully
+                    BString cmdM;
+                    cmdM << "MODE " << fChannelName << " " << ((fModeratedCheck->Value() == B_CONTROL_ON) ? "+m" : "-m") << "\r\n";
+                    fSocket->Write(cmdM.String(), cmdM.Length());
+
+                    BString cmdS;
+                    cmdS << "MODE " << fChannelName << " " << ((fSecretCheck->Value() == B_CONTROL_ON) ? "+s" : "-s") << "\r\n";
+                    fSocket->Write(cmdS.String(), cmdS.Length());
+
+                    BString cmdI;
+                    cmdI << "MODE " << fChannelName << " " << ((fInviteCheck->Value() == B_CONTROL_ON) ? "+i" : "-i") << "\r\n";
+                    fSocket->Write(cmdI.String(), cmdI.Length());
+
+                    BString cmdT;
+                    cmdT << "MODE " << fChannelName << " " << ((fTopicCheck->Value() == B_CONTROL_ON) ? "+t" : "-t") << "\r\n";
+                    fSocket->Write(cmdT.String(), cmdT.Length());
+                }
+                Quit();
+                break;
+            }
+            default:
+                BWindow::MessageReceived(message);
+                break;
+        }
+    }
+
+private:
+    BWindow*        fParentWindow;
+    BSecureSocket*  fSocket;
+    BString         fChannelName;
+    bool            fIsOperator;
+
+    BCheckBox*      fModeratedCheck;
+    BCheckBox*      fSecretCheck;
+    BCheckBox*      fInviteCheck;
+    BCheckBox*      fTopicCheck;
+};
+
+
+class OpDurationWindow : public BWindow {
+public:
+    OpDurationWindow(BRect frame, const char* title, const BString& nick, BHandler* mainWin)
+        : BWindow(frame, title, B_MODAL_WINDOW, B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS),
+          fTargetNick(nick), fMainWindow(mainWin) {
+        
+        BWindow* parentWin = dynamic_cast<BWindow*>(mainWin);
+        if (parentWin != nullptr) {
+            BRect parentFrame = parentWin->Frame();
+            float centerX = parentFrame.left + (parentFrame.Width() - frame.Width()) / 2.0f;
+            float centerY = parentFrame.top + (parentFrame.Height() - frame.Height()) / 2.0f;
+            MoveTo(centerX, centerY);
+        }
+
+        BView* panel = new BView(Bounds(), "bgPanel", B_FOLLOW_ALL, B_WILL_DRAW);
+        panel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        AddChild(panel);
+
+        BTextView* promptLabel = new BTextView(BRect(15, 10, 385, 35), "prompt", BRect(0, 0, 370, 25), B_FOLLOW_LEFT | B_FOLLOW_TOP, B_WILL_DRAW);
+        BString promptText;
+        promptText << "Select how long to grant Operator status to '" << fTargetNick << "':";
+        promptLabel->SetText(promptText.String());
+        promptLabel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        promptLabel->MakeEditable(false);
+        promptLabel->MakeSelectable(false);
+        panel->AddChild(promptLabel);
+
+        fTimeMenu = new BPopUpMenu("OpDurations");
+        fTimeMenu->AddItem(new BMenuItem("Permanently", nullptr));
+        fTimeMenu->AddItem(new BMenuItem("5 Minutes", nullptr));
+        fTimeMenu->AddItem(new BMenuItem("1 Hour", nullptr));
+        fTimeMenu->AddItem(new BMenuItem("1 Day", nullptr));
+        fTimeMenu->ItemAt(0)->SetMarked(true);
+
+        BMenuField* durationField = new BMenuField(BRect(15, 45, 385, 70), "opDurationDropdown", "Duration: ", fTimeMenu);
+        durationField->SetDivider(panel->StringWidth("Duration: ") + 5);
+        panel->AddChild(durationField);
+
+        BButton* cancelBtn = new BButton(BRect(200, 100, 285, 125), "cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
+        BButton* opBtn = new BButton(BRect(295, 100, 385, 125), "op", "Grant Op", new BMessage('opsv'));
+        
+        cancelBtn->SetTarget(this);
+        opBtn->SetTarget(this);
+        
+        // Remove opBtn->MakeDefault(true); to prevent the keyboard focus lock!
+
+        panel->AddChild(cancelBtn);
+        panel->AddChild(opBtn);
+
+        // Force the button view component to gain focus immediately upon opening.
+        // This clears the active cursor focus out of the dropdown container list, 
+        // ensuring the very first mouse click fires the event loop transaction.
+        opBtn->MakeFocus(true);
+    }
+
+    void MessageReceived(BMessage* message) override {
+        if (message->what == 'opsv') {
+            BString selectedDuration = "Permanently";
+            BMenuItem* markedItem = fTimeMenu->FindMarked();
+            if (markedItem != nullptr) {
+                selectedDuration = markedItem->Label();
+            }
+
+            // 1. Fire the data payload straight to the main window looper pipeline
+            BMessage finalPayload(MSG_CONTEXT_OP_SUBMIT);
+            finalPayload.AddString("target_nick", fTargetNick);
+            finalPayload.AddString("op_duration", selectedDuration);
+            fMainWindow->Looper()->PostMessage(&finalPayload, fMainWindow);
+            
+            // Use SendMessage instead of PostMessage for the BMessenger object
+            // This safely queues the quit request at the tail-end of the message stack.
+            BMessenger(this).SendMessage(B_QUIT_REQUESTED);
+
+        } else {
+            BWindow::MessageReceived(message);
+        }
+    }
+
+
+
+
+private:
+    BString      fTargetNick;
+    BHandler*    fMainWindow;
+    BPopUpMenu*  fTimeMenu;
+};
+
+
 
 
 
@@ -2628,6 +2989,7 @@ public:
         SetTitle(windowTitle.String());
 		fActiveIconPopup = nullptr;
 		fActiveListWindow = nullptr;
+	
 
         
         // 1. Setup Channel Tree View (Left Side)
@@ -2683,18 +3045,29 @@ public:
         // Note: Wrapping a direct BView inside a scrollview requires explicit scroll implementation.
         // For simple presentation management, we swap whole container view hierarchies.
         BScrollView* customScroll = new BScrollView("scroll_custom", fCustomChatLog, 0, false, true);
+        
+        
 
         // --- NEW: Layout-Safe Group View Container Setup ---
-        // Using BGroupView seamlessly integrates with Layout Builders for runtime swapping
         fChatContainer = new BGroupView(B_VERTICAL, 0);
         
         fUserList = new BListView("user_list");
         
+        // CLEANUP: Revert back to the default single selection trigger
         fUserList->SetSelectionMessage(new BMessage(MSG_USER_LIST_CONTEXT_CLICK));
+        fUserList->SetInvocationMessage(nullptr); // Remove the double-click restriction trap!
 
+        // FIX: Inject the mouse handler filter so it intercepts clicks on frame 0
+        // fUserList->AddFilter(new RightClickSingleClickFilter(this));      
+       
         BScrollView* userScroll = new BScrollView("scroll_users", fUserList, 0, false, true);
-
+        
+        
+        
+        
         fInputControl = new BTextControl("input", "", "", new BMessage(MSG_SEND_MESSAGE));
+
+
 
 
         // Ensure we have at least one server available to read initial sizes from safely
@@ -2977,15 +3350,20 @@ void DisplayBanListDialog(ServerTreeItem* serverContext, BString channelName, BO
                 banListView->AddItem(new BStringItem(storedMask->String()));
             }
         }
-        
-        // FIX: The items have been safely extracted and pushed into the view container,
-        // so it is now 100% safe to free the temporary heap allocations right here!
         delete harvestList; 
     }
     // ===================================================================================
 
+    // FIX: Wrap the list view inside a scroll view container with a vertical scroll bar
+    BScrollView* scrollView = new BScrollView("banListScroll", banListView, 
+                                              B_FOLLOW_LEFT | B_FOLLOW_TOP, 
+                                              0,      // Flags (0 is default)
+                                              false,  // Horizontal scroll bar (false = no)
+                                              true);  // Vertical scroll bar (true = yes)
+    
+    // Add the scroll view to the panel instead of adding the list view directly
+    panel->AddChild(scrollView);
 
-    panel->AddChild(banListView);
 
     BButton* closeBtn = new BButton(BRect(245, 260, 330, 285), "close", "Close", new BMessage(B_QUIT_REQUESTED));
     BButton* unbanBtn = new BButton(BRect(340, 260, 435, 285), "unban", "Remove Ban", new BMessage(MSG_CONTEXT_UNBAN_SUBMIT));
@@ -3238,12 +3616,53 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         
         menu->AddSeparatorItem();
         
-        // NEW: View Channel Ban List Option
+        // 1. Determine your active Operator capability status for this specific channel tab
+        bool iamOperator = false;
+        if (fChannelUsers.count(chanItem) > 0) {
+            BObjectList<UserListItem, true>* userList = fChannelUsers[chanItem];
+            if (userList != nullptr) {
+                for (int32 i = 0; i < userList->CountItems(); i++) {
+                    UserListItem* user = userList->ItemAt(i);
+                    if (user != nullptr && user->Text() != nullptr) {
+                        BString userText(user->Text());
+                        BString cleanUserNick = GetCleanNickname(userText);
+                        
+                        // Check if this row is you, and if it starts with the operator tag
+                        if (fMyNick.ICompare(cleanUserNick) == 0) {
+                            if (userText.StartsWith("@")) {
+                                iamOperator = true;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 2. Channel Modes Controller Window Trigger
+        BMessage* modesWindowMsg = new BMessage(MSG_CONTEXT_SHOW_MODES);
+        modesWindowMsg->AddPointer("chan_item", chanItem);
+        BMenuItem* modesMenuItem = new BMenuItem("Channel Modes...", modesWindowMsg);
+        
+        // PERMISSION ENFORCEMENT: Grey out if you are a standard user
+        if (!iamOperator) {
+            modesMenuItem->SetEnabled(false);
+        }
+        menu->AddItem(modesMenuItem);
+        
+        // 3. View Channel Ban List Option
         BMessage* banListMsg = new BMessage(MSG_CONTEXT_SHOW_BANS);
-        banListMsg->AddPointer("chan_item", chanItem); // Pass the specific channel node pointer
-        menu->AddItem(new BMenuItem("View Channel Ban List...", banListMsg));
+        banListMsg->AddPointer("chan_item", chanItem);
+        BMenuItem* banListMenuItem = new BMenuItem("View Channel Ban List...", banListMsg);
+        
+        // PERMISSION ENFORCEMENT: Grey out if you are a standard user
+        if (!iamOperator) {
+            banListMenuItem->SetEnabled(false);
+        }
+        menu->AddItem(banListMenuItem);
         
         menu->AddSeparatorItem();
+
         
         BMessage* removeMsg = new BMessage('rmch'); 
         removeMsg->AddPointer("channel_item", chanItem);
@@ -3260,6 +3679,26 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
     if (srvItem != nullptr) {
         BPopUpMenu* menu = new BPopUpMenu("ServerOptions", false, false);
         
+        // FIX: Ensure activeSrv is mapped exactly to the tree item currently being right-clicked,
+        // rather than blindly trusting the global 'selectedConfig' index state!
+        ServerConfig* activeSrv = nullptr;
+        std::string targetServerName = srvItem->Text();
+        
+        for (auto& srv : cfg.servers) {
+            if (srv.name == targetServerName) {
+                activeSrv = &srv;
+                break;
+            }
+        }
+        if (activeSrv == nullptr) {
+            for (auto& srv : cfg.customServers) {
+                if (srv.name == targetServerName) {
+                    activeSrv = &srv;
+                    break;
+                }
+            }
+        }
+
         bool isConnected = false;
         if (fServerSockets.find(srvItem) != fServerSockets.end()) {
             if (fServerSockets[srvItem] != nullptr) {
@@ -3288,33 +3727,45 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         BMessage* toggleConnectMsg = new BMessage(MSG_TOGGLE_AUTOCONNECT);
         toggleConnectMsg->AddPointer("server_item", srvItem);
         BMenuItem* connectMenuItem = new BMenuItem(toggleConnectLabel.String(), toggleConnectMsg);
-        if (srvItem->IsAutoConnect()) connectMenuItem->SetMarked(true);
+        
+        // FIX: Pull directly from activeSrv configuration structural states
+        if (activeSrv != nullptr && activeSrv->autoConnect) {
+            connectMenuItem->SetMarked(true);
+        }
         menu->AddItem(connectMenuItem);
 
         // Toggle Auto-Reconnect Option
-        BString toggleReconnectLabel = srvItem->IsAutoReconnect() ? "Auto-Reconnect on Disconnect" : "Auto-Reconnect on Disconnect";
+        BString toggleReconnectLabel = "Auto-Reconnect on Disconnect";
         BMessage* toggleReconnectMsg = new BMessage(MSG_TOGGLE_AUTORECONNECT);
         toggleReconnectMsg->AddPointer("server_item", srvItem);
         BMenuItem* reconnectMenuItem = new BMenuItem(toggleReconnectLabel.String(), toggleReconnectMsg);
-        if (srvItem->IsAutoReconnect()) reconnectMenuItem->SetMarked(true);
+        
+        // FIX: Pull directly from activeSrv configuration structural states
+        if (activeSrv != nullptr && activeSrv->autoReconnect) {
+            reconnectMenuItem->SetMarked(true);
+        }
         menu->AddItem(reconnectMenuItem);
         
         // Status Messages Suppression Option
-        BString toggleStatusLabel = srvItem->IsHideStatus() ? "Hide Status Messages" : "Hide Status Messages";
+        BString toggleStatusLabel = "Hide Status Messages";
         BMessage* toggleStatusMsg = new BMessage(MSG_TOGGLE_HIDE_STATUS);
         toggleStatusMsg->AddPointer("server_item", srvItem);
         BMenuItem* statusMenuItem = new BMenuItem(toggleStatusLabel.String(), toggleStatusMsg);
-        if (srvItem->IsHideStatus()) statusMenuItem->SetMarked(true);
-        menu->AddItem(statusMenuItem); // <-- FIXED: Added missing menu allocation injection pass
+        
+        // FIX: Pull directly from activeSrv configuration structural states (mapping hideStatusMessages)
+        if (activeSrv != nullptr && activeSrv->hideStatusMessages) {
+            statusMenuItem->SetMarked(true);
+        }
+        menu->AddItem(statusMenuItem); 
 
-
+   /*
         // Custom Inline Emoticons Toggle 
         BString toggleEmotesLabel = "Enable Emoticons";
         BMessage* toggleEmotesMsg = new BMessage('tgem');
         toggleEmotesMsg->AddPointer("server_item", srvItem);
         BMenuItem* emotesMenuItem = new BMenuItem(toggleEmotesLabel.String(), toggleEmotesMsg);
         
-        /*
+     
         // Find the configuration matching this specific server item to set initial state
         if (srvItem != nullptr) {
             BString targetServerName(srvItem->Text());
@@ -3788,8 +4239,63 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         command = line;
     }
 
-    // FIX: Completely stripped the fCurrentServerNode fallback mechanism from this block.
-    // Background connection socket threads are now fully isolated and thread-safe.
+       
+       
+       
+       
+      
+        if (command == "324" || command == "MODE") {
+            BString targetChannel = "";
+            BString activeFlags = "";
+
+            if (command == "324") {
+                // RPL_CHANNELMODEIS Format: :server 324 yournick #channel +flags [args]
+                // 'line' contains the string following the numeric code, e.g., "yournick #channel +mnt"
+                BString payload = line;
+                payload.Trim();
+                
+                int32 firstSpace = payload.FindFirst(" ");
+                if (firstSpace != B_ERROR) {
+                    // Extract past 'yournick' parameter boundary
+                    payload.Remove(0, firstSpace + 1); 
+                    
+                    int32 secondSpace = payload.FindFirst(" ");
+                    if (secondSpace != B_ERROR) {
+                        payload.CopyInto(targetChannel, 0, secondSpace);
+                        payload.CopyInto(activeFlags, secondSpace + 1, payload.Length() - (secondSpace + 1));
+                        
+                        // Strip trailing argument spaces out if they exist
+                        int32 flagEndSpace = activeFlags.FindFirst(" ");
+                        if (flagEndSpace != B_ERROR) activeFlags.Truncate(flagEndSpace);
+                    }
+                }
+            } 
+            else if (command == "MODE") {
+                // Format: :nick!user@host MODE #channel +m
+                // 'line' contains the target channel name, 'trailing' contains the added/removed mode flags
+                targetChannel = line;
+                targetChannel.Trim();
+                
+                // Strip out any trailing parameter fields from the target line if it has spaces
+                int32 lineSpace = targetChannel.FindFirst(" ");
+                if (lineSpace != B_ERROR) targetChannel.Truncate(lineSpace);
+                
+                activeFlags = trailing;
+                activeFlags.Trim();
+            }
+
+            // Sync the states up to the checkbox view container smoothly
+            if (fActiveModesDialog != nullptr && fActiveModesChannel == targetChannel) {
+                bool hasM = (activeFlags.FindFirst("m") != B_ERROR);
+                bool hasS = (activeFlags.FindFirst("s") != B_ERROR);
+                bool hasI = (activeFlags.FindFirst("i") != B_ERROR);
+                bool hasT = (activeFlags.FindFirst("t") != B_ERROR);
+
+                fActiveModesDialog->UpdateCheckedStates(hasM, hasS, hasI, hasT);
+            }
+        }
+
+
 
 
 	// @JOIN
@@ -5716,6 +6222,80 @@ public:
         switch (message->what) {
 
 
+		case 'rgmd': // Register Modes Dialog
+            message->FindPointer("dialog_ptr", (void**)&fActiveModesDialog);
+            message->FindString("channel_target", &fActiveModesChannel);
+            break;
+
+        case 'unmd': // Unregister Modes Dialog
+            fActiveModesDialog = nullptr;
+            fActiveModesChannel = "";
+            break;
+
+
+
+        case MSG_CONTEXT_SHOW_MODES: {
+            ChannelTreeItem* chanItem = nullptr;
+            if (message->FindPointer("chan_item", (void**)&chanItem) == B_OK && chanItem != nullptr) {
+                
+                BListItem* parentItem = fChannelTree->Superitem(chanItem);
+                ServerTreeItem* contextServer = dynamic_cast<ServerTreeItem*>(parentItem);
+                
+                if (contextServer != nullptr) {
+                    // MULTI-SERVER FIX: Safely retrieve the socket using our dynamic map.
+                    // This strips out the hardcoded fOftcSocket and fLiberaSocket dependencies entirely.
+                    BSecureSocket* activeSocket = nullptr;
+                    auto it = fServerSockets.find(contextServer);
+                    if (it != fServerSockets.end()) {
+                        activeSocket = it->second;
+                    }
+
+                    // Check your operator status by analyzing the nickname prefix text traits
+                    bool iamOperator = false;
+                    
+                    if (fChannelUsers.count(chanItem) > 0) {
+                        BObjectList<UserListItem, true>* userList = fChannelUsers[chanItem];
+                        if (userList != nullptr) {
+                            for (int32 i = 0; i < userList->CountItems(); i++) {
+                                UserListItem* user = userList->ItemAt(i);
+                                if (user != nullptr && user->Text() != nullptr) {
+                                    BString userText(user->Text());
+                                    
+                                    // Clean the name to strip any trailing spaces or formatting markers
+                                    BString cleanUserNick = GetCleanNickname(userText);
+                                    
+                                    // 1. Verify if this specific row represents YOUR client profile
+                                    if (fMyNick.ICompare(cleanUserNick) == 0) {
+                                        // 2. Check if your nick item string begins with the standard IRC operator badge '@'
+                                        if (userText.StartsWith("@")) {
+                                            iamOperator = true;
+                                        }
+                                        break; 
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Only launch the dialog if we have a valid, active socket connection!
+                    if (activeSocket != nullptr) {
+                        ChannelModesDialog* modesDialog = new ChannelModesDialog(this, activeSocket, chanItem->Text(), iamOperator);
+                        modesDialog->Show();
+                    } else {
+                        BString warning;
+                        warning.SetToFormat("System Error: Server '%s' is disconnected. Cannot view channel modes.\n", 
+                                            contextServer->Text());
+                        LogToItemBuffer(fActiveBufferItem, warning);
+                    }
+                }
+            }
+            break;
+        }
+
+
+
+
+
         case 'tgem': {
             // 1. Recover the pointer to the target server item
             ServerTreeItem* srvItem = nullptr;
@@ -5993,97 +6573,30 @@ public:
         
  
  
-        // OP ENVELOPE GENERATOR: Prompts window with time duration operator options
         case MSG_CONTEXT_OP: {
             BString targetNick;
             if (message->FindString("target_nick", &targetNick) == B_OK && targetNick.Length() > 0) {
-                
                 BRect windowFrame(0, 0, 400, 140);
-                BRect screenFrame = Frame();
-                windowFrame.OffsetTo(
-                    screenFrame.left + (screenFrame.Width() - windowFrame.Width()) / 2,
-                    screenFrame.top + (screenFrame.Height() - windowFrame.Height()) / 2
-                );
-
-                BWindow* inputWin = new BWindow(windowFrame, "Give Operator Status", 
-                                               B_MODAL_WINDOW, 
-                                               B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS);
-
-                BView* panel = new BView(inputWin->Bounds(), "bgPanel", B_FOLLOW_ALL, B_WILL_DRAW);
-                panel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
-                inputWin->AddChild(panel);
-
-                BTextView* promptLabel = new BTextView(BRect(15, 10, 385, 35), "prompt", 
-                                                      BRect(0, 0, 370, 25), B_FOLLOW_LEFT | B_FOLLOW_TOP, B_WILL_DRAW);
-                BString promptText;
-                promptText << "Select how long to grant Operator status to '" << targetNick << "':";
-                promptLabel->SetText(promptText.String());
-                promptLabel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
-                promptLabel->MakeEditable(false);
-                promptLabel->MakeSelectable(false);
-                panel->AddChild(promptLabel);
-
-                // Create Durations Dropdown
-                BPopUpMenu* timeMenu = new BPopUpMenu("OpDurations");
-                timeMenu->AddItem(new BMenuItem("Permanently", nullptr));
-                timeMenu->AddItem(new BMenuItem("5 Minutes", nullptr));
-                timeMenu->AddItem(new BMenuItem("1 Hour", nullptr));
-                timeMenu->AddItem(new BMenuItem("1 Day", nullptr));
+                // Center math remains identical...
                 
-                if (timeMenu->ItemAt(0) != nullptr) timeMenu->ItemAt(0)->SetMarked(true);
-
-                BMenuField* durationField = new BMenuField(BRect(15, 45, 385, 70), "opDurationDropdown", 
-                                                         "Duration: ", timeMenu);
-                durationField->SetDivider(panel->StringWidth("Duration: ") + 5);
-                panel->AddChild(durationField);
-
-                // Action buttons
-                BButton* cancelBtn = new BButton(BRect(200, 100, 285, 125), "cancel", "Cancel", new BMessage(B_QUIT_REQUESTED));
-                
-                // FIX: Corrected spelling to MSG_CONTEXT_OP_SUBMIT here
-                BButton* opBtn = new BButton(BRect(295, 100, 385, 125), "op", "Grant Op", new BMessage(MSG_CONTEXT_OP_SUBMIT));
-                
-                cancelBtn->SetTarget(inputWin);
-                panel->AddChild(cancelBtn);
-                panel->AddChild(opBtn);
-
-                BMessage* buttonPayload = new BMessage(MSG_CONTEXT_OP_SUBMIT);
-                buttonPayload->AddString("target_nick", targetNick);
-                buttonPayload->AddPointer("window_ref", inputWin);
-                opBtn->SetMessage(buttonPayload);
-                opBtn->SetTarget(this);
-
+                OpDurationWindow* inputWin = new OpDurationWindow(windowFrame, "Give Operator Status", targetNick, this);
                 inputWin->Show();
             }
             break;
         }
 
 
+
   
   
-          // OP TRANSMITTER: Grants operator status and schedules the auto-deop runner
+        // OP TRANSMITTER: Grants operator status and schedules the auto-deop runner
         case MSG_CONTEXT_OP_SUBMIT: {
             BString targetNick;
             BString opDuration = "Permanently";
             
             if (message->FindString("target_nick", &targetNick) == B_OK) {
-                void* winPtr = nullptr;
-                
-                if (message->FindPointer("window_ref", &winPtr) == B_OK && winPtr != nullptr) {
-                    BWindow* modalWindow = static_cast<BWindow*>(winPtr);
-                    
-                    if (modalWindow->Lock()) {
-                        BMenuField* durationField = dynamic_cast<BMenuField*>(modalWindow->FindView("opDurationDropdown"));
-                        if (durationField != nullptr && durationField->Menu() != nullptr) {
-                            BMenuItem* markedItem = durationField->Menu()->FindMarked();
-                            if (markedItem != nullptr) {
-                                opDuration = markedItem->Label();
-                            }
-                        }
-                        modalWindow->Unlock();
-                        modalWindow->PostMessage(B_QUIT_REQUESTED);
-                    }
-                }
+                // FIX: Pull directly from our newly streamlined payload string parameter
+                message->FindString("op_duration", &opDuration);
 
                 ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
                 if (contextServer == nullptr) break;
@@ -6101,23 +6614,19 @@ public:
 
                 BSecureSocket* activeSocket = GetActiveSocket(contextServer);
                 if (activeSocket != nullptr) {
-                    // 1. Send the immediate +o payload over the wire
                     BString outgoingPayload;
                     outgoingPayload << "MODE " << activeChannel << " +o " << targetNick << "\r\n";
                     activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
 
-                    // 2. Schedule the automatic de-op payload if a time limit was picked
                     bigtime_t delayMicroseconds = 0;
                     if (opDuration == "5 Minutes") delayMicroseconds = 5LL * 60LL * 1000000LL;
                     else if (opDuration == "1 Hour") delayMicroseconds = 60LL * 60LL * 1000000LL;
                     else if (opDuration == "1 Day")  delayMicroseconds = 24LL * 60LL * 60LL * 1000000LL;
 
                     if (delayMicroseconds > 0) {
-                        // 1. Permanently track their name locally so we can intercept future rejoins
                         BString* trackedNick = new BString(targetNick);
                         fAutoOpList.AddItem(trackedNick);
 
-                        // 2. Create the notification parcel to remove them when the timer expires
                         BMessage* deopTrigger = new BMessage(MSG_CONTEXT_TIMED_DEOP_TRIGGER);
                         deopTrigger->AddString("target_channel", activeChannel);
                         deopTrigger->AddString("target_nick", targetNick);
@@ -6125,11 +6634,11 @@ public:
 
                         new BMessageRunner(BMessenger(this), deopTrigger, delayMicroseconds, 1);
                     }
-
                 }
             }
             break;
         }
+
 
   
   
@@ -6383,72 +6892,79 @@ public:
         }
 
 
-        // 1. CONTEXT CLICK HANDLER: Intercepts row interactions to show the menu
+         // 1. CONTEXT CLICK HANDLER: Intercepts row interactions to show the menu
         case MSG_USER_LIST_CONTEXT_CLICK: {
             BPoint mousePoint;
             uint32 mouseBtn = 0;
             
+            // Revert back to direct mouse polling checks to eliminate message filter interference
             fUserList->GetMouse(&mousePoint, &mouseBtn);
             
-            if (mouseBtn & B_SECONDARY_MOUSE_BUTTON) {
-                int32 selectedIdx = fUserList->CurrentSelection();
-                if (selectedIdx < 0) break;
+            // Only continue if the secondary mouse button (right click) is actively held down
+            if ((mouseBtn & B_SECONDARY_MOUSE_BUTTON) == 0) {
+                break;
+            }
+            
+            // Find the item directly under the translated coordinates
+            int32 clickedIdx = fUserList->IndexOf(mousePoint);
+            if (clickedIdx < 0) break;
 
-                UserListItem* clickedItem = dynamic_cast<UserListItem*>(fUserList->ItemAt(selectedIdx));
-                if (clickedItem == nullptr) break;
+            // Visual Polish: Force the visual selection matrix to snap instantly to our target
+            if (fUserList->CurrentSelection() != clickedIdx) {
+                fUserList->Select(clickedIdx);
+            }
 
-                // DRY call replaces manual stripping loop cleanly
-                BString cleanNick = GetCleanNickname(clickedItem->Text());
-                BPopUpMenu* contextMenu = new BPopUpMenu("UserContext", false, false);
+            UserListItem* clickedItem = dynamic_cast<UserListItem*>(fUserList->ItemAt(clickedIdx));
+            if (clickedItem == nullptr) break;
 
-                // CONDITION A: You right-clicked YOUR OWN nickname handle
-                if (cleanNick == fMyNick) {
-                    BMenuItem* toggleAwayItem = nullptr;
-                    if (clickedItem->IsAway()) {
-                        toggleAwayItem = new BMenuItem("Set Status: Back", new BMessage(MSG_CONTEXT_SET_AWAY));
-                    } else {
-                        toggleAwayItem = new BMenuItem("Set Status: Away", new BMessage(MSG_CONTEXT_SET_AWAY));
-                    }
-                    contextMenu->AddItem(toggleAwayItem);
-                } 
-                // CONDITION B: You right-clicked SOMEONE ELSE's nickname handle
-                else {
-                    BString menuLabel;
-                    menuLabel << "Private Message " << cleanNick;
-                    
-                    BMessage* pmMsg = new BMessage(MSG_CONTEXT_PRIVMSG);
-                    pmMsg->AddString("target_nick", cleanNick);
-                    
-                    contextMenu->AddItem(new BMenuItem(menuLabel.String(), pmMsg));
-                    contextMenu->AddSeparatorItem();
+            BString cleanNick = GetCleanNickname(clickedItem->Text());
+            BPopUpMenu* contextMenu = new BPopUpMenu("UserContext", false, false);
 
-                    BMenu* modesMenu = new BMenu("Channel Modes");
-                    struct {
-                        const char* label;
-                        uint32 command;
-                    } opActions[] = {
-                        { "Op", MSG_CONTEXT_OP },
-                        { "Deop", MSG_CONTEXT_DEOP },
-                        { "Voice", MSG_CONTEXT_VOICE },
-                        { "Devoice", MSG_CONTEXT_DEVOICE },
-                        { "Kick", MSG_CONTEXT_KICK }
-                    };
+            // CONDITION A: You right-clicked YOUR OWN nickname handle
+            if (cleanNick == fMyNick) {
+                const char* statusText = clickedItem->IsAway() ? "Set Status: Back" : "Set Status: Away";
+                contextMenu->AddItem(new BMenuItem(statusText, new BMessage(MSG_CONTEXT_SET_AWAY)));
+            } 
+            // CONDITION B: You right-clicked SOMEONE ELSE's nickname handle
+            else {
+                BString menuLabel;
+                menuLabel << "Private Message " << cleanNick;
+                
+                BMessage* pmMsg = new BMessage(MSG_CONTEXT_PRIVMSG);
+                pmMsg->AddString("target_nick", cleanNick);
+                contextMenu->AddItem(new BMenuItem(menuLabel.String(), pmMsg));
+                contextMenu->AddSeparatorItem();
 
-                    for (const auto& action : opActions) {
-                        BMessage* actionMsg = new BMessage(action.command);
-                        actionMsg->AddString("target_nick", cleanNick);
-                        modesMenu->AddItem(new BMenuItem(action.label, actionMsg));
-                    }
+                BMenu* modesMenu = new BMenu("Channel Modes");
+                struct {
+                    const char* label;
+                    uint32 command;
+                } opActions[] = {
+                    { "Op", MSG_CONTEXT_OP },
+                    { "Deop", MSG_CONTEXT_DEOP },
+                    { "Voice", MSG_CONTEXT_VOICE },
+                    { "Devoice", MSG_CONTEXT_DEVOICE },
+                    { "Kick", MSG_CONTEXT_KICK }
+                };
 
-                    modesMenu->SetTargetForItems(this);
-                    contextMenu->AddItem(modesMenu);
+                for (const auto& action : opActions) {
+                    BMessage* actionMsg = new BMessage(action.command);
+                    actionMsg->AddString("target_nick", cleanNick);
+                    modesMenu->AddItem(new BMenuItem(action.label, actionMsg));
                 }
 
-                contextMenu->SetTargetForItems(this);
-                contextMenu->Go(fUserList->ConvertToScreen(mousePoint), true, true, true);
+                modesMenu->SetTargetForItems(this);
+                contextMenu->AddItem(modesMenu);
             }
+
+            contextMenu->SetTargetForItems(this);
+            
+            // Open the menu asynchronously so it doesn't block the app message loop
+            contextMenu->Go(fUserList->ConvertToScreen(mousePoint), true, true, true);
             break;
         }
+
+
 
 
 
@@ -6500,43 +7016,55 @@ public:
         
         case MSG_TOPIC_CHANGED: {
             if (fActiveBufferItem != nullptr) {
+                // Strip activity tag markers out of the channel text if present before checking prefix notation
                 BString channelName = fActiveBufferItem->Text();
-                
-                if (channelName.StartsWith("#")) {
+                int32 tagPos = channelName.FindFirst(" [");
+                if (tagPos != B_ERROR) channelName.Truncate(tagPos);
+
+                if (channelName.StartsWith("#") || channelName.StartsWith("&")) {
                     BString newlyTypedTopic = fTopicView->Text();
                     newlyTypedTopic.Trim();
 
                     if (newlyTypedTopic.Length() > 0) {
-                        // 1. Determine the correct active server node from the active channel node context
-                        ChannelTreeItem* activeChan = dynamic_cast<ChannelTreeItem*>(fActiveBufferItem);
+                        // 1. MULTI-SERVER FIX: Climb the tree hierarchy safely to find the 
+                        // exact parent server node that owns this specific channel.
                         ServerTreeItem* targetedServer = nullptr;
+                        BListItem* parentItem = fChannelTree->Superitem(fActiveBufferItem);
                         
-                        if (activeChan != nullptr) {
-                            // Loop through your parent server nodes to locate the match, or query your tree structure directly
-                            // Alternatively, fallback to your active server node tracking pointer:
-                            targetedServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
-                        } else {
-                            targetedServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                        if (parentItem != nullptr) {
+                            targetedServer = dynamic_cast<ServerTreeItem*>(parentItem);
                         }
 
-                        // 2. Safely resolve the associated secure writing socket pipeline
+                        // Fallback tracking point if the hierarchy traversal is unmapped
+                        if (targetedServer == nullptr) {
+                            targetedServer = fCurrentServerNode;
+                        }
+
+                        // 2. MULTI-SERVER FIX: Dynamically map the associated secure socket loop
                         BSecureSocket* activeSocket = nullptr;
-                        if (targetedServer != nullptr && fServerSockets.count(targetedServer) > 0) {
-                            activeSocket = fServerSockets[targetedServer];
-                        } else {
-                            activeSocket = (targetedServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+                        if (targetedServer != nullptr) {
+                            auto it = fServerSockets.find(targetedServer);
+                            if (it != fServerSockets.end()) {
+                                activeSocket = it->second;
+                            }
                         }
 
+                        // 3. Dispatch the payload instructions securely over the wire
                         if (activeSocket != nullptr) {
                             BString topicCommand;
                             topicCommand << "TOPIC " << channelName << " :" << newlyTypedTopic << "\r\n";
                             activeSocket->Write(topicCommand.String(), topicCommand.Length());
+                        } else {
+                            BString warning;
+                            warning.SetToFormat("System Error: Cannot update topic. The server context is disconnected.\n");
+                            LogToItemBuffer(fActiveBufferItem, warning);
                         }
                     }
                 }
             }
             break;
         }
+
 
 
 
@@ -6825,12 +7353,12 @@ public:
         // Only modify network sockets or configuration lists if the item is a true channel room
         if (parentServer != nullptr && isActualIrcChannel) {
             
-            // Dynamically pull the correct network connection out of our lookup map
+            // MULTI-SERVER FIX: Trust your dynamic socket array map completely.
+            // This drops the hardcoded fOftcSocket and fLiberaSocket dependencies entirely!
             BSecureSocket* activeSocket = nullptr;
-            if (fServerSockets.count(parentServer) > 0) {
-                activeSocket = fServerSockets[parentServer];
-            } else {
-                activeSocket = (parentServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+            auto it = fServerSockets.find(parentServer);
+            if (it != fServerSockets.end()) {
+                activeSocket = it->second;
             }
 
             if (activeSocket != nullptr) {
@@ -6912,6 +7440,7 @@ public:
         save_config();
         break;
     }
+
 
 
 
@@ -7171,13 +7700,15 @@ public:
 
                 ServerTreeItem* serverItem = static_cast<ServerTreeItem*>(ptr);
                 
+                // MULTI-SERVER FIX: Trust your dynamic socket array map completely. 
+                // This cleanly accommodates unlimited concurrent custom network servers!
                 BSecureSocket* activeSocket = nullptr;
-                if (fServerSockets.count(serverItem) > 0) {
-                    activeSocket = fServerSockets[serverItem];
-                } else {
-                    activeSocket = (serverItem == fOftcNode) ? fOftcSocket : fLiberaSocket;
+                auto it = fServerSockets.find(serverItem);
+                if (it != fServerSockets.end()) {
+                    activeSocket = it->second;
                 }
                 
+                // Verify the socket is both present AND actively allocated/connected
                 if (activeSocket != nullptr) {
                     if (fActiveListWindow == nullptr) {
                         fActiveListWindow = new IRCChannelListWindow(this, activeSocket, serverItem, &fActiveListWindow);
@@ -7189,8 +7720,10 @@ public:
                         }
                     }
                 } else {
+                    // Inform the user dynamically based on the explicit server name they right-clicked
                     BString warning;
-                    warning.SetToFormat("System Error: You must connect to '%s' first before requesting a channel list.\n", serverItem->Text());
+                    warning.SetToFormat("System Error: You must connect to '%s' first before requesting a channel list.\n", 
+                                        serverItem->Text());
                     LogToItemBuffer(fActiveBufferItem, warning);
                 }
                 break;
@@ -7719,7 +8252,7 @@ public:
                 ConnectToServer(fOftcNode); 
                 break;
 
-        case MSG_SEND_MESSAGE: {
+     case MSG_SEND_MESSAGE: {
             BString text = fInputControl->Text();
             if (text.Length() > 0) {
                 BString activeTarget = "";
@@ -7767,18 +8300,18 @@ public:
                     }
                 }
 
-                
-                // 1. Fallback safety constraint mapping
+                // 1. MULTI-SERVER FIX: Use dynamic fallback tracking rather than hardcoded global nodes
                 if (contextServer == nullptr) {
-                    contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                    contextServer = fCurrentServerNode;
                 }
                 
-                // 2. Dynamic lookup matching from our socket array map
+                // 2. MULTI-SERVER FIX: Trust your dynamic socket array map completely
                 BSecureSocket* activeSocket = nullptr;
-                if (fServerSockets.count(contextServer) > 0) {
-                    activeSocket = fServerSockets[contextServer];
-                } else {
-                    activeSocket = (contextServer == fOftcNode) ? fOftcSocket : fLiberaSocket;
+                if (contextServer != nullptr) {
+                    auto it = fServerSockets.find(contextServer);
+                    if (it != fServerSockets.end()) {
+                        activeSocket = it->second;
+                    }
                 }
                 
                 if (activeSocket != nullptr) {
@@ -7811,12 +8344,28 @@ public:
                                 
                                 BString timestampPrefix = "";
                                 bigtime_t currentTime = real_time_clock_usecs();
-                                time_t rawTime = (time_t)(currentTime / 1000000);
-                                struct tm* timeInfo = localtime(&rawTime);
-                                if (timeInfo != nullptr) {
-                                    char timeBuffer[32];
-                                    strftime(timeBuffer, sizeof(timeBuffer), "[%H:%M] ", timeInfo);
-                                    timestampPrefix = timeBuffer;
+                                bigtime_t thirtyMinutesInUsecs = (bigtime_t)30 * 60 * 1000000;
+                                BStringItem* targetNode = fActiveBufferItem;
+
+                                if (targetNode != nullptr) {
+                                    bool needsTimestamp = (fLastTimestampTime.count(targetNode) == 0);
+                                    if (!needsTimestamp) {
+                                        bigtime_t lastTime = fLastTimestampTime.find(targetNode)->second;
+                                        if ((currentTime - lastTime) >= thirtyMinutesInUsecs) {
+                                            needsTimestamp = true;
+                                        }
+                                    }
+
+                                    if (needsTimestamp) {
+                                        fLastTimestampTime[targetNode] = currentTime;
+                                        time_t rawTime = (time_t)(currentTime / 1000000);
+                                        struct tm* timeInfo = localtime(&rawTime);
+                                        if (timeInfo != nullptr) {
+                                            char timeBuffer[32];
+                                            strftime(timeBuffer, sizeof(timeBuffer), "[%H:%M] ", timeInfo);
+                                            timestampPrefix = timeBuffer;
+                                        }
+                                    }
                                 }
 
                                 BString echoStr;
@@ -7832,9 +8381,8 @@ public:
                             commandLine.Remove(0, 6); // strip "topic " keyword and space
                             commandLine.Trim();
 
-                            if (activeTarget.StartsWith("#")) {
+                            if (activeTarget.StartsWith("#") || activeTarget.StartsWith("&")) {
                                 if (commandLine.Length() > 0) {
-                                    // Construct and send the standard IRC TOPIC payload format
                                     rawPayload << "TOPIC " << activeTarget << " :" << commandLine << "\r\n";
                                 } else {
                                     BString warning = "Usage: /topic <New channel topic content string>\n";
@@ -7862,7 +8410,6 @@ public:
                                 LogToItemBuffer(fActiveBufferItem, echoStr);
                             }
                         } else if (commandLine.ICompare("list", 4) == 0) {
-  
                             bool windowIsValid = false;
                             if (fActiveListWindow != nullptr) {
                                 BMessenger messenger(fActiveListWindow);
@@ -7889,25 +8436,37 @@ public:
                         // =========================================================================
                         // REGULAR CHAT TEXT ROUTING ENGINE (PLAIN CHAT SUBMISSION)
                         // =========================================================================
-                        
                         if (isServerLogTab) {
                             BString warning = "System Error: Use slash commands (like /JOIN) when typing inside the server status log.\n";
                             LogToItemBuffer(fActiveBufferItem, warning);
                         } else if (activeTarget.Length() > 0) {
-                            // Construct the raw outgoing socket network string package stream
                             rawPayload << "PRIVMSG " << activeTarget << " :" << text << "\r\n";
                             
-                            // Generate localized chat timestamp prefix bounds
                             BString timestampPrefix = "";
                             bigtime_t currentTime = real_time_clock_usecs();
-                            time_t rawTime = (time_t)(currentTime / 1000000);
-                            struct tm* timeInfo = localtime(&rawTime);
-                            if (timeInfo != nullptr) {
-                                char timeBuffer[32];
-                                strftime(timeBuffer, sizeof(timeBuffer), "[%H:%M] ", timeInfo);
-                                timestampPrefix = timeBuffer;
-                            }
+                            bigtime_t thirtyMinutesInUsecs = (bigtime_t)30 * 60 * 1000000;
+                            BStringItem* targetNode = fActiveBufferItem;
 
+                            if (targetNode != nullptr) {
+                                bool needsTimestamp = (fLastTimestampTime.count(targetNode) == 0);
+                                if (!needsTimestamp) {
+                                    bigtime_t lastTime = fLastTimestampTime.find(targetNode)->second;
+                                    if ((currentTime - lastTime) >= thirtyMinutesInUsecs) {
+                                        needsTimestamp = true;
+                                    }
+                                }
+
+                                if (needsTimestamp) {
+                                    fLastTimestampTime[targetNode] = currentTime;
+                                    time_t rawTime = (time_t)(currentTime / 1000000);
+                                    struct tm* timeInfo = localtime(&rawTime);
+                                    if (timeInfo != nullptr) {
+                                        char timeBuffer[32];
+                                        strftime(timeBuffer, sizeof(timeBuffer), "[%H:%M] ", timeInfo);
+                                        timestampPrefix = timeBuffer;
+                                    }
+                                }
+                            }
 
                             BString echoStr;
                             echoStr << timestampPrefix << "<" << fMyNick << "> " << text << "\n";
@@ -7921,12 +8480,17 @@ public:
                             LogDebugStream(contextServer->Text(), "OUTGOING", rawPayload.String(), rawPayload.Length());
                         }
                     }
+                } else {
+                    BString warning = "System Error: Selected server connection is offline. Message transmission aborted.\n";
+                    LogToItemBuffer(fActiveBufferItem, warning);
                 }
             }
             fInputControl->SetText("");
             fInputControl->MakeFocus(true);
             break;
         }
+
+
 
 
 
@@ -8162,6 +8726,11 @@ void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
  	BGridView*    fEmoticonGrid;
     BButton*    fIconToggleButton;  
 	BWindow*    fActiveIconPopup; 
+
+	ChannelModesDialog* fActiveModesDialog;
+	BString             fActiveModesChannel;
+
+	
 }; 
 
 class Cricket : public BApplication {
