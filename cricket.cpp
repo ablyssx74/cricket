@@ -64,7 +64,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.21 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.22 (Haiku OS)";
 }
 
 
