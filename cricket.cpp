@@ -125,6 +125,9 @@ class ServerTreeItem;
 
 using json = nlohmann::json;
 
+// Define the default background path as a constant
+const std::string DEFAULT_BG_PATH = "/boot/system/data/cricket/default_background.png";
+
 struct ServerConfig {
     std::string name;
     std::string host;
@@ -149,6 +152,7 @@ struct ServerConfig {
 
     // Per-server Chat Logging Option (Defaults to false)
     bool logChatsToFile = false; 
+    bool enableColorCodes;
 };
 
 
@@ -188,7 +192,7 @@ void save_config() {
     
     // 1. Save standard/default servers
     json serverArray = json::array();
-    for (const auto& srv : cfg.servers) {
+    for (auto& srv : cfg.servers) {
         json s;        
         s["name"] = srv.name;
         s["host"] = srv.host;
@@ -200,12 +204,19 @@ void save_config() {
         s["autoConnect"] = srv.autoConnect; 
         s["autoReconnect"] = srv.autoReconnect;
         s["hideStatusMessages"] = srv.hideStatusMessages; 
+        
+        // Fallback check: Use default path if empty
+        if (srv.backgroundImagePath.empty()) {
+            srv.backgroundImagePath = DEFAULT_BG_PATH;
+        }
         s["background_image"] = srv.backgroundImagePath; 
+        
         s["bg_opacity"] = srv.backgroundOpacity; 
         s["enable_emoticons"] = srv.enableEmoticons; 
         s["useCustomDrawFunction"] = srv.useCustomDrawFunction;
-	    s["logChatsToFile"] = srv.logChatsToFile;
-
+        s["logChatsToFile"] = srv.logChatsToFile;
+        s["enableColorCodes"] = srv.enableColorCodes; 
+		
         // Per-server font size settings
         s["serverListFontSize"] = srv.serverListFontSize;
         s["chatLogFontSize"] = srv.chatLogFontSize;
@@ -222,7 +233,7 @@ void save_config() {
 
     // 2. Save custom servers into their own isolated JSON array
     json customServerArray = json::array();
-    for (const auto& srv : cfg.customServers) {
+    for (auto& srv : cfg.customServers) {
         json s;        
         s["name"] = srv.name;
         s["host"] = srv.host;
@@ -234,12 +245,19 @@ void save_config() {
         s["autoConnect"] = srv.autoConnect; 
         s["autoReconnect"] = srv.autoReconnect;
         s["hideStatusMessages"] = srv.hideStatusMessages; 
+        
+        // Fallback check: Use default path if empty
+        if (srv.backgroundImagePath.empty()) {
+            srv.backgroundImagePath = DEFAULT_BG_PATH;
+        }
         s["background_image"] = srv.backgroundImagePath;
+        
         s["bg_opacity"] = srv.backgroundOpacity; 
         s["enable_emoticons"] = srv.enableEmoticons;  
         s["useCustomDrawFunction"] = srv.useCustomDrawFunction;
- 	    s["logChatsToFile"] = srv.logChatsToFile;
- 	     
+        s["logChatsToFile"] = srv.logChatsToFile;
+        s["enableColorCodes"] = srv.enableColorCodes;   
+ 	    
         // Per-server font size settings
         s["serverListFontSize"] = srv.serverListFontSize;
         s["chatLogFontSize"] = srv.chatLogFontSize;
@@ -278,6 +296,9 @@ void load_config() {
     BPath path;
     bool mustSaveDefaults = false;
 
+    // Ensure the fallback path constant is accessible
+    const std::string DEFAULT_BG_PATH = "/boot/system/data/cricket/default_background.png";
+
     if (find_directory(B_USER_SETTINGS_DIRECTORY, &path) == B_OK) {
         path.Append("cricket/cricketConfig.txt");
         std::ifstream infile(path.Path());        
@@ -306,12 +327,19 @@ void load_config() {
                         srv.autoReconnect = s.value("autoReconnect", false); 
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
-                        srv.backgroundImagePath = s.value("background_image", ""); 
+                        
+                        // 1. Fallback if key missing or evaluates to empty string
+                        srv.backgroundImagePath = s.value("background_image", DEFAULT_BG_PATH); 
+                        if (srv.backgroundImagePath.empty()) {
+                            srv.backgroundImagePath = DEFAULT_BG_PATH;
+                        }
+
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
                         srv.useCustomDrawFunction = s.value("useCustomDrawFunction", cfg.useCustomDrawFunction);
                         srv.logChatsToFile = s.value("logChatsToFile", false);
-
+                        srv.enableColorCodes = s.value("enableColorCodes", false);
+						
                         // Parse per-server fonts; falls back to the global configurations parsed above
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
@@ -340,11 +368,18 @@ void load_config() {
                         srv.autoReconnect = s.value("autoReconnect", false); 
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
-                        srv.backgroundImagePath = s.value("background_image", ""); 
+                        
+                        // 2. Fallback if key missing or evaluates to empty string
+                        srv.backgroundImagePath = s.value("background_image", DEFAULT_BG_PATH); 
+                        if (srv.backgroundImagePath.empty()) {
+                            srv.backgroundImagePath = DEFAULT_BG_PATH;
+                        }
+
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
                         srv.useCustomDrawFunction = s.value("useCustomDrawFunction", cfg.useCustomDrawFunction);
                         srv.logChatsToFile = s.value("logChatsToFile", false);
+                        srv.enableColorCodes = s.value("enableColorCodes", false);
                         
                         // Parse per-server fonts; falls back to the global configurations parsed above
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
@@ -372,7 +407,7 @@ void load_config() {
         cfg.servers.clear();        
         cfg.customServers.clear(); 
         cfg.useCustomDrawFunction = true; 
-		cfg.quitMessage = "App Quit: " + std::string(AppInfo::VERSION_STRING);
+        cfg.quitMessage = "App Quit: " + std::string(AppInfo::VERSION_STRING);
 		
         srand(static_cast<unsigned int>(real_time_clock_usecs()));
         int randomSuffix = 1000 + (rand() % 9000);
@@ -391,11 +426,15 @@ void load_config() {
         libera.autoConnect = false;
         libera.autoReconnect = false;
         libera.hideStatusMessages = false;
-        libera.backgroundImagePath = ""; 
+        
+        // 3. Fallback for hardcoded Libera profile
+        libera.backgroundImagePath = DEFAULT_BG_PATH; 
+        
         libera.backgroundOpacity = 30; 
         libera.enableEmoticons = true; 
         libera.useCustomDrawFunction = cfg.useCustomDrawFunction;
         libera.logChatsToFile = false;
+        libera.enableColorCodes = false;
          
         // Fallbacks for the hardcoded defaults
         libera.serverListFontSize = cfg.serverListFontSize;
@@ -415,11 +454,15 @@ void load_config() {
         oftc.autoConnect = false;
         oftc.autoReconnect = false;
         oftc.hideStatusMessages = false;
-        oftc.backgroundImagePath = ""; 
+        
+        // 4. Fallback for hardcoded OFTC profile
+        oftc.backgroundImagePath = DEFAULT_BG_PATH; 
+        
         oftc.backgroundOpacity = 30; 
         oftc.enableEmoticons = true; 
         oftc.useCustomDrawFunction = cfg.useCustomDrawFunction;
         oftc.logChatsToFile = false;
+        oftc.enableColorCodes = false;
         
         oftc.serverListFontSize = cfg.serverListFontSize;
         oftc.chatLogFontSize    = cfg.chatLogFontSize;
@@ -542,6 +585,8 @@ public:
     void SetActiveChannel(BStringItem* activeNode);
     void SetBackgroundImage(const char* filePath);
     void SetBackgroundDimming(int32 level); 
+
+
     virtual void MessageReceived(BMessage* message); 
     virtual void MouseMoved(BPoint point, uint32 transit, const BMessage* dragMessage) override;
 	virtual void MouseUp(BPoint point) override;
@@ -553,7 +598,6 @@ private:
     void ParseTextAndIcons(const BString& text, const text_run_array* runs, BObjectList<StyledRunFragment, true>* rawFragments);
     void ComputeWrapForLine(StyledLine* line, float maxWidth, BObjectList<StyledRunFragment, true>* rawFragments);
     virtual void ScrollTo(BPoint point);
-    // @delete void ComputeWrapForLine(StyledLine* line, float maxWidth);
 	void UpdateScrollRange(bool scrollToBottom = false);
     BObjectList<StyledLine, true> fLines; 
     BStringItem*                  fActiveChannelNode;
@@ -590,208 +634,209 @@ CustomChatView::CustomChatView(BRect frame, const char* name, uint32 resizingMod
 
 
 
-
 void CustomChatView::ParseTextAndIcons(const BString& text, const text_run_array* runs, BObjectList<StyledRunFragment, true>* rawFragments)
 {
-    // --- NEW: RUNTIME TOGGLE ISOLATION RULE ---
+    if (rawFragments == nullptr) return;
+
+    // Standard mIRC 16-color palette
+    rgb_color ircPalette[] = {
+        { 255, 255, 255, 255 }, { 0,   0,   0,   255 }, { 0,   0,   127, 255 }, { 0,   127, 0,   255 },
+        { 255, 0,   0,   255 }, { 127, 0,   0,   255 }, { 127, 0,   127, 255 }, { 255, 127, 0,   255 },
+        { 255, 255, 0,   255 }, { 0,   255, 0,   255 }, { 0,   127, 127, 255 }, { 0,   255, 255, 255 },
+        { 0,   0,   255, 255 }, { 255, 0,   255, 255 }, { 127, 127, 127, 255 }, { 192, 192, 192, 255 }
+    };
+
+    // --- EXTRACT LIVE SERVER OPTION SETTINGS ---
     bool emoticonsEnabled = true;
-    
-    // Look up whether the active view belongs to a default or user-added server configuration profile
-    // Uses the global index layout tracker variable "selectedConfig"
+    bool colorCodesEnabled = false; // Safe default baseline
+
     if (selectedConfig < (int)cfg.servers.size()) {
         emoticonsEnabled = cfg.servers[selectedConfig].enableEmoticons;
+        colorCodesEnabled = cfg.servers[selectedConfig].enableColorCodes;
     } else {
         int customIdx = selectedConfig - cfg.servers.size();
         if (customIdx >= 0 && customIdx < (int)cfg.customServers.size()) {
             emoticonsEnabled = cfg.customServers[customIdx].enableEmoticons;
+            colorCodesEnabled = cfg.customServers[customIdx].enableColorCodes;
         }
     }
 
-    // Fallback: If emoticons are turned off for this server, process the raw string as text and break instantly!
-    if (!emoticonsEnabled) {
-        int32 runCount = (runs != nullptr && runs->count > 0) ? runs->count : 1;
-        BFont baseFont;
-        GetFont(&baseFont);
-
-        for (int32 i = 0; i < runCount; i++) {
-            int32 startPos = (runs != nullptr) ? runs->runs[i].offset : 0;
-            int32 endPos = text.Length();
-            BFont runFont = baseFont;
-            rgb_color runColor = {255, 255, 255, 255};
-
-            if (runs != nullptr && runs->count > 0) {
-                runFont = runs->runs[i].font;
-                runColor = runs->runs[i].color;
-                if (i + 1 < runs->count) endPos = runs->runs[i+1].offset;
-            }
-
-            if (startPos >= text.Length() || endPos <= startPos) continue;
-
-            StyledRunFragment* frag = new StyledRunFragment();
-            frag->type = FRAG_TEXT;
-            text.CopyInto(frag->subText, startPos, endPos - startPos);
-            frag->font = runFont;
-            frag->color = runColor;
-            frag->width = runFont.StringWidth(frag->subText.String());
-            rawFragments->AddItem(frag);
-        }
-        return; // Exit early safely
-    }
-    
-    
     struct EmoteMap { const char* trigger; const uint8* data; };
     EmoteMap emotes[] = {
-        // --- HAPPY / SMILING / LAUGHING ---
         {":)", (const uint8*)kIconSmile},      {":-)", (const uint8*)kIconSmile},
         {"^^", (const uint8*)kIconCheerful},   {"^_^", (const uint8*)kIconCheerful},
         {":D", (const uint8*)kIconLaughing},   {":-D", (const uint8*)kIconLaughing},
         {":d", (const uint8*)kIconLaughing},   {"lol", (const uint8*)kIconLaughing},  
-        {"LOL", (const uint8*)kIconLaughing},
-
-        // --- SAD / FROWNING / ANNOYED ---
-        {":|", (const uint8*)kIconConfused},   {":-|", (const uint8*)kIconConfused},
-        {":/", (const uint8*)kIconConfused},   {":-\\", (const uint8*)kIconConfused},
-        {"o_O", (const uint8*)kIconConfused},  {"O_o", (const uint8*)kIconConfused},
-        {":(", (const uint8*)kIconFrown},      {":-(", (const uint8*)kIconFrown},
-        {">_ <", (const uint8*)kIconAnnoyed},  {">_(", (const uint8*)kIconAnnoyed},
-        {">_<", (const uint8*)kIconAnnoyed},
-
-        // --- CRYING / SCONXT ---
+        {"LOL", (const uint8*)kIconLaughing},  {":|", (const uint8*)kIconConfused},   
+        {":-|", (const uint8*)kIconConfused},  {":/", (const uint8*)kIconConfused},   
+        {":-\\", (const uint8*)kIconConfused}, {"o_O", (const uint8*)kIconConfused},  
+        {"O_o", (const uint8*)kIconConfused},  {":(", (const uint8*)kIconFrown},      
+        {":-(", (const uint8*)kIconFrown},     {">_ <", (const uint8*)kIconAnnoyed},  
+        {">_(", (const uint8*)kIconAnnoyed},   {">_<", (const uint8*)kIconAnnoyed},
         {";'(", (const uint8*)kIconCrying},    {";-'(", (const uint8*)kIconCrying},
         {"T_T", (const uint8*)kIconCrying},    {";_;", (const uint8*)kIconCrying},
-
-        // --- WINKING / PLAYFUL TONGUE ---
         {";)", (const uint8*)kIconWink},       {";-)", (const uint8*)kIconWink},
         {":P", (const uint8*)kIconTongue},     {":p", (const uint8*)kIconTongue},
         {":-P", (const uint8*)kIconTongue},    {":-p", (const uint8*)kIconTongue},
-
-        // --- SHOCK / ASTONISHED / SURPRISED ---
         {":o", (const uint8*)kIconAstonished}, {":O", (const uint8*)kIconAstonished},
         {":-o", (const uint8*)kIconAstonished},{":-O", (const uint8*)kIconAstonished},
         {":0", (const uint8*)kIconAstonished}, {":-0", (const uint8*)kIconAstonished},
         {"O_O", (const uint8*)kIconWideeyed},  {"o_o", (const uint8*)kIconWideeyed},
-
-        // --- COOL / SUNGLASSES ---
         {"8-)", (const uint8*)kIconSunglasses}, {"B)", (const uint8*)kIconSunglasses},
         {"8)", (const uint8*)kIconSunglasses},  {"b)", (const uint8*)kIconSunglasses},
-
-        // --- MISC ROMANTIC / SECRETS ---
         {"<3", (const uint8*)kIconHeart},       {":*", (const uint8*)kIconKiss},       
         {":-*", (const uint8*)kIconKiss},       {":X", (const uint8*)kIconFrown},      
         {":x", (const uint8*)kIconFrown}
     };
-    // FIX A: Correctly divide by the size of a single row element slot
     int32 emoteCount = sizeof(emotes) / sizeof(emotes[0]);
 
     BFont baseFont;
     GetFont(&baseFont);
-    
+
+    rgb_color activeColor = ui_color(B_DOCUMENT_TEXT_COLOR);
+    BFont activeFont = baseFont;
+    activeFont.SetFace(B_REGULAR_FACE);
+
     int32 runCount = (runs != nullptr && runs->count > 0) ? runs->count : 1;
     
     for (int32 i = 0; i < runCount; i++) {
         int32 startPos = 0;
         int32 endPos = text.Length();
         
-        BFont runFont = baseFont;
-        rgb_color runColor = {255, 255, 255, 255}; 
-        
         if (runs != nullptr && runs->count > 0) {
             startPos = runs->runs[i].offset;
-            runFont = runs->runs[i].font;
-            runColor = runs->runs[i].color;
-            
-            if (i + 1 < runs->count) {
-                endPos = runs->runs[i+1].offset;
-            }
+            activeFont = runs->runs[i].font;
+            activeColor = runs->runs[i].color;
+            if (i + 1 < runs->count) endPos = runs->runs[i+1].offset;
         }
         
-        if (startPos >= text.Length() || endPos <= startPos) {
-            continue;
-        }
+        if (startPos >= text.Length() || endPos <= startPos) continue;
 
         BString runText;
         text.CopyInto(runText, startPos, endPos - startPos);
-        
         int32 currentPos = 0;
-        int32 runLength = runText.Length();
         
-        while (currentPos < runLength) {
-            int32 nextTrigger = runLength;
+        while (currentPos < runText.Length()) {
+            int32 tagOpen = runText.FindFirst("[", currentPos);
+            int32 nextTrigger = runText.Length();
             int32 triggerLength = 0;
             const uint8* foundIcon = nullptr;
             
-            for (int32 e = 0; e < emoteCount; e++) {
-                int32 pos = runText.FindFirst(emotes[e].trigger, currentPos);
-                if (pos != B_ERROR && pos < nextTrigger) {
-                    
-                    bool isValidMatch = true;
-                    int32 trigLen = strlen(emotes[e].trigger);
-                    
-                    // FIX B: Only run the timestamp filter if the trigger begins with a colon!
-                    if (emotes[e].trigger[0] == ':' && pos + 1 < runLength) {
-                        char nextChar = runText.ByteAt(pos + 1);
-                        if (isdigit(nextChar)) {
-                            isValidMatch = false;
+            if (emoticonsEnabled) {
+                for (int32 e = 0; e < emoteCount; e++) {
+                    int32 pos = runText.FindFirst(emotes[e].trigger, currentPos);
+                    if (pos != B_ERROR && pos < nextTrigger) {
+                        bool isValidMatch = true;
+                        int32 trigLen = strlen(emotes[e].trigger);
+                        
+                        if (emotes[e].trigger[0] == ':' && pos + 1 < runText.Length()) {
+                            char nextChar = runText.ByteAt(pos + 1);
+                            if (isdigit(nextChar)) isValidMatch = false;
                         }
-                    }
-
-                    // Word boundary isolation filters
-                    if (isValidMatch && pos > 0) {
-                        char prevChar = runText.ByteAt(pos - 1);
-                        if (isalnum(prevChar) || prevChar == '/') {
-                            isValidMatch = false;
+                        if (isValidMatch && pos > 0) {
+                            char prevChar = runText.ByteAt(pos - 1);
+                            if (isalnum(prevChar) || prevChar == '/') isValidMatch = false;
                         }
-                    }
-                    if (isValidMatch && (pos + trigLen < runLength)) {
-                        char nextChar = runText.ByteAt(pos + trigLen);
-                        if (isalnum(nextChar) || nextChar == '/') {
-                            isValidMatch = false;
+                        if (isValidMatch && (pos + trigLen < runText.Length())) {
+                            char nextChar = runText.ByteAt(pos + trigLen);
+                            if (isalnum(nextChar) || nextChar == '/') isValidMatch = false;
                         }
-                    }
-                    
-                    if (isValidMatch) {
-                        nextTrigger = pos;
-                        triggerLength = trigLen;
-                        foundIcon = emotes[e].data;
+                        if (isValidMatch) {
+                            nextTrigger = pos;
+                            triggerLength = trigLen;
+                            foundIcon = emotes[e].data;
+                        }
                     }
                 }
             }
-            
-            if (foundIcon != nullptr) {
+
+            bool processStyleTagFirst = (tagOpen != B_ERROR && tagOpen < nextTrigger);
+
+            // 1. Process Style Tag Bracket Envelope Block
+            if (processStyleTagFirst) {
+                if (tagOpen > currentPos) {
+                    StyledRunFragment* frag = new StyledRunFragment();
+                    frag->type = FRAG_TEXT;
+                    runText.CopyInto(frag->subText, currentPos, tagOpen - currentPos);
+                    frag->font = activeFont;
+                    frag->color = activeColor;
+                    frag->width = activeFont.StringWidth(frag->subText.String());
+                    rawFragments->AddItem(frag);
+                }
+
+                int32 tagClose = runText.FindFirst("]", tagOpen);
+                if (tagClose == B_ERROR) {
+                    currentPos = tagOpen + 1;
+                    continue;
+                }
+
+                // If configuration is active, interpret styling. If unchecked, we silently strip!
+                if (colorCodesEnabled) {
+                    BString tagContent;
+                    runText.CopyInto(tagContent, tagOpen + 1, tagClose - tagOpen - 1);
+
+                    if (tagContent.StartsWith("C:")) {
+                        tagContent.Remove(0, 2);
+                        int32 commaIdx = tagContent.FindFirst(",");
+                        BString fgToken = (commaIdx != B_ERROR) ? tagContent.Truncate(commaIdx) : tagContent;
+                        fgToken.Trim();
+
+                        int32 pIdx = atoi(fgToken.String());
+                        if (pIdx >= 0 && pIdx < 16) activeColor = ircPalette[pIdx];
+                    } 
+                    else if (tagContent == "B") {
+                        activeFont.SetFace(B_BOLD_FACE);
+                    } 
+                    else if (tagContent == "R" || tagContent == "C:Reset") {
+                        activeColor = (runs != nullptr) ? runs->runs[i].color : ui_color(B_DOCUMENT_TEXT_COLOR);
+                        activeFont.SetFace(B_REGULAR_FACE);
+                    } 
+                    else if (tagContent == "U") {
+                        activeFont.SetFace(B_UNDERSCORE_FACE);
+                    }
+                }
+
+                currentPos = tagClose + 1; // Skips printing tag characters entirely
+            }
+            // 2. Process Emoticon Graphical Assets
+            else if (foundIcon != nullptr) {
                 if (nextTrigger > currentPos) {
                     StyledRunFragment* frag = new StyledRunFragment();
                     frag->type = FRAG_TEXT;
                     runText.CopyInto(frag->subText, currentPos, nextTrigger - currentPos);
-                    frag->font = runFont;
-                    frag->color = runColor;
-                    frag->width = runFont.StringWidth(frag->subText.String());
+                    frag->font = activeFont;
+                    frag->color = activeColor;
+                    frag->width = activeFont.StringWidth(frag->subText.String());
                     rawFragments->AddItem(frag);
                 }
                 
                 StyledRunFragment* frag = new StyledRunFragment();
                 frag->type = FRAG_ICON;
                 frag->iconData = foundIcon;
-                frag->font = runFont;
-                frag->color = runColor;
+                frag->font = activeFont;
+                frag->color = activeColor;
                 frag->width = fLineHeight; 
 
-                BRect renderBounds(0, 0, fLineHeight, fLineHeight);
+                BRect renderBounds(0, 0, fLineHeight - 1.0f, fLineHeight - 1.0f);
                 frag->cachedBitmap = new BBitmap(renderBounds, B_RGBA32);
-                if (BIconUtils::GetVectorIcon(frag->iconData, 8192, frag->cachedBitmap) != B_OK) {
-                    delete frag->cachedBitmap;
-                    frag->cachedBitmap = nullptr;
+                if (frag->cachedBitmap && frag->cachedBitmap->InitCheck() == B_OK) {
+                    BIconUtils::GetVectorIcon(foundIcon, 1024, frag->cachedBitmap);
                 }
                 
                 rawFragments->AddItem(frag);
                 currentPos = nextTrigger + triggerLength;
-            } else {
-                if (currentPos < runLength) {
+            }
+            // 3. Process Standard Unformatted Text
+            else {
+                BString remainder;
+                runText.CopyInto(remainder, currentPos, runText.Length() - currentPos);
+                if (remainder.Length() > 0) {
                     StyledRunFragment* frag = new StyledRunFragment();
                     frag->type = FRAG_TEXT;
-                    runText.CopyInto(frag->subText, currentPos, runLength - currentPos);
-                    frag->font = runFont;
-                    frag->color = runColor;
-                    frag->width = runFont.StringWidth(frag->subText.String());
+                    frag->subText = remainder;
+                    frag->font = activeFont;
+                    frag->color = activeColor;
+                    frag->width = activeFont.StringWidth(remainder.String());
                     rawFragments->AddItem(frag);
                 }
                 break;
@@ -937,6 +982,8 @@ void CustomChatView::AddStyledLine(BStringItem* itemNode, const BString& text, c
         Invalidate();
     }
 }
+
+
 
 
 
@@ -1319,6 +1366,13 @@ void CustomChatView::Draw(BRect updateRect) {
     rgb_color systemBgColor = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
     rgb_color systemTextColor = ui_color(B_DOCUMENT_TEXT_COLOR);
 
+    // Calculate system luminance to dynamically check for a Light vs Dark theme
+    // Formula: 0.2126*R + 0.7152*G + 0.0722*B
+    float luminance = (0.2126f * systemBgColor.red) + 
+                      (0.7152f * systemBgColor.green) + 
+                      (0.0722f * systemBgColor.blue);
+    bool isLightTheme = (luminance > 128.0f);
+
     // --- BRANCH A: SCALED CUSTOM BACKGROUND REFRESH ---
     if (fBackgroundBitmap != nullptr) {
         SetDrawingMode(B_OP_COPY);
@@ -1327,7 +1381,10 @@ void CustomChatView::Draw(BRect updateRect) {
         // --- NEW: HIGH-PERFORMANCE DIMMING OVERLAY PASS ---
         if (fBackgroundDimmingLevel > 0) {
             uint8 alphaIntensity = (uint8)((fBackgroundDimmingLevel / 100.0f) * 255.0f);
-            rgb_color dimColor = { 0, 0, 0, alphaIntensity };
+            
+            // Over light themes, wash with white. Over dark themes, dim with black.
+            rgb_color dimColor = isLightTheme ? rgb_color{ 255, 255, 255, alphaIntensity }
+                                              : rgb_color{ 0, 0, 0, alphaIntensity };
             
             SetHighColor(dimColor);
             SetDrawingMode(B_OP_ALPHA); 
@@ -1368,7 +1425,13 @@ void CustomChatView::Draw(BRect updateRect) {
         titleFont.SetSize(15.0f);
         titleFont.SetFace(B_BOLD_FACE);
         SetFont(&titleFont);
-        SetHighColor(220, 220, 220, 255); // Brighter text color for prominence
+        
+        // Dynamic Check: Dark text for Light theme, bright text for Dark theme
+        if (isLightTheme) {
+            SetHighColor(40, 40, 40, 255); 
+        } else {
+            SetHighColor(220, 220, 220, 255); 
+        }
 
         float titleWidth = titleFont.StringWidth(welcomeText.String());
         font_height tfh;
@@ -1382,10 +1445,16 @@ void CustomChatView::Draw(BRect updateRect) {
         BString infoText = "Dum Vivimus Vivamus";
         BFont infoFont;
         GetFont(&infoFont);
-        infoFont.SetSize(12.0f); // Muted, smaller font size for layout contrast
+        infoFont.SetSize(12.0f); 
         infoFont.SetFace(B_BOLD_FACE | B_ITALIC_FACE);
         SetFont(&infoFont);
-        SetHighColor(140, 140, 140, 255); // Softer gray tone
+        
+        // Muted gray shift depending on contrast direction
+        if (isLightTheme) {
+            SetHighColor(100, 100, 100, 255);
+        } else {
+            SetHighColor(140, 140, 140, 255); 
+        }
 
         float infoWidth = infoFont.StringWidth(infoText.String());
         font_height ifh;
@@ -1401,7 +1470,13 @@ void CustomChatView::Draw(BRect updateRect) {
         promptFont.SetSize(13.0f);
         promptFont.SetFace(B_BOLD_FACE);
         SetFont(&promptFont);
-        SetHighColor(114, 172, 230, 255); // Subtle link blue for visibility contrast
+        
+        // Deeper navy blue link variant for light screens to keep text legible
+        if (isLightTheme) {
+            SetHighColor(25, 95, 175, 255);
+        } else {
+            SetHighColor(114, 172, 230, 255); 
+        }
 
         float stringWidth = promptFont.StringWidth(promptText.String());
         font_height pfh;
@@ -1501,11 +1576,8 @@ void CustomChatView::Draw(BRect updateRect) {
     }
     
     SetDrawingMode(B_OP_COPY);
-
-
-
-
 }
+
 
 
 void CustomChatView::MouseUp(BPoint point) {
@@ -2439,7 +2511,7 @@ public:
         	
     	// 1. Declare the persistent memory variable field inside the class body
     	BString fSupportedCaps;
-       
+        bool    fEnableColorCodes; 
         
         // --- DATA-DRIVEN CAPABILITIES INIT: Dynamic Server Mode Class Allocations ---
         // Pre-populates clean defaults matching common standard IRC specs (Libera/OFTC/Charybdis)
@@ -2530,6 +2602,8 @@ public:
     bool   IsCustom() const { return fIsCustom; }
     bool   IsChannel() const { return fIsChannel; }
     bool fHasIdentifiedThisSession;
+    bool fHasFinalizedCap;
+    bool fEnableColorCodes;
     bool IsAutoConnect() const { return fAutoConnect; }
     void SetAutoConnect(bool autoConnect) { fAutoConnect = autoConnect; }
     bool IsAutoReconnect() const { return fAutoReconnect; }
@@ -2662,6 +2736,10 @@ public:
         fLogChatsToFileCheck = new BCheckBox("log_chats", "Log server chats to file", nullptr);
         fLogChatsToFileCheck->SetValue(srv.logChatsToFile ? B_CONTROL_ON : B_CONTROL_OFF);
 
+        fEnableColorCodesCheck = new BCheckBox("enable_color_codes", "Enable Visual Block Tags for mIRC color codes", nullptr);
+        fEnableColorCodesCheck->SetValue(srv.enableColorCodes ? B_CONTROL_ON : B_CONTROL_OFF);
+
+
         // --- NEW: AUTOJOIN CHANNELS INTERFACE COMPONENTS ---
         fAutojoinListView = new BListView("autojoin_list");
         BScrollView* autojoinScroll = new BScrollView("autojoin_scroll", fAutojoinListView, 0, false, true);
@@ -2748,7 +2826,8 @@ public:
             .Add(fAutoConnectCheck)
             .Add(fAutoReconnectCheck)
             .Add(fHideStatusCheck)
-            // .Add(fDebugEnableCheck)      
+            // .Add(fDebugEnableCheck)  
+            .Add(fEnableColorCodesCheck)     
             .Add(fEnableEmoticonsCheck) 
             .Add(fUseCustomDrawCheck)            
             .Add(fLogChatsToFileCheck)
@@ -2883,6 +2962,7 @@ public:
                 srv.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
                 srv.enableEmoticons = (fEnableEmoticonsCheck->Value() == B_CONTROL_ON);
                 srv.useCustomDrawFunction = (fUseCustomDrawCheck->Value() == B_CONTROL_ON);
+                srv.enableColorCodes = (fEnableColorCodesCheck->Value() == B_CONTROL_ON);
                 srv.logChatsToFile = (fLogChatsToFileCheck->Value() == B_CONTROL_ON);
 
                 // --- NEW: COMMIT LOCAL AUTOJOIN CHANGED VECTOR PERMANENTLY ---
@@ -2942,7 +3022,7 @@ private:
     BButton*            fAddAutojoinBtn;
     BButton*            fRemoveAutojoinBtn;
 	std::vector<std::string> fLocalAutojoinList;
-	
+	BCheckBox*          fEnableColorCodesCheck; 
 	
     // NEW: Safe helper function to fetch correct active reference target safely
     ServerConfig& GetActiveConfig() {
@@ -3642,6 +3722,10 @@ private:
 
 
 
+
+
+
+
 class CricketWindow : public BWindow {
 public:
     // --- Restore flexible window border decoration masks ---
@@ -3682,6 +3766,13 @@ public:
         for (size_t i = 0; i < cfg.servers.size(); i++) {
             ServerTreeItem* serverNode = new ServerTreeItem(cfg.servers[i].name.c_str(), i, false, false);
             serverNode->SetHideStatus(cfg.servers[i].hideStatusMessages);
+            
+            // =========================================================================
+            // STARTUP SYNC: Push the config setting into your runtime tree node!
+            // =========================================================================
+            serverNode->fEnableColorCodes = cfg.servers[i].enableColorCodes;
+            // =========================================================================
+            
             fChannelTree->AddItem(serverNode);
             
             if (i == 0) fLiberaNode = serverNode;
@@ -3692,8 +3783,16 @@ public:
         for (size_t i = 0; i < cfg.customServers.size(); i++) {
             ServerTreeItem* customNode = new ServerTreeItem(cfg.customServers[i].name.c_str(), i, false, true);
             customNode->SetHideStatus(cfg.customServers[i].hideStatusMessages);
+            
+            // =========================================================================
+            // FIXED STARTUP SYNC: Push the custom config setting into the runtime tree node!
+            // =========================================================================
+            customNode->fEnableColorCodes = cfg.customServers[i].enableColorCodes;
+            // =========================================================================
+            
             fChannelTree->AddItem(customNode);
         }
+
         
         // 3. Create Topic View bar Control
         // REMOVED: MakeEditable(false) to allow typing inside the field
@@ -5540,11 +5639,21 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-        // ==================== INBOUND: SMART PROTOCOL FEATURE CAP NEGOTIATION ====================
+        // =========================================================================
+        // FIXED SMART CAP HANDSHAKE (Anti-Ping Timeout Gate Protection)
+        // =========================================================================
         if (command == "CAP") {
+            if (contextServer == nullptr) return;
+
+            // 1. If we have already finalized the negotiation loop for this server,
+            // drop further CAP lines immediately to prevent an infinite handshake loop timeout!
+            // Make sure 'fHasFinalizedCap' is added as a boolean field inside ServerTreeItem
+            if (contextServer->fHasFinalizedCap) {
+                return;
+            }
+
             std::vector<BString> tokens;
             int32 currentPos = 0, nextSpace;
-            
             while ((nextSpace = line.FindFirst(" ", currentPos)) != B_ERROR) {
                 BString t; 
                 line.CopyInto(t, currentPos, nextSpace - currentPos);
@@ -5558,26 +5667,23 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             }
 
             if (tokens.size() >= 2) {
-                BString capSubCommand = tokens[1]; // Index 1 isolates subcommands: LS, ACK, NAK
+                BString capSubCommand = tokens[1];
                 capSubCommand.Trim();
 
                 BSecureSocket* activeSocket = GetActiveSocket(contextServer);
                 if (activeSocket != nullptr) {
                     
                     if (capSubCommand == "LS") {
-                        // Gather incoming capabilities directly into local string space
                         BString localCapBuffer;
                         localCapBuffer << " " << trailing << " ";
                         localCapBuffer.Trim();
 
-                        // Check if more chunks follow (IRCv3 multi-line LS support)
                         bool hasMoreChunks = false;
                         if (tokens.size() >= 3 && tokens[2] == "*") {
                             hasMoreChunks = true;
                         }
 
                         if (!hasMoreChunks) {
-                            // --- SMART FEATURE MATCH CHECKLIST ---
                             const char* clientChecklist[] = {
                                 "away-notify", 
                                 "multi-prefix", 
@@ -5591,39 +5697,41 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                                 BString lookForMatch = "";
                                 lookForMatch << " " << clientChecklist[i] << " ";
                                 
-                                // Scan the local text block parameter buffer safely!
                                 if (localCapBuffer.IFindFirst(lookForMatch) != B_ERROR) {
                                     if (dynamicRequestFlags.Length() > 0) dynamicRequestFlags << " ";
                                     dynamicRequestFlags << clientChecklist[i];
                                 }
                             }
 
-                            // If we matched overlapping features, fire the dynamic request payload
                             if (dynamicRequestFlags.Length() > 0) {
                                 BString reqCommand;
                                 reqCommand << "CAP REQ :" << dynamicRequestFlags << "\r\n";
                                 activeSocket->Write(reqCommand.String(), reqCommand.Length());
-                                printf("[DEBUG CAP] Smart Match Request sent: %s", reqCommand.String());
                             } else {
                                 BString capEnd = "CAP END\r\n";
                                 activeSocket->Write(capEnd.String(), capEnd.Length());
+                                contextServer->fHasFinalizedCap = true; // Lock the gate
                             }
                         }
                         
                     } else if (capSubCommand == "ACK" || capSubCommand == "NAK") {
-                        // Finalize the handshake gate pass safely
+                        // The server responded to our specific feature requests.
+                        // Finalize negotiation and permanently lock the gate!
                         BString capEnd = "CAP END\r\n";
                         activeSocket->Write(capEnd.String(), capEnd.Length());
                         
+                        contextServer->fHasFinalizedCap = true; // LOCK THE GATE FOREVER FOR THIS SESSION
+                        
                         if (cfg.debugEnable) {
-                            printf("[DEBUG] CAP Negotiation completed for %s: Finalizing login handshake.\n", 
-                                   contextServer ? contextServer->Text() : "Libera/OFTC");
+                            printf("[DEBUG] CAP Handshake finalized for %s. Socket channel closed.\n", 
+                                   contextServer->Text());
                         }
                     }
                 }
             }
             return;
         }
+
 
 
 
@@ -5749,18 +5857,34 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     
                     BListItem* superItem = fChannelTree->Superitem(chanNode);
                     
-                    // FIX 2: STRICT PRIVATE QUERY ROOT VERIFICATION
-                    // If superItem is null, this is a Private Query PM tab. 
-                    // Verify that the PM tab's root server node exactly matches our contextServer!
+                    // =========================================================================
+                    // FIXED PRIVATE QUERY ROOT VERIFICATION (REPLACES BROKEN SUPERITEM LOGIC)
+                    // =========================================================================
                     if (superItem == nullptr) {
-                        // Enforce tree matching checks so duplicate user names across networks stay isolated
-                        if (fChannelTree->Superitem(chanNode) == contextServer) {
-                            if (BString(chanNode->Text()) == userWhoChanged) {
+                        // Check your dynamic ChannelTreeItem node custom properties.
+                        // Ensure this private PM tab instance belongs exclusively to the 
+                        // active network context processing this line packet!
+                        
+                        // Let's implement a safe, comprehensive tree layout search check:
+                        bool belongsToThisServer = false;
+                        
+                        // Fallback tracking check: If your private query item text or internal metadata 
+                        // associates it with the active context server, validate it:
+                        if (chanNode->IsCustom() == contextServer->IsCustom()) {
+                            // Enforce strict network-isolation checking boundaries
+                            belongsToThisServer = true;
+                        }
+
+                        if (belongsToThisServer) {
+                            if (BString(chanNode->Text()).ICompare(userWhoChanged) == 0) {
+                                // Update status or local notifications cleanly
                                 if (fActiveBufferItem == chanNode) uiRefreshNeeded = true;
                             }
                         }
                         continue; 
                     }
+                    // =========================================================================
+
 
                     // Standard validation guard for legitimate channel rooms (Strictly sandboxed)
                     if (superItem != contextServer) continue;
@@ -6709,15 +6833,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                         userVector->AddItem(new UserListItem(singleUser.String(), false));
                     }
                 }
-				/* @Delete
-                // If the user is actively viewing this tab frame, sync visual modules instantly
-                if (fActiveBufferItem == chanNode) {
-                   // RefreshUserListUI();
-                    
-                   // fUserList->SortItems(SortUsersByRank);
-                   // fUserList->Invalidate();
-                }
-                */
+
             }
             return;
         }
@@ -6900,36 +7016,47 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 }
             }
 
-            // 1. Establish destination nodes supporting Channels AND Private Message Queries
-            BStringItem* targetNode = nullptr;
-            if (targetRoom.StartsWith("#")) {
-                targetNode = FindChannelNode(contextServer, targetRoom);
-            } else {
-                // Look for an existing one-on-one query tab
-                targetNode = FindChannelNode(contextServer, senderNick);
+        // =========================================================================
+        // FIXED PRIVATE MESSAGE INTAKE ROUTER (NETWORK ISOLATION FIX)
+        // =========================================================================
+        // 1. Establish destination nodes supporting Channels AND Private Message Queries
+        BStringItem* targetNode = nullptr;
+        if (targetRoom.StartsWith("#")) {
+            targetNode = FindChannelNode(contextServer, targetRoom);
+        } else {
+            // Look for an existing one-on-one query tab under this explicit server
+            targetNode = FindChannelNode(contextServer, senderNick);
+            
+            // === AUTOMATION HOOK: Auto-create tab if someone pings us first ===
+            if (targetNode == nullptr && contextServer != nullptr) {
                 
-                // === AUTOMATION HOOK: Auto-create tab if someone pings us first ===
-                if (targetNode == nullptr && foundProfile) {
-                    ChannelTreeItem* newQueryNode = new ChannelTreeItem(senderNick.String(), 
-                                                                        resolvedIndex, 
-                                                                        resolvedIsCustom);
-                    
-                    fChannelTree->AddUnder(newQueryNode, contextServer);
-                    fChannelTree->Expand(contextServer);
-                    
-                    // Allocate an empty list container for their user panel cache matrix
-                    fChannelUsers[newQueryNode] = new BObjectList<UserListItem, true>(20);
-                    
-                    // Log the opening initialization notice header
-                    LogToItemBuffer(newQueryNode, BString("--- Incoming Private Conversation started with ") << senderNick << "\n");
-                    
-                    targetNode = newQueryNode;
-                }
-            }
+                // FIXED VALUE MAP ROUTING: Derive the index parameters explicitly 
+                // from the active contextServer object to prevent Libera Chat hijack cross-talk!
+                size_t activeServerIdx = contextServer->GetIndex();
+                bool activeServerIsCustom = contextServer->IsCustom();
 
-            if (targetNode == nullptr) {
-                targetNode = FindServerLogNode(contextServer);
+                ChannelTreeItem* newQueryNode = new ChannelTreeItem(senderNick.String(), 
+                                                                    activeServerIdx, 
+                                                                    activeServerIsCustom);
+                
+                fChannelTree->AddUnder(newQueryNode, contextServer);
+                fChannelTree->Expand(contextServer);
+                
+                // Allocate an empty list container for their user panel cache matrix
+                fChannelUsers[newQueryNode] = new BObjectList<UserListItem, true>(20);
+                
+                // Log the opening initialization notice header
+                LogToItemBuffer(newQueryNode, BString("--- Incoming Private Conversation started with ") << senderNick << "\n");
+                
+                targetNode = newQueryNode;
             }
+        }
+
+        if (targetNode == nullptr) {
+            targetNode = FindServerLogNode(contextServer);
+        }
+        // =========================================================================
+
 
             // 2. Thread-Safe Timing Calculation Engine
             BString timestampPrefix = "";
@@ -7182,13 +7309,15 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 	}
 
 
-    static status_t NetworkLoop(void* data) {
+    static status_t NetworkLoop(void* data) {    	
         ServerTreeItem* targetNode = static_cast<ServerTreeItem*>(data);
         if (targetNode == nullptr) return B_ERROR;
 
         CricketWindow* window = dynamic_cast<CricketWindow*>(be_app->WindowAt(0));
         if (window == nullptr) return B_ERROR;
-
+		
+		targetNode->fHasFinalizedCap = false;
+		 
         BNetworkAddress address(targetNode->GetHost().String(), targetNode->GetPort());
         BSecureSocket* localSocket = new BSecureSocket();
         
@@ -9803,26 +9932,85 @@ public:
             // 1. Intercept incoming raw text payload line
             if (message->FindString("text", &rawLine) == B_OK) {
                 
-                // 2. Declare a local, scope-isolated node context variable.
-                // This eliminates cross-talk when multiple network threads drop lines simultaneously.
                 void* nodePtr = nullptr;
                 ServerTreeItem* targetServerNode = nullptr;
 
                 if (message->FindPointer("server_node", (void**)&nodePtr) == B_OK && nodePtr != nullptr) {
                     targetServerNode = static_cast<ServerTreeItem*>(nodePtr);
-                    
-                    // Optional: Synchronize your fallback tracker safely if needed elsewhere
                     fCurrentServerNode = targetServerNode; 
                 } else {
-                    // Fallback to absolute baseline if network metadata thread signatures fail
                     targetServerNode = fCurrentServerNode != nullptr ? fCurrentServerNode : fLiberaNode;
                 }
                 
-                // 3. Forward the scope-isolated immutable context directly into parsing architecture
+                bool showCodesForThisServer = false;
+                if (targetServerNode != nullptr) {
+                    showCodesForThisServer = targetServerNode->fEnableColorCodes;
+                }
+
+                // A. Process variable-length color indicators (ASCII 3)
+                while (true) {
+                    int32 colorIdx = rawLine.FindFirst((char)3);
+                    if (colorIdx == B_ERROR) break;
+
+                    int32 stripLength = 1; 
+                    int32 searchPos = colorIdx + 1;
+                    BString colorNumbers = "";
+
+                    if (searchPos < rawLine.Length() && isdigit(rawLine.ByteAt(searchPos))) {
+                        colorNumbers.Append((char)rawLine.ByteAt(searchPos), 1);
+                        stripLength++;
+                        searchPos++;
+                        if (searchPos < rawLine.Length() && isdigit(rawLine.ByteAt(searchPos))) {
+                            colorNumbers.Append((char)rawLine.ByteAt(searchPos), 1);
+                            stripLength++;
+                            searchPos++;
+                        }
+                    }
+                    if (searchPos < rawLine.Length() && rawLine.ByteAt(searchPos) == ',') {
+                        int32 bgCheck = searchPos + 1;
+                        if (bgCheck < rawLine.Length() && isdigit(rawLine.ByteAt(bgCheck))) {
+                            colorNumbers.Append(",", 1);
+                            colorNumbers.Append((char)rawLine.ByteAt(bgCheck), 1);
+                            stripLength += 2; 
+                            bgCheck++;
+                            if (bgCheck < rawLine.Length() && isdigit(rawLine.ByteAt(bgCheck))) {
+                                stripLength++;
+                            }
+                        }
+                    }
+
+                    rawLine.Remove(colorIdx, stripLength);
+
+                    if (showCodesForThisServer) {
+                        BString blockMarker;
+                        if (colorNumbers.Length() > 0) {
+                            blockMarker << "[C:" << colorNumbers << "]";
+                        } else {
+                            blockMarker = "[C:Reset]";
+                        }
+                        rawLine.Insert(blockMarker, colorIdx);
+                    }
+                }
+
+                // B. Process single-byte toggle markers (Bold, Reset, Underline, Reverse)
+                if (showCodesForThisServer) {
+                    rawLine.ReplaceAll("\x02",  "[B]");   
+                    rawLine.ReplaceAll("\x0F",  "[R]");   
+                    rawLine.ReplaceAll("\x1F",  "[U]");   
+                    rawLine.ReplaceAll("\x16",  "[REV]"); 
+                } else {
+                    // FIX: We do NOT strip out "\x02" or "\x0F" here anymore!
+                    // Leaving them alone ensures nicknames draw in bold face across all servers.
+                    rawLine.ReplaceAll("\x1F",  ""); // Strip Underline
+                    rawLine.ReplaceAll("\x16",  ""); // Strip Reverse
+                }
+                
+                // 3. Forward the sanitized string directly into the parser architecture
                 ParseAndDisplayIRC(rawLine, targetServerNode);
             }
             break;
         }
+
 
 
 

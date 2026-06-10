@@ -53,9 +53,11 @@ release: all
 	mkdir -p $(PACKAGE_DIR)
 	sed -e 's/$$(NAME)/$(NAME)/g' -e 's/$$(VERSION)/$(VERSION)/g' -e 's/$$(ARCH)/$(ARCH)/' -e 's/$$(YEAR)/$(shell date +%Y)/' $(NAME).tpl > $(PACKAGE_DIR)/.PackageInfo
 	mkdir -p $(PACKAGE_DIR)/apps
+	mkdir -p $(PACKAGE_DIR)/data/$(NAME)
 	mkdir -p $(PACKAGE_DIR)/bin
 	mkdir -p $(PACKAGE_DIR)/data/deskbar/menu/Applications
 	cp $(NAME) $(PACKAGE_DIR)/apps/$(NAME)
+	cp default_background.png $(PACKAGE_DIR)/data/$(NAME)/default_background.png
 	ln -s ../apps/$(NAME) $(PACKAGE_DIR)/bin/$(NAME)
 	ln -s ../../../../apps/$(NAME) $(PACKAGE_DIR)/data/deskbar/menu/Applications/$(NAME)
 	package create -C $(PACKAGE_DIR) $(NAME)-$(VERSION)-1-$(ARCH).hpkg
