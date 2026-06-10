@@ -14,6 +14,7 @@
 #include <Slider.h> 
 #include <Box.h>
 #include <MessageFilter.h>
+#include <Clipboard.h>
 
 // Storage, Path Finder & System File Kits
 #include <Directory.h>
@@ -534,10 +535,6 @@ public:
     CustomChatView(BRect frame, const char* name, uint32 resizingMode, uint32 flags);
     virtual ~CustomChatView(); 
 
-    virtual void Draw(BRect updateRect);
-    virtual void FrameResized(float newWidth, float newHeight);
-    virtual void MouseDown(BPoint point);
-
     void AddStyledLine(BStringItem* itemNode, const BString& text, const text_run_array* runs);
     void ClearAllLines();    
     void SetLineHeight(float height);
@@ -547,7 +544,10 @@ public:
     void SetBackgroundDimming(int32 level); 
     virtual void MessageReceived(BMessage* message); 
     virtual void MouseMoved(BPoint point, uint32 transit, const BMessage* dragMessage) override;
-
+	virtual void MouseUp(BPoint point) override;
+	virtual void MouseDown(BPoint point);
+	virtual void Draw(BRect updateRect);
+    virtual void FrameResized(float newWidth, float newHeight);
 
 private:
     void ParseTextAndIcons(const BString& text, const text_run_array* runs, BObjectList<StyledRunFragment, true>* rawFragments);
@@ -560,6 +560,10 @@ private:
     float                         fLineHeight;
     BBitmap* fBackgroundBitmap;
     int32    fBackgroundDimmingLevel; 
+    BString GetSelectedText();
+    bool        fIsSelecting;       // Is the user actively dragging the mouse?
+    BPoint      fSelectionStart;    // Mouse down starting point
+    BPoint      fSelectionEnd;      // Current mouse dragging point
 };
 
 
@@ -568,6 +572,9 @@ private:
 // Update Constructor to handle initial default allocation state 
 CustomChatView::CustomChatView(BRect frame, const char* name, uint32 resizingMode, uint32 flags)
     : BView(frame, name, resizingMode, flags | B_WILL_DRAW | B_FRAME_EVENTS | B_NAVIGABLE | B_FULL_UPDATE_ON_RESIZE),
+      fIsSelecting(false),      
+      fSelectionStart(0, 0),
+      fSelectionEnd(0, 0),
       fLines(20),
       fBackgroundBitmap(nullptr),
       fBackgroundDimmingLevel(30) 
@@ -579,6 +586,8 @@ CustomChatView::CustomChatView(BRect frame, const char* name, uint32 resizingMod
     SetViewColor(B_TRANSPARENT_COLOR);
     SetLowColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
 }
+
+
 
 
 
@@ -822,6 +831,87 @@ CustomChatView::~CustomChatView() {
     fLines.MakeEmpty();
 }
 
+
+BString CustomChatView::GetSelectedText() {
+    if (fSelectionStart == fSelectionEnd) return BString("");
+
+    BString result = "";
+    float currentY = 10.0f;
+
+    BRect selRect;
+    selRect.left = min_c(fSelectionStart.x, fSelectionEnd.x);
+    selRect.right = max_c(fSelectionStart.x, fSelectionEnd.x);
+    selRect.top = min_c(fSelectionStart.y, fSelectionEnd.y);
+    selRect.bottom = max_c(fSelectionStart.y, fSelectionEnd.y);
+
+    for (int32 i = 0; i < fLines.CountItems(); i++) {
+        StyledLine* line = fLines.ItemAt(i);
+        if (!line || line->itemNode != fActiveChannelNode) continue;
+
+        for (int32 rowIdx = 0; rowIdx < line->wrappedRows.CountItems(); rowIdx++) {
+            BObjectList<StyledRunFragment, true>* row = line->wrappedRows.ItemAt(rowIdx);
+            if (!row) continue;
+
+            float rowTop = currentY;
+            float rowBottom = currentY + fLineHeight;
+
+            if (rowBottom >= selRect.top && rowTop <= selRect.bottom) {
+                float currentX = 10.0f;
+
+                for (int32 fragIdx = 0; fragIdx < row->CountItems(); fragIdx++) {
+                    StyledRunFragment* frag = row->ItemAt(fragIdx);
+                    if (!frag) continue;
+
+                    if (frag->type != FRAG_TEXT) {
+                        currentX += frag->width;
+                        continue;
+                    }
+
+                    BFont font = frag->font;
+                    const char* rawStr = frag->subText.String();
+                    int32 textLen = frag->subText.Length();
+                    float charLeft = currentX;
+
+                    // Step through the text byte-by-byte to find character layout boundaries
+                    for (int32 c = 1; c <= textLen; c++) {
+                        // Skip multi-byte UTF-8 continuation bytes so we only measure whole characters
+                        if (c < textLen && ((rawStr[c] & 0xC0) == 0x80)) {
+                            continue;
+                        }
+
+                        float charRight = currentX + font.StringWidth(rawStr, c);
+
+                        // CHARACTER-PRECISION CHECK: 
+                        // Does this individual character intersect the selection box?
+                        if (charRight >= selRect.left && charLeft <= selRect.right) {
+                            // Extract just this specific character sequence into our selection pool
+                            int32 startByte = c - 1;
+                            while (startByte > 0 && ((rawStr[startByte] & 0xC0) == 0x80)) {
+                                startByte--; // Back up to the start of the UTF-8 sequence
+                            }
+                            
+                            BString singleChar;
+                            frag->subText.CopyInto(singleChar, startByte, c - startByte);
+                            result << singleChar;
+                        }
+                        charLeft = charRight;
+                    }
+                    currentX += frag->width;
+                }
+                
+                // Add an explicit newline space if the selection box spans across multiple line rows
+                if (rowTop > selRect.top && rowBottom < selRect.bottom) {
+                    result << "\n";
+                }
+            }
+            currentY += fLineHeight;
+        }
+    }
+    return result;
+}
+
+
+
 void CustomChatView::AddStyledLine(BStringItem* itemNode, const BString& text, const text_run_array* runs) {
     if (itemNode == nullptr) return;
     
@@ -1054,8 +1144,45 @@ void CustomChatView::MessageReceived(BMessage* message) {
             }
             break;
         }
+        
+        
+        // =========================================================================
+        // SYSTEM CLIPBOARD COPY ACTION CASE EXTENSION
+        // =========================================================================
+        case B_COPY: {
+            BString selectedText = GetSelectedText();
+            
+            // Clean up raw text string format boundaries before clipboard transaction commit
+            selectedText.Trim();
+            selectedText.ReplaceAll("\r", "");
+            selectedText.ReplaceAll("\n", " ");
+            selectedText.Trim();
 
+            if (selectedText.Length() > 0) {
+                // 1. Gain an exclusive operational access lock over the Haiku App Server clipboard matrix
+                if (be_clipboard->Lock()) {
+                    // 2. Clear out legacy string payloads sitting inside the clipboard storage registers
+                    be_clipboard->Clear();
+                    
+                    // 3. Fetch the storage message data parcel object container
+                    BMessage* clipboardData = be_clipboard->Data();
+                    if (clipboardData != nullptr) {
+                        // Pack text content matching the standard canonical raw data guidelines
+                        clipboardData->AddData("text/plain", B_MIME_TYPE, 
+                                               selectedText.String(), selectedText.Length());
+                        
+                        // 4. Commit transaction immediately to broad-cast clipboard values globally
+                        be_clipboard->Commit();
+                    }
+                    
+                    // 5. Release access constraints safely to prevent application lock stalls
+                    be_clipboard->Unlock();
+                }
+            }
+            break;
+        }
 
+        
 
         case MSG_CLEAR_CUSTOM_BUFFER: {
             // 1. Loop backward and purge only rows matching our current active room context node
@@ -1077,6 +1204,100 @@ void CustomChatView::MessageReceived(BMessage* message) {
             Invalidate();
             break;
         }
+
+        // =========================================================================
+        // NEW: DUCKDUCKGO SEARCH ACTION CASE EXTENSION
+        // =========================================================================
+        case 'ddgs': {
+            BString selectedText = GetSelectedText();
+            
+            // Trim any layout whitespace remnants or stray characters safely
+            selectedText.Trim();
+            selectedText.ReplaceAll("\r", "");
+            selectedText.ReplaceAll("\n", " ");
+            selectedText.Trim();
+
+            if (selectedText.Length() > 0) {
+                // URL-escape special network characters securely
+                selectedText.ReplaceAll("%", "%25"); // Escape percent first!
+                selectedText.ReplaceAll(" ", "+");
+                selectedText.ReplaceAll("&", "%26");
+                selectedText.ReplaceAll("?", "%3F");
+                selectedText.ReplaceAll("=", "%3D");
+                selectedText.ReplaceAll("#", "%23");
+                selectedText.ReplaceAll("/", "%2F"); 
+                
+                // Point straight to the DuckDuckGo html search query path fallback
+                BString ddgUrl = "https://duckduckgo.com?q=";
+                ddgUrl << selectedText;
+                
+                // Package your web link as a port-safe POSIX argument array
+                char* args[] = {
+                    (char*)ddgUrl.String(),
+                    nullptr
+                };
+
+                // Command the App Roster to launch the browser using the atomic argument pass
+                status_t err = be_roster->Launch("text/html", 1, args);
+                
+                if (err != B_OK && err != B_ALREADY_RUNNING) {
+                    // Fallback: Track down the binary directly if global mapping hits a block
+                    entry_ref browserRef;
+                    if (be_roster->FindApp("text/html", &browserRef) == B_OK) {
+                        be_roster->Launch(&browserRef, 1, args);
+                    }
+                }
+            }
+            break;
+        }
+
+        // =========================================================================
+        // GOOGLE SEARCH ACTION CASE EXTENSION
+        // =========================================================================
+        case 'gsh': {
+            BString selectedText = GetSelectedText();
+            
+            // Trim any layout whitespace remnants or stray characters safely
+            selectedText.Trim();
+            selectedText.ReplaceAll("\r", "");
+            selectedText.ReplaceAll("\n", " ");
+            selectedText.Trim();
+
+            if (selectedText.Length() > 0) {
+                // URL-escape special network characters securely
+                selectedText.ReplaceAll("%", "%25"); // Escape percent first!
+                selectedText.ReplaceAll(" ", "+");
+                selectedText.ReplaceAll("&", "%26");
+                selectedText.ReplaceAll("?", "%3F");
+                selectedText.ReplaceAll("=", "%3D");
+                selectedText.ReplaceAll("#", "%23");
+                selectedText.ReplaceAll("/", "%2F"); 
+                
+                // FIXED: Explicitly use the search engine execution script query path
+                BString googleUrl = "https://www.google.com/search?q=";
+                googleUrl << selectedText;
+                
+                // Package your web link as a port-safe POSIX argument array
+                char* args[] = {
+                    (char*)googleUrl.String(),
+                    nullptr
+                };
+
+                // Command the App Roster to launch the browser using the atomic argument pass
+                status_t err = be_roster->Launch("text/html", 1, args);
+                
+                if (err != B_OK && err != B_ALREADY_RUNNING) {
+                    // Fallback: Track down the binary directly if global mapping hits a block
+                    entry_ref browserRef;
+                    if (be_roster->FindApp("text/html", &browserRef) == B_OK) {
+                        be_roster->Launch(&browserRef, 1, args);
+                    }
+                }
+            }
+            break;
+        }
+
+
 
 
         case B_COLORS_UPDATED: {
@@ -1222,13 +1443,43 @@ void CustomChatView::Draw(BRect updateRect) {
                     SetFont(&(frag->font));
 
                     if (frag->type == FRAG_TEXT) {
+                        float fragLeft = currentX;
+                        float fragRight = currentX + frag->width;
+                        
+                        // =========================================================================
+                        // LIVE SELECTION HIGHLIGHT PASS (Render background box BEFORE the string)
+                        // =========================================================================
+                        if (fSelectionStart != fSelectionEnd) {
+                            BRect selRect;
+                            selRect.left = min_c(fSelectionStart.x, fSelectionEnd.x);
+                            selRect.right = max_c(fSelectionStart.x, fSelectionEnd.x);
+                            selRect.top = min_c(fSelectionStart.y, fSelectionEnd.y);
+                            selRect.bottom = max_c(fSelectionStart.y, fSelectionEnd.y);
+
+                            // Check if this explicit fragment row falls inside your selection coordinate box
+                            if (currentY + fLineHeight >= selRect.top && currentY <= selRect.bottom) {
+                                if (fragRight >= selRect.left && fragLeft <= selRect.right) {
+                                    // Math boundary clipping for single row precision
+                                    float hLeft = max_c(fragLeft, selRect.left);
+                                    float hRight = min_c(fragRight, selRect.right);
+                                    
+                                    // Snaps Haiku's standard document selection color securely
+                                    SetHighColor(ui_color(B_LIST_SELECTED_BACKGROUND_COLOR));
+                                    FillRect(BRect(hLeft, currentY, hRight, currentY + fLineHeight));
+                                }
+                            }
+                        }
+
+                        // Determine render text coloring cleanly
                         rgb_color renderColor = frag->color;
                         if ((renderColor.red == 255 && renderColor.green == 255 && renderColor.blue == 255) ||
                             (renderColor.red == 0   && renderColor.green == 0   && renderColor.blue == 0)) {
                             renderColor = systemTextColor;
                         }
                         SetHighColor(renderColor);
-                         DrawString(frag->subText.String(), BPoint(currentX, currentY + fLineHeight - 2.0f));
+                        
+                        // Draw text over the highlighted background tint layer safely
+                        DrawString(frag->subText.String(), BPoint(currentX, currentY + fLineHeight - 2.0f));
                         
                         currentX += frag->width;
                     } 
@@ -1253,14 +1504,37 @@ void CustomChatView::Draw(BRect updateRect) {
 
 
 
+
+}
+
+
+void CustomChatView::MouseUp(BPoint point) {
+    if (fIsSelecting) {
+        fIsSelecting = false;
+        // Keep the selection coordinates so right-clicking can grab the cached selection text!
+    }
 }
 
 
 
-
-
-// Scoped layout mouse hover tracking engine for dynamic cursor feedback
+// Scoped layout mouse hover tracking engine for dynamic cursor feedback and selection highlighting
 void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dragMessage) {
+    
+    // =========================================================================
+    // NEW: LIVE SELECTION HIGHLIGHT TRACKING INTERCEPTION
+    // =========================================================================
+    if (fIsSelecting) {
+        fSelectionEnd = point;
+        Invalidate(); // Smoothly triggers paint refreshes as you sweep the mouse cursor!
+        
+        // Change cursor to standard text I-BEAM during selecting sweeps for visual polish
+        BCursor textCursor(B_CURSOR_ID_I_BEAM);
+        SetViewCursor(&textCursor);
+        
+        BView::MouseMoved(point, transit, dragMessage);
+        return;
+    }
+
     // 1. Handle clean exit trajectories right away to prevent stuck cursors
     if (transit == B_EXITED_VIEW) {
         BCursor defaultCursor(B_CURSOR_ID_SYSTEM_DEFAULT);
@@ -1276,7 +1550,6 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
         BRect bounds = Bounds();
         float centerX = bounds.Width() / 2.0f;
         float centerY = bounds.Height() / 2.0f;
-        float iconDimension = 64.0f;
 
         // Map out the exact combined interactive box wrapping both the icon and text fields
         BRect clickTargetBox(
@@ -1285,7 +1558,6 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
             centerX + 60.0f,
             centerY + 95.0f
         );
-
 
         if (clickTargetBox.Contains(point)) {
             BCursor linkCursor(B_CURSOR_ID_FOLLOW_LINK);
@@ -1319,7 +1591,7 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
 
                     // Measure font segment width dynamically
                     SetFont(&(frag->font));
-                    float segmentWidth = StringWidth(frag->subText.String());
+                    float segmentWidth = frag->width; // OPTIMIZATION: Read calculated width directly
 
                     // Check if segment is a link (Underlined) and X intersects
                     if (frag->font.Face() & B_UNDERSCORE_FACE) {
@@ -1342,8 +1614,9 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
         BCursor linkCursor(B_CURSOR_ID_FOLLOW_LINK);
         SetViewCursor(&linkCursor);
     } else {
-        BCursor defaultCursor(B_CURSOR_ID_SYSTEM_DEFAULT);
-        SetViewCursor(&defaultCursor);
+        // Switch to an explicit I-BEAM text selector cursor when hovering over normal chat text rows
+        BCursor textCursor(B_CURSOR_ID_I_BEAM);
+        SetViewCursor(&textCursor);
     }
 
     // Call the base class implementation to preserve default system drag/drop pipelines
@@ -1353,7 +1626,7 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
 
 
 
-// Scoped layout mouse click tracker logic implementation with Channel Filtering Isolation
+// Scoped layout mouse click tracker logic implementation with Channel Filtering Isolation and Text Selection
 void CustomChatView::MouseDown(BPoint point) {
     if (Window() == nullptr) return;
 
@@ -1364,7 +1637,6 @@ void CustomChatView::MouseDown(BPoint point) {
         BRect bounds = Bounds();
         float centerX = bounds.Width() / 2.0f;
         float centerY = bounds.Height() / 2.0f;
-        float iconDimension = 64.0f;
 
         // Map out the exact combined interactive box wrapping both the icon and text fields
         BRect clickTargetBox(
@@ -1373,7 +1645,6 @@ void CustomChatView::MouseDown(BPoint point) {
             centerX + 60.0f,
             centerY + 95.0f
         );
-
 
         if (clickTargetBox.Contains(point)) {
             int32 buttons = 0;
@@ -1398,33 +1669,157 @@ void CustomChatView::MouseDown(BPoint point) {
     // RIGHT-CLICK CONTEXT MENU: Trigger on secondary mouse clicks
     // =========================================================================
     if (buttons == B_SECONDARY_MOUSE_BUTTON) {
-        // Instantiate a standard pop-up context panel asynchronously
         BPopUpMenu* contextMenu = new BPopUpMenu("ChatViewContext", false, false);
+        
+        // SELECTION CHECK: If a valid string is actively highlighted, insert Search options!
+        BString selectedText = GetSelectedText();
+        if (selectedText.Length() > 0) {
+            // Clean up leading/trailing whitespaces before determining display label bounds
+            BString labelText = selectedText;
+            labelText.Trim();
+            
+            if (labelText.Length() > 20) {
+                labelText.Truncate(20);
+                labelText << "...\"";
+            } else {
+                labelText << "\"";
+            }
+
+            // 1. ADDED: DuckDuckGo Search Option (Positioned dynamically on top)
+            BString ddgLabel = "Search DuckDuckGo for \"";
+            ddgLabel << labelText;
+            contextMenu->AddItem(new BMenuItem(ddgLabel.String(), new BMessage('ddgs')));
+
+            // 2. Existing Google Search Option choice row
+            BString googleLabel = "Search Google for \"";
+            googleLabel << labelText;
+            contextMenu->AddItem(new BMenuItem(googleLabel.String(), new BMessage('gsh')));
+            
+            contextMenu->AddSeparatorItem();
+                        
+            // 3. ADDED: Copy text option positioned directly under the search block
+            // Using the standard OS constant B_COPY ensures native interaction compatibility!
+            contextMenu->AddItem(new BMenuItem("Copy to Clipboard", new BMessage(B_COPY)));
+            
+            contextMenu->AddSeparatorItem();
+        }
+           
         
         // Add the Clear option tied to our unique identifier token constant
         BMenuItem* clearItem = new BMenuItem("Clear Buffer", new BMessage(MSG_CLEAR_CUSTOM_BUFFER));
         contextMenu->AddItem(clearItem);
         
-        // Command the menu to target this view context instance specifically
         contextMenu->SetTargetForItems(this);
-        
-        // Open the menu instantly right where the mouse cursor landed on the screen canvas
         contextMenu->Go(ConvertToScreen(point), true, true, true);
         return;
     }
 
+
     // =========================================================================
-    // LEFT-CLICK LINK TRACKER: Your existing logic remains perfectly intact
+    // LEFT-CLICK LINK TRACKER, SELECTION DRAG, & DOUBLE-CLICK WORD SELECTOR
     // =========================================================================
     if (buttons != B_PRIMARY_MOUSE_BUTTON) return;
 
-    float currentY = 10.0f;
+    // Fetch the raw system click event counter from the incoming window message package
+    int32 clickCount = 1;
+    if (Window()->CurrentMessage()->FindInt32("clicks", &clickCount) != B_OK) {
+        clickCount = 1;
+    }
 
+    if (clickCount == 2) {
+        // --- DOUBLE CLICK MODE: Snap selection to the targeted word boundaries ---
+        fIsSelecting = false; // Disable background drag tracking during explicit snaps
+        
+        float currentY = 10.0f;
+        for (int32 i = 0; i < fLines.CountItems(); i++) {
+            StyledLine* line = fLines.ItemAt(i);
+            if (!line || line->itemNode != fActiveChannelNode) continue;
+
+            for (int32 rowIdx = 0; rowIdx < line->wrappedRows.CountItems(); rowIdx++) {
+                BObjectList<StyledRunFragment, true>* row = line->wrappedRows.ItemAt(rowIdx);
+                if (!row) continue;
+
+                // Check if our cursor height matches this row layout block boundary
+                if (point.y >= currentY && point.y <= (currentY + fLineHeight)) {
+                    float currentX = 10.0f;
+
+                    for (int32 fragIdx = 0; fragIdx < row->CountItems(); fragIdx++) {
+                        StyledRunFragment* frag = row->ItemAt(fragIdx);
+                        if (!frag || frag->type != FRAG_TEXT) {
+                            if (frag) currentX += frag->width;
+                            continue;
+                        }
+
+                        float fragLeft = currentX;
+                        float fragRight = currentX + frag->width;
+
+                        // Check if the cursor X coordinate intersects this explicit fragment zone
+                        if (point.x >= fragLeft && point.x <= fragRight) {
+                            BFont font = frag->font;
+                            const char* rawStr = frag->subText.String();
+                            int32 textLen = frag->subText.Length();
+                            float charLeft = fragLeft;
+
+                            // Step safely through text byte boundaries to identify the targeted character index
+                            for (int32 c = 1; c <= textLen; c++) {
+                                if (c < textLen && ((rawStr[c] & 0xC0) == 0x80)) {
+                                    continue; // Skip multi-byte UTF-8 continuation segments
+                                }
+
+                                float charRight = fragLeft + font.StringWidth(rawStr, c);
+
+                                if (point.x >= charLeft && point.x <= charRight) {
+                                    // Target index found! Now expand left and right to map the full word boundaries
+                                    int32 wordStart = c - 1;
+                                    int32 wordEnd = c - 1;
+
+                                    // Scan backwards to find the start of the word block layout
+                                    while (wordStart > 0 && rawStr[wordStart - 1] != ' ' && 
+                                           rawStr[wordStart - 1] != '\t' && rawStr[wordStart - 1] != '[') {
+                                        wordStart--;
+                                    }
+
+                                    // Scan forwards to find the end of the word block layout
+                                    while (wordEnd < textLen && rawStr[wordEnd] != ' ' && 
+                                           rawStr[wordEnd] != '\t' && rawStr[wordEnd] != ']') {
+                                        wordEnd++;
+                                    }
+
+                                    // Calculate the exact bounding coordinates of our target word
+                                    float selectPixelLeft = fragLeft + font.StringWidth(rawStr, wordStart);
+                                    float selectPixelRight = fragLeft + font.StringWidth(rawStr, wordEnd);
+
+                                    // Snap selection parameters to wrap the calculated text pixel constraints perfectly
+                                    fSelectionStart = BPoint(selectPixelLeft, currentY + 2.0f);
+                                    fSelectionEnd   = BPoint(selectPixelRight, currentY + 2.0f);
+                                    
+                                    Invalidate(); // Trigger a canvas redraw pass instantly
+                                    return;
+                                }
+                                charLeft = charRight;
+                            }
+                        }
+                        currentX += frag->width;
+                    }
+                    return;
+                }
+                currentY += fLineHeight;
+            }
+        }
+        return;
+    }
+
+    // --- SINGLE CLICK MODE: Fallback to manual selection dragging logic ---
+    fIsSelecting = true;
+    fSelectionStart = point;
+    fSelectionEnd = point;
+    
+    SetMouseEventMask(B_POINTER_EVENTS, B_LOCK_WINDOW_FOCUS);
+    Invalidate();
+
+    float currentY = 10.0f;
     for (int32 i = 0; i < fLines.CountItems(); i++) {
         StyledLine* line = fLines.ItemAt(i);
-        
-        // --- CHANNEL ISOLATION CHECK ---
-        // Prevents clicks from registering on hidden lines belonging to background chats
         if (!line || line->itemNode != fActiveChannelNode) continue;
 
         for (int32 rowIdx = 0; rowIdx < line->wrappedRows.CountItems(); rowIdx++) {
@@ -1438,12 +1833,12 @@ void CustomChatView::MouseDown(BPoint point) {
                     StyledRunFragment* frag = row->ItemAt(fragIdx);
                     if (!frag) continue;
 
-                    SetFont(&(frag->font));
-                    float segmentWidth = StringWidth(frag->subText.String());
+                    float segmentWidth = frag->width;
 
-                    // Check for underline style assignment
                     if (frag->font.Face() & B_UNDERSCORE_FACE) {
                         if (point.x >= currentX && point.x <= (currentX + segmentWidth)) {
+                            fIsSelecting = false;
+                            
                             BString url = frag->subText;
                             url.Trim();
                             char* args = (char*)url.String();
@@ -1458,7 +1853,9 @@ void CustomChatView::MouseDown(BPoint point) {
             currentY += fLineHeight;
         }
     }
+
 }
+
 
 
 void CustomChatView::SetBackgroundImage(const char* filePath)
@@ -1472,6 +1869,10 @@ void CustomChatView::SetBackgroundImage(const char* filePath)
 
     Invalidate();
 }
+
+
+
+
 
 
 
@@ -2971,6 +3372,65 @@ private:
 };
 
 
+class InputFieldKeyFilter : public BMessageFilter {
+public:
+    InputFieldKeyFilter(BTextControl* inputControl, BObjectList<BString, true>* list, int32* index) 
+        : BMessageFilter(B_KEY_DOWN), fInputControl(inputControl), fHistoryList(list), fHistoryIndex(index) {}
+
+    virtual filter_result Filter(BMessage* message, BHandler** target) {
+        int32 key = 0;
+        if (message->FindInt32("key", &key) != B_OK || fInputControl == nullptr || fHistoryList == nullptr || fHistoryIndex == nullptr) {
+            return B_DISPATCH_MESSAGE;
+        }
+
+        int32 totalItems = fHistoryList->CountItems();
+
+        // --- UP ARROW KEY DETECTED (Haiku Raw Key: 0x57) ---
+        if (key == 0x57) { 
+            if (totalItems > 0 && *fHistoryIndex > 0) {
+                (*fHistoryIndex)--; // Move backwards in time
+                
+                BString* historicalText = fHistoryList->ItemAt(*fHistoryIndex);
+                if (historicalText != nullptr) {
+                    UpdateInputBox(historicalText->String());
+                }
+                return B_SKIP_MESSAGE; // Swallow key event
+            }
+        }
+        // --- DOWN ARROW KEY DETECTED (Haiku Raw Key: 0x62) ---
+        else if (key == 0x62) {
+            if (totalItems > 0 && *fHistoryIndex < totalItems) {
+                (*fHistoryIndex)++; // Move forwards in time
+                
+                if (*fHistoryIndex == totalItems) {
+                    // We scrolled all the way back to the present blank line
+                    UpdateInputBox("");
+                } else {
+                    BString* historicalText = fHistoryList->ItemAt(*fHistoryIndex);
+                    if (historicalText != nullptr) {
+                        UpdateInputBox(historicalText->String());
+                    }
+                }
+                return B_SKIP_MESSAGE; // Swallow key event
+            }
+        }
+        return B_DISPATCH_MESSAGE;
+    }
+
+private:
+    void UpdateInputBox(const char* text) {
+        fInputControl->SetText(text);
+        BTextView* tv = fInputControl->TextView();
+        if (tv != nullptr) {
+            int32 textLen = tv->TextLength();
+            tv->Select(textLen, textLen); // Force pen cursor to the end
+        }
+    }
+
+    BTextControl*               fInputControl;
+    BObjectList<BString, true>* fHistoryList;
+    int32*                      fHistoryIndex;
+};
 
 
 
@@ -2989,7 +3449,8 @@ public:
         SetTitle(windowTitle.String());
 		fActiveIconPopup = nullptr;
 		fActiveListWindow = nullptr;
-	
+	    fHistoryIndex = 0;
+
 
         
         // 1. Setup Channel Tree View (Left Side)
@@ -3064,8 +3525,15 @@ public:
         
         
         
-        
         fInputControl = new BTextControl("input", "", "", new BMessage(MSG_SEND_MESSAGE));
+
+        BTextView* inputTextView = fInputControl->TextView();
+        if (inputTextView != nullptr) {
+            // Pass the pointers to the collection list and index counters
+            inputTextView->AddFilter(new InputFieldKeyFilter(fInputControl, &fHistoryList, &fHistoryIndex));
+        }
+
+
 
 
 
@@ -3103,8 +3571,6 @@ public:
         initialFont.SetSize(initialChatLogSize);
         fTopicView->SetFont(&initialFont, B_FONT_SIZE);
         fTopicView->TextView()->SetFontAndColor(&initialFont, B_FONT_SIZE);
-
-        // ... (Keep Layout Architecture/BSplitView code exactly as it is below) ...
 
 
        // 5. Layout Architecture using Adjustable Split Panes
@@ -3308,9 +3774,13 @@ void Show()
             delete listPtr;
         }
 
+        // Flush command history string allocations out of the heap database safely on application close
+        fHistoryList.MakeEmpty(); 
+
         // 5. Force the application process to instantly terminate and leave the Deskbar
         be_app->PostMessage(B_QUIT_REQUESTED); 
     }
+
 
 
 
@@ -3616,7 +4086,7 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         
         menu->AddSeparatorItem();
         
-        // 1. Determine your active Operator capability status for this specific channel tab
+             // 1. Determine your active Operator capability status for this specific channel tab
         bool iamOperator = false;
         if (fChannelUsers.count(chanItem) > 0) {
             BObjectList<UserListItem, true>* userList = fChannelUsers[chanItem];
@@ -3639,31 +4109,26 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
             }
         }
         
-        // 2. Channel Modes Controller Window Trigger
-        BMessage* modesWindowMsg = new BMessage(MSG_CONTEXT_SHOW_MODES);
-        modesWindowMsg->AddPointer("chan_item", chanItem);
-        BMenuItem* modesMenuItem = new BMenuItem("Channel Modes...", modesWindowMsg);
-        
-        // PERMISSION ENFORCEMENT: Grey out if you are a standard user
-        if (!iamOperator) {
-            modesMenuItem->SetEnabled(false);
-        }
-        menu->AddItem(modesMenuItem);
-        
-        // 3. View Channel Ban List Option
-        BMessage* banListMsg = new BMessage(MSG_CONTEXT_SHOW_BANS);
-        banListMsg->AddPointer("chan_item", chanItem);
-        BMenuItem* banListMenuItem = new BMenuItem("View Channel Ban List...", banListMsg);
-        
-        // PERMISSION ENFORCEMENT: Grey out if you are a standard user
-        if (!iamOperator) {
-            banListMenuItem->SetEnabled(false);
-        }
-        menu->AddItem(banListMenuItem);
-        
-        menu->AddSeparatorItem();
+        // HIDE COMPLETELY ENFORCEMENT: Only generate and append these items if you are an Operator
+        if (iamOperator) {
+            menu->AddSeparatorItem();
 
-        
+            // 2. Channel Modes Controller Window Trigger
+            BMessage* modesWindowMsg = new BMessage(MSG_CONTEXT_SHOW_MODES);
+            modesWindowMsg->AddPointer("chan_item", chanItem);
+            BMenuItem* modesMenuItem = new BMenuItem("Channel Modes...", modesWindowMsg);
+            menu->AddItem(modesMenuItem);
+            
+            // 3. View Channel Ban List Option
+            BMessage* banListMsg = new BMessage(MSG_CONTEXT_SHOW_BANS);
+            banListMsg->AddPointer("chan_item", chanItem);
+            BMenuItem* banListMenuItem = new BMenuItem("View Channel Ban List...", banListMsg);
+            menu->AddItem(banListMenuItem);
+            
+            menu->AddSeparatorItem();
+        }
+
+        // Available to everyone
         BMessage* removeMsg = new BMessage('rmch'); 
         removeMsg->AddPointer("channel_item", chanItem);
         menu->AddItem(new BMenuItem("Remove Channel", removeMsg));
@@ -3672,6 +4137,7 @@ void ShowContextMenu(BPoint screenPoint, BListItem* item) {
         menu->Go(screenPoint, true, true, true);
         return;
     }
+
 
 
     // 2. Server menu logic
@@ -6892,7 +7358,7 @@ public:
         }
 
 
-         // 1. CONTEXT CLICK HANDLER: Intercepts row interactions to show the menu
+        // 1. CONTEXT CLICK HANDLER: Intercepts row interactions to show the menu
         case MSG_USER_LIST_CONTEXT_CLICK: {
             BPoint mousePoint;
             uint32 mouseBtn = 0;
@@ -6933,28 +7399,57 @@ public:
                 BMessage* pmMsg = new BMessage(MSG_CONTEXT_PRIVMSG);
                 pmMsg->AddString("target_nick", cleanNick);
                 contextMenu->AddItem(new BMenuItem(menuLabel.String(), pmMsg));
-                contextMenu->AddSeparatorItem();
-
-                BMenu* modesMenu = new BMenu("Channel Modes");
-                struct {
-                    const char* label;
-                    uint32 command;
-                } opActions[] = {
-                    { "Op", MSG_CONTEXT_OP },
-                    { "Deop", MSG_CONTEXT_DEOP },
-                    { "Voice", MSG_CONTEXT_VOICE },
-                    { "Devoice", MSG_CONTEXT_DEVOICE },
-                    { "Kick", MSG_CONTEXT_KICK }
-                };
-
-                for (const auto& action : opActions) {
-                    BMessage* actionMsg = new BMessage(action.command);
-                    actionMsg->AddString("target_nick", cleanNick);
-                    modesMenu->AddItem(new BMenuItem(action.label, actionMsg));
+                
+                // DYNAMIC VISIBILITY FIX: Scan the channel cache to see if WE hold operator status (@)
+                bool iamOperator = false;
+                ChannelTreeItem* activeChan = dynamic_cast<ChannelTreeItem*>(fActiveBufferItem);
+                
+                if (activeChan != nullptr && fChannelUsers.count(activeChan) > 0) {
+                    BObjectList<UserListItem, true>* userList = fChannelUsers[activeChan];
+                    if (userList != nullptr) {
+                        for (int32 i = 0; i < userList->CountItems(); i++) {
+                            UserListItem* user = userList->ItemAt(i);
+                            if (user != nullptr && user->Text() != nullptr) {
+                                BString userText(user->Text());
+                                BString cleanUserNick = GetCleanNickname(userText);
+                                
+                                // Check if this specific row represents YOUR nickname profile
+                                if (fMyNick.ICompare(cleanUserNick) == 0) {
+                                    if (userText.StartsWith("@")) {
+                                        iamOperator = true;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
 
-                modesMenu->SetTargetForItems(this);
-                contextMenu->AddItem(modesMenu);
+                // Only generate and inject the Channel Modes submenu option if your user is an Operator
+                if (iamOperator) {
+                    contextMenu->AddSeparatorItem();
+                    
+                    BMenu* modesMenu = new BMenu("Channel Modes");
+                    struct {
+                        const char* label;
+                        uint32 command;
+                    } opActions[] = {
+                        { "Op", MSG_CONTEXT_OP },
+                        { "Deop", MSG_CONTEXT_DEOP },
+                        { "Voice", MSG_CONTEXT_VOICE },
+                        { "Devoice", MSG_CONTEXT_DEVOICE },
+                        { "Kick", MSG_CONTEXT_KICK }
+                    };
+
+                    for (const auto& action : opActions) {
+                        BMessage* actionMsg = new BMessage(action.command);
+                        actionMsg->AddString("target_nick", cleanNick);
+                        modesMenu->AddItem(new BMenuItem(action.label, actionMsg));
+                    }
+
+                    modesMenu->SetTargetForItems(this);
+                    contextMenu->AddItem(modesMenu);
+                }
             }
 
             contextMenu->SetTargetForItems(this);
@@ -6963,6 +7458,7 @@ public:
             contextMenu->Go(fUserList->ConvertToScreen(mousePoint), true, true, true);
             break;
         }
+
 
 
 
@@ -8252,9 +8748,29 @@ public:
                 ConnectToServer(fOftcNode); 
                 break;
 
-     case MSG_SEND_MESSAGE: {
+        case MSG_SEND_MESSAGE: {
             BString text = fInputControl->Text();
             if (text.Length() > 0) {
+                
+                // Verify we don't accidentally duplicate the exact same message back-to-back
+                bool isDuplicate = false;
+                int32 totalHistory = fHistoryList.CountItems();
+                if (totalHistory > 0) {
+                    BString* lastItem = fHistoryList.ItemAt(totalHistory - 1);
+                    if (lastItem != nullptr && text == *lastItem) {
+                        isDuplicate = true;
+                    }
+                }
+
+                // If it's a fresh sentence, save it to our historical memory database heap
+                if (!isDuplicate) {
+                    fHistoryList.AddItem(new BString(text));
+                }
+
+                // Snap the history index indicator straight to the total array item length.
+                // This resets the position marker so the very next Up Arrow starts at the message you just sent.
+                fHistoryIndex = fHistoryList.CountItems();
+
                 BString activeTarget = "";
                 ServerTreeItem* contextServer = nullptr;
                 bool isServerLogTab = false; // Tracks if we are looking at a server status feed
@@ -8729,7 +9245,9 @@ void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
 
 	ChannelModesDialog* fActiveModesDialog;
 	BString             fActiveModesChannel;
-
+	
+    BObjectList<BString, true> fHistoryList;  
+    int32                      fHistoryIndex; 
 	
 }; 
 
