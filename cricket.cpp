@@ -64,7 +64,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.23 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.24 (Haiku OS)";
 }
 
 
@@ -8118,7 +8118,7 @@ public:
             if (message->FindString("target_nick", &targetNick) == B_OK && targetNick.Length() > 0) {
                 BRect windowFrame(0, 0, 400, 140);
                 
-                // FIXED: Explicitly cast the BStringItem* to a ChannelTreeItem*
+                // Explicitly cast the BStringItem* to a ChannelTreeItem*
                 ChannelTreeItem* contextItem = static_cast<ChannelTreeItem*>(fActiveBufferItem);
                 
                 OpDurationWindow* inputWin = new OpDurationWindow(windowFrame, "Give Operator Status", 
@@ -8138,106 +8138,72 @@ public:
             BString targetNick;
             BString opDuration = "Permanently";
             
-            // Core entry trace
-            printf("[DEBUG_OP] Entering MSG_CONTEXT_OP_SUBMIT loop...\n");
-
             if (message->FindString("target_nick", &targetNick) == B_OK) {
                 message->FindString("op_duration", &opDuration);
-                printf("[DEBUG_OP] Parameters parsed -> Nick: '%s', Duration: '%s'\n", 
-                       targetNick.String(), opDuration.String());
 
                 // DYNAMIC VERIFICATION: Pull the context item straight out of the message bundle.
+                // Fall back to fActiveBufferItem ONLY if it wasn't packed by the window.
                 ChannelTreeItem* targetItem = nullptr;
                 if (message->FindPointer("channel_item", (void**)&targetItem) != B_OK || targetItem == nullptr) {
-                    printf("[DEBUG_OP] 'channel_item' missing from message. Falling back to fActiveBufferItem.\n");
                     targetItem = static_cast<ChannelTreeItem*>(fActiveBufferItem);
-                } else {
-                    printf("[DEBUG_OP] Successfully extracted 'channel_item' from message envelope context.\n");
                 }
 
-                if (targetItem == nullptr) {
-                    printf("[DEBUG_OP] CRITICAL: Both channel_item and fActiveBufferItem are NULL! Aborting.\n");
-                    break;
-                }
-                
-                printf("[DEBUG_OP] Target Item raw text label: '%s'\n", targetItem->Text());
+                if (targetItem == nullptr) break;
 
                 // Trace the true server instance using the validated item context
                 ServerTreeItem* contextServer = nullptr;
                 if (fChannelTree != nullptr) {
                     contextServer = static_cast<ServerTreeItem*>(fChannelTree->Superitem(targetItem));
-                } else {
-                    printf("[DEBUG_OP] WARNING: fChannelTree itself is NULL!\n");
                 }
-
-                if (contextServer == nullptr) {
-                    printf("[DEBUG_OP] CRITICAL: fChannelTree->Superitem() returned NULL! The channel node is disconnected from its server parent in the UI tree layout. Aborting.\n");
-                    break;
-                }
-                printf("[DEBUG_OP] Parent server node identified: '%s'\n", contextServer->Text());
+                if (contextServer == nullptr) break;
 
                 // Extract the clean network channel room string
                 BString activeChannel(targetItem->Text());
                 
-                // Track mutations step-by-step to see if it accidentally clears the string or cuts too much
                 int32 spaceIdx = activeChannel.FindLast(" ");
                 if (spaceIdx != B_ERROR) {
                     BString extractedChannel;
                     activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
                     activeChannel = extractedChannel;
-                    printf("[DEBUG_OP] Truncated after last space -> '%s'\n", activeChannel.String());
                 }
                 
                 int32 tagPos = activeChannel.FindFirst(" [");
                 if (tagPos != B_ERROR) {
                     activeChannel.Truncate(tagPos);
-                    printf("[DEBUG_OP] Truncated layout bracket tag -> '%s'\n", activeChannel.String());
                 }
 
                 // Check prefixes
                 if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&") && !activeChannel.StartsWith("!")) {
-                    printf("[DEBUG_OP] CRITICAL: Parsed room string '%s' does not start with a valid IRC prefix (#, &, !). Aborting.\n", 
-                           activeChannel.String());
                     break;
                 }
 
-                printf("[DEBUG_OP] Requesting socket for server node pointer: %p...\n", contextServer);
                 BSecureSocket* activeSocket = GetActiveSocket(contextServer);
-                
-                if (activeSocket == nullptr) {
-                    printf("[DEBUG_OP] CRITICAL: GetActiveSocket() returned NULL! No matching live socket connection map entry found for this server. Aborting.\n");
-                    break;
+                if (activeSocket != nullptr) {
+                    BString outgoingPayload;
+                    outgoingPayload << "MODE " << activeChannel << " +o " << targetNick << "\r\n";
+                    activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
+
+                    bigtime_t delayMicroseconds = 0;
+                    if (opDuration == "5 Minutes") delayMicroseconds = 5LL * 60LL * 1000000LL;
+                    else if (opDuration == "1 Hour") delayMicroseconds = 60LL * 60LL * 1000000LL;
+                    else if (opDuration == "1 Day")  delayMicroseconds = 24LL * 60LL * 60LL * 1000000LL;
+
+                    if (delayMicroseconds > 0) {
+                        BString* trackedNick = new BString(targetNick);
+                        fAutoOpList.AddItem(trackedNick);
+
+                        BMessage* deopTrigger = new BMessage(MSG_CONTEXT_TIMED_DEOP_TRIGGER);
+                        deopTrigger->AddString("target_channel", activeChannel);
+                        deopTrigger->AddString("target_nick", targetNick);
+                        deopTrigger->AddPointer("server_node", contextServer);
+
+                        new BMessageRunner(BMessenger(this), deopTrigger, delayMicroseconds, 1);
+                    }
                 }
-
-                // If it passes every check, it reaches here
-                BString outgoingPayload;
-                outgoingPayload << "MODE " << activeChannel << " +o " << targetNick << "\r\n";
-                printf("[DEBUG_OP] SUCCESS! Transmitting payload: %s", outgoingPayload.String());
-                
-                activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
-
-                bigtime_t delayMicroseconds = 0;
-                if (opDuration == "5 Minutes") delayMicroseconds = 5LL * 60LL * 1000000LL;
-                else if (opDuration == "1 Hour") delayMicroseconds = 60LL * 60LL * 1000000LL;
-                else if (opDuration == "1 Day")  delayMicroseconds = 24LL * 60LL * 60LL * 1000000LL;
-
-                if (delayMicroseconds > 0) {
-                    printf("[DEBUG_OP] Scheduling timed auto-deop runner...\n");
-                    BString* trackedNick = new BString(targetNick);
-                    fAutoOpList.AddItem(trackedNick);
-
-                    BMessage* deopTrigger = new BMessage(MSG_CONTEXT_TIMED_DEOP_TRIGGER);
-                    deopTrigger->AddString("target_channel", activeChannel);
-                    deopTrigger->AddString("target_nick", targetNick);
-                    deopTrigger->AddPointer("server_node", contextServer);
-
-                    new BMessageRunner(BMessenger(this), deopTrigger, delayMicroseconds, 1);
-                }
-            } else {
-                printf("[DEBUG_OP] CRITICAL: 'target_nick' field missing entirely inside BMessage payload.\n");
             }
             break;
         }
+
 
 
 
