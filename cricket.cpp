@@ -15,6 +15,9 @@
 #include <Box.h>
 #include <MessageFilter.h>
 #include <Clipboard.h>
+#include <TabView.h>
+#include <StringView.h>
+#include <SeparatorView.h>
 
 // Storage, Path Finder & System File Kits
 #include <Directory.h>
@@ -36,6 +39,8 @@
 #include <TextControl.h>
 #include <TextView.h>
 #include <ListView.h>
+#include <ListItem.h>
+#include <ObjectList.h>
 #include <OutlineListView.h>
 #include <ScrollView.h>
 #include <PopUpMenu.h>
@@ -64,7 +69,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.24 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.25 (Haiku OS)";
 }
 
 
@@ -2798,27 +2803,36 @@ public:
         // --- Checkbox Options ---
         fAutoConnectCheck = new BCheckBox("autoconnect", "Automatically connect at startup", nullptr);
         fAutoConnectCheck->SetValue(srv.autoConnect ? B_CONTROL_ON : B_CONTROL_OFF);
+        fAutoConnectCheck->SetToolTip("Automatically connect to this IRC server when Cricket starts up.");
 
         fAutoReconnectCheck = new BCheckBox("autoreconnect", "Automatically reconnect on drop", nullptr);
         fAutoReconnectCheck->SetValue(srv.autoReconnect ? B_CONTROL_ON : B_CONTROL_OFF);
+        fAutoReconnectCheck->SetToolTip("Attempt to automatically reconnect if the network connection drops unexpectedly.");
 
         fHideStatusCheck = new BCheckBox("hidestatus", "Hide channel status messages (Joins/Parts/Quits)", nullptr);
         fHideStatusCheck->SetValue(srv.hideStatusMessages ? B_CONTROL_ON : B_CONTROL_OFF);
+        fHideStatusCheck->SetToolTip("Hides user join, part, and quit messages to keep busy chat channels less cluttered.");
 
         fDebugEnableCheck = new BCheckBox("debug", "Enable low-level socket engine logs", nullptr);
         fDebugEnableCheck->SetValue(srv.debugEnable ? B_CONTROL_ON : B_CONTROL_OFF);
+        fDebugEnableCheck->SetToolTip("Outputs detailed raw socket traffic data to the system console for debugging connection issues.");
 
         fEnableEmoticonsCheck = new BCheckBox("enable_emotes", "Enable custom inline emoticons for this server", nullptr);
         fEnableEmoticonsCheck->SetValue(srv.enableEmoticons ? B_CONTROL_ON : B_CONTROL_OFF);
+        fEnableEmoticonsCheck->SetToolTip("Renders text emoticons as custom inline graphical emoticons in your chat logs.");
 
         fUseCustomDrawCheck = new BCheckBox("use_custom_draw", "Enable High Performance Draw Engine", nullptr);
         fUseCustomDrawCheck->SetValue(srv.useCustomDrawFunction ? B_CONTROL_ON : B_CONTROL_OFF);
+        fUseCustomDrawCheck->SetToolTip("Bypasses standard layout constraints, using Cricket's optimized direct canvas drawing engine for faster line rendering and smooth log scrolling.");
 
         fLogChatsToFileCheck = new BCheckBox("log_chats", "Log server chats to file", nullptr);
         fLogChatsToFileCheck->SetValue(srv.logChatsToFile ? B_CONTROL_ON : B_CONTROL_OFF);
+        fLogChatsToFileCheck->SetToolTip("Saves plain text history logs of all conversations and channel text onto your local system disk.");
 
         fEnableColorCodesCheck = new BCheckBox("enable_color_codes", "Enable Visual Block Tags for mIRC color codes", nullptr);
         fEnableColorCodesCheck->SetValue(srv.enableColorCodes ? B_CONTROL_ON : B_CONTROL_OFF);
+        fEnableColorCodesCheck->SetToolTip("Parses legacy mIRC rich color code tags into colored block backgrounds inside the window.");
+
 
 
         // --- NEW: AUTOJOIN CHANNELS INTERFACE COMPONENTS ---
@@ -2836,88 +2850,130 @@ public:
         fAutojoinInput = new BTextControl("chan_input", "", "", nullptr);
         fAddAutojoinBtn = new BButton("add_chan", "Add", new BMessage('ajad'));
         fRemoveAutojoinBtn = new BButton("rem_chan", "Remove", new BMessage('ajrm'));
+        
+        // --- Center Aligned Server Title Header ---
+        BStringView* titleHeader = new BStringView("server_title_header", srv.name.c_str());
+        titleHeader->SetAlignment(B_ALIGN_CENTER);
+        
+        // Make the text stand out slightly by setting its font style to Bold
+        BFont titleFont;
+        titleHeader->GetFont(&titleFont);
+        titleFont.SetFace(B_BOLD_FACE);
+        titleHeader->SetFont(&titleFont, B_FONT_FACE);
 
-        // --- Window Actions ---
+         // --- Window Actions ---
         BButton* cancelBtn = new BButton("cancel", "Cancel", new BMessage('cfcn'));
         BButton* saveBtn = new BButton("save", "Save", new BMessage('cfsv'));
         saveBtn->MakeDefault(true);
 
-        // --- Layout Building Architecture ---
-        BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
-            .SetInsets(15)
+        // --- Create Tab View Architecture ---
+        BTabView* tabView = new BTabView("config_tabs", B_WIDTH_AS_USUAL);
+
+        // --- TAB 1: IDENTITY & CREDS ---
+        BGroupView* identityTab = new BGroupView(B_VERTICAL, 5);
+        identityTab->SetName("Identity");
+        BLayoutBuilder::Group<>(identityTab, B_VERTICAL, 0)
+            .SetInsets(10)
             .AddGrid(5.0f, 5.0f)
                 .Add(fNickInput->CreateLabelLayoutItem(), 0, 0)
                 .Add(fNickInput->CreateTextViewLayoutItem(), 1, 0)
-                
                 .Add(fAltNickInput->CreateLabelLayoutItem(), 0, 1)
                 .Add(fAltNickInput->CreateTextViewLayoutItem(), 1, 1)
-                
                 .Add(fAltNick2Input->CreateLabelLayoutItem(), 0, 2)
                 .Add(fAltNick2Input->CreateTextViewLayoutItem(), 1, 2)
-                
                 .Add(fPassInput->CreateLabelLayoutItem(), 0, 3)     
                 .Add(fPassInput->CreateTextViewLayoutItem(), 1, 3)
-            
-                .Add(fAwayInput->CreateLabelLayoutItem(), 0, 4)
-                .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 4)  
-                
-                .Add(fQuitInput->CreateLabelLayoutItem(), 0, 5)
-                .Add(fQuitInput->CreateTextViewLayoutItem(), 1, 5)         
-    
-                .Add(fServerListFontMenu->CreateLabelLayoutItem(), 0, 6)
-                .Add(fServerListFontMenu->CreateMenuBarLayoutItem(), 1, 6)
-                
-                .Add(fChatLogFontMenu->CreateLabelLayoutItem(), 0, 7)
-                .Add(fChatLogFontMenu->CreateMenuBarLayoutItem(), 1, 7)
-                
-                .Add(fUserListFontMenu->CreateLabelLayoutItem(), 0, 8)
-                .Add(fUserListFontMenu->CreateMenuBarLayoutItem(), 1, 8)
-
-                .Add(fBgPathInput->CreateLabelLayoutItem(), 0, 9)
-                .AddGroup(B_HORIZONTAL, 5, 1, 9)
-                    .Add(fBgPathInput->CreateTextViewLayoutItem(), 1.0)
-                    .Add(fBrowseBgBtn, 0.0)
-                .End()
             .End()
-            .Add(fBgOpacitySlider) 
-            .AddStrut(4)
+            .AddGlue(); // Absorbs excess vertical space evenly
 
-
-            // HEADER-SAFE FIX: Uses an explicitly instantiated BBox container 
-            // to provide a pristine text title and frame border safely.
-            .AddGroup(B_VERTICAL, 5)
-                .Add([&]() -> BView* {
-                    BBox* autojoinBox = new BBox(B_FANCY_BORDER);
-                    autojoinBox->SetLabel("Autojoin Channels");
-                    
-                    BLayoutBuilder::Group<>(autojoinBox, B_VERTICAL, 5)
-                        .SetInsets(10, 20, 10, 10) // Padding adjustments account for the header text title
-                        .Add(autojoinScroll, 1.0)
-                        .AddGroup(B_HORIZONTAL, 5)
-                            .Add(fAutojoinInput, 1.0)
-                            .Add(fAddAutojoinBtn, 0.0)
-                            .Add(fRemoveAutojoinBtn, 0.0)
-                        .End();
-                        
-                    return autojoinBox;
-                }(), 1.0)
-            .End()
-           
-            
+        // --- TAB 2: PREFERENCES & THEMING ---
+        BGroupView* prefsTab = new BGroupView(B_VERTICAL, 5);
+        prefsTab->SetName("Preferences");
+        
+        // Wrap checkboxes into an explicit scrollable container or compact grids
+        BGroupView* scrollableCheckboxes = new BGroupView(B_VERTICAL, 2);
+        BLayoutBuilder::Group<>(scrollableCheckboxes, B_VERTICAL, 2)
             .Add(fAutoConnectCheck)
             .Add(fAutoReconnectCheck)
             .Add(fHideStatusCheck)
-            // .Add(fDebugEnableCheck)  
-            .Add(fEnableColorCodesCheck)     
-            .Add(fEnableEmoticonsCheck) 
-            .Add(fUseCustomDrawCheck)            
+            // .Add(fDebugEnableCheck)
+            .Add(fEnableEmoticonsCheck)
+            .Add(fUseCustomDrawCheck)
             .Add(fLogChatsToFileCheck)
-            .AddGlue()
-            .AddGroup(B_HORIZONTAL, 10)
-                .AddGlue()
-                .Add(cancelBtn)
-                .Add(saveBtn)
+            .Add(fEnableColorCodesCheck);
+
+        BLayoutBuilder::Group<>(prefsTab, B_HORIZONTAL, 10)
+            .SetInsets(10)
+            // Left side layout column: Fonts & Wallpaper paths
+            .AddGroup(B_VERTICAL, 5, 0.6)
+                .AddGrid(5.0f, 5.0f)
+                    .Add(fServerListFontMenu->CreateLabelLayoutItem(), 0, 0)
+                    .Add(fServerListFontMenu->CreateMenuBarLayoutItem(), 1, 0)
+                    .Add(fChatLogFontMenu->CreateLabelLayoutItem(), 0, 1)
+                    .Add(fChatLogFontMenu->CreateMenuBarLayoutItem(), 1, 1)
+                    .Add(fUserListFontMenu->CreateLabelLayoutItem(), 0, 2)
+                    .Add(fUserListFontMenu->CreateMenuBarLayoutItem(), 1, 2)
+                    // ... font menus ...
+                    .Add(fBgPathInput->CreateLabelLayoutItem(), 0, 3)
+                    .AddGroup(B_HORIZONTAL, 2, 1, 3)
+                        .Add(fBgPathInput->CreateTextViewLayoutItem(), 1.0)
+                        .Add(fBrowseBgBtn, 0.0)
+                    .End()
+                .End()
+                .Add(new BSeparatorView(B_HORIZONTAL)) // <-- INJECTED VISUAL ANCHOR SEPARATOR
+                .Add(fBgOpacitySlider)
+            .End()
+
+            // Right side layout column: Operational UI Options Switches
+            .Add(scrollableCheckboxes, 0.4);
+
+        // --- TAB 3: AUTOJOIN INTERFACE ---
+        BGroupView* autojoinTab = new BGroupView(B_VERTICAL, 5);
+        autojoinTab->SetName("Autojoin");
+        
+        BBox* autojoinBox = new BBox(B_FANCY_BORDER);
+        autojoinBox->SetLabel("Autojoin Channels");
+        BLayoutBuilder::Group<>(autojoinBox, B_VERTICAL, 5)
+            .SetInsets(10, 20, 10, 10) 
+            .Add(autojoinScroll, 1.0)
+            .AddGroup(B_HORIZONTAL, 5)
+                .Add(fAutojoinInput, 1.0)
+                .Add(fAddAutojoinBtn, 0.0)
+                .Add(fRemoveAutojoinBtn, 0.0)
             .End();
+
+        BLayoutBuilder::Group<>(autojoinTab, B_VERTICAL, 0)
+            .SetInsets(10)
+            .Add(autojoinBox, 1.0);
+
+        // --- Assemble Tabs into the Window ---
+        tabView->AddTab(identityTab);
+        tabView->AddTab(prefsTab);
+        tabView->AddTab(autojoinTab);
+        
+        // --- Master Window Root Layout ---
+        BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
+            .SetInsets(12)
+            .Add(titleHeader, 0.0) 
+            .Add(tabView, 1.0)     
+            
+            // --- FIXED COMPACT FOOTER ROW DESIGN ---
+            .AddGrid(5.0f, 5.0f)
+                // Row 1: Messages Fields cleanly matched up 
+                .Add(fAwayInput->CreateLabelLayoutItem(), 0, 0)
+                .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 0, 2, 1) // Spans across 2 columns
+                .Add(fQuitInput->CreateLabelLayoutItem(), 3, 0)
+                .Add(fQuitInput->CreateTextViewLayoutItem(), 4, 0, 2, 1) // Spans across 2 columns
+                
+                // Row 2: Actions pushed neatly to the right
+                .Add(cancelBtn, 4, 1)
+                .Add(saveBtn, 5, 1)
+            .End();
+
+        ResizeTo(540, 360); // Widened slightly to give the text inputs plenty of breathing room side-by-side
+
+    
+
             
         if (parent) {
             CenterIn(parent->Frame()); 
@@ -3597,10 +3653,19 @@ private:
 };
 
 
+
+
 class InputFieldKeyFilter : public BMessageFilter {
 public:
-    InputFieldKeyFilter(BTextControl* inputControl, BObjectList<BString, true>* list, int32* index) 
-        : BMessageFilter(B_KEY_DOWN), fInputControl(inputControl), fHistoryList(list), fHistoryIndex(index) {}
+    InputFieldKeyFilter(BTextControl* inputControl, BObjectList<BString, true>* list, int32* index, BListView* userList) 
+        : BMessageFilter(B_KEY_DOWN), 
+          fInputControl(inputControl), 
+          fHistoryList(list), 
+          fHistoryIndex(index),
+          fUserList(userList),
+          fInCompletionMode(false),
+          fLastMatchIndex(-1),
+          fCompletionStartPos(0) {}
 
     virtual filter_result Filter(BMessage* message, BHandler** target) {
         int32 key = 0;
@@ -3609,6 +3674,15 @@ public:
         }
 
         int32 totalItems = fHistoryList->CountItems();
+
+        // --- TAB KEY DETECTED (Haiku Raw Key: 0x26) ---
+        if (key == 0x26) {
+            HandleTabCompletion();
+            return B_SKIP_MESSAGE; // Swallow key to prevent focus shifting
+        }
+
+        // Reset tab completion state on any key press that isn't Tab
+        fInCompletionMode = false;
 
         // --- UP ARROW KEY DETECTED (Haiku Raw Key: 0x57) ---
         if (key == 0x57) { 
@@ -3652,9 +3726,87 @@ private:
         }
     }
 
+    void HandleTabCompletion() {
+        if (fUserList == nullptr) return;
+
+        BTextView* textView = fInputControl->TextView();
+        if (textView == nullptr) return;
+
+        int32 start, end;
+        textView->GetSelection(&start, &end);
+
+        // If not currently cycling matches, initialize completion state
+        if (!fInCompletionMode) {
+            BString currentText(textView->Text());
+            
+            // Extract the partial word by scanning backward from the cursor to the nearest space
+            int32 i = start - 1;
+            while (i >= 0 && currentText.ByteAt(i) != ' ') {
+                i--;
+            }
+            fCompletionStartPos = i + 1;
+            
+            currentText.CopyInto(fOriginalPrefix, fCompletionStartPos, start - fCompletionStartPos);
+            
+            if (fOriginalPrefix.Length() == 0) return;
+
+            fInCompletionMode = true;
+            fLastMatchIndex = -1; // Reset to start before the list
+        }
+
+        int32 totalUsers = fUserList->CountItems();
+        if (totalUsers == 0) return;
+
+        BString nextMatch = "";
+        
+        // Loop through BListView items to find the next match matching the prefix
+        for (int32 i = 0; i < totalUsers; ++i) {
+            int32 checkIndex = (fLastMatchIndex + 1 + i) % totalUsers;
+            
+            BStringItem* item = static_cast<BStringItem*>(fUserList->ItemAt(checkIndex));
+            if (item == nullptr || item->Text() == nullptr) continue;
+
+            BString nick(item->Text());
+            
+            // Strip common IRC mode prefixes (@, +, %) if they are visible in your UI list
+            if (nick.Length() > 0 && (nick.ByteAt(0) == '@' || nick.ByteAt(0) == '+' || nick.ByteAt(0) == '%')) {
+                nick.Remove(0, 1);
+            }
+
+            // Perform a case-insensitive prefix match using Haiku's BString API
+            if (nick.ICompare(fOriginalPrefix, fOriginalPrefix.Length()) == 0) {
+                nextMatch = nick;
+                fLastMatchIndex = checkIndex; // Cache index for the next Tab stroke
+                break;
+            }
+        }
+
+        if (nextMatch.Length() > 0) {
+            // Apply proper context spacing (colon suffix at the start of a sentence)
+            if (fCompletionStartPos == 0) {
+                nextMatch << ": ";
+            } else {
+                nextMatch << " ";
+            }
+
+            // Replace the old text chunk with our newly completed name match
+            textView->GetSelection(&start, &end);
+            textView->Select(fCompletionStartPos, start);
+            textView->Delete();
+            textView->Insert(nextMatch.String());
+        }
+    }
+
     BTextControl*               fInputControl;
     BObjectList<BString, true>* fHistoryList;
     int32*                      fHistoryIndex;
+    BListView*                  fUserList;
+
+    // Tab completion state tracking
+    bool                        fInCompletionMode;
+    BString                     fOriginalPrefix;
+    int32                       fLastMatchIndex;
+    int32                       fCompletionStartPos;
 };
 
 
@@ -3917,7 +4069,7 @@ public:
         BTextView* inputTextView = fInputControl->TextView();
         if (inputTextView != nullptr) {
             // Pass the pointers to the collection list and index counters
-            inputTextView->AddFilter(new InputFieldKeyFilter(fInputControl, &fHistoryList, &fHistoryIndex));
+            inputTextView->AddFilter(new InputFieldKeyFilter(fInputControl, &fHistoryList, &fHistoryIndex, fUserList));
         }
 
 
