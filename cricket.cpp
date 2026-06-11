@@ -69,7 +69,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.25 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.26 (Haiku OS)";
 }
 
 
@@ -5528,6 +5528,73 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         return;
     }
     
+    
+         // =========================================================================
+        // HANDLER FOR NUMERIC 005: RPL_ISUPPORT (Server Features List)
+        // =========================================================================
+        if (command == "005") {
+            if (contextServer == nullptr) return;
+
+            // Incoming Format: :server 005 YourNick NICKLEN=30 CHANMODES=I,k,l :are supported by this server
+            // 'line' contains: "YourNick NICKLEN=30 CHANMODES=I,k,l ..."
+            // 'trailing' contains: "are supported by this server"
+
+            BString featuresPayload = line;
+            featuresPayload.Trim();
+
+            BString featuresOnly = "";
+            int32 spaceIdx = featuresPayload.FindFirst(" ");
+            if (spaceIdx != B_ERROR) {
+                // Isolate the feature tokens following your nickname string
+                featuresPayload.CopyInto(featuresOnly, spaceIdx + 1, featuresPayload.Length() - (spaceIdx + 1));
+                featuresOnly.Trim();
+            }
+
+            // Fallback safety if the line parsing yielded an empty feature block
+            if (featuresOnly.Length() == 0) {
+                featuresOnly = "Default capabilities";
+            }
+
+            // --- CORRECTED HAIKU BSTRING::SPLIT LOOP ---
+            // 1. First include <StringList.h> at the top of cricket.cpp if you haven't yet.
+            BStringList tokens;
+            
+            // Haiku splits directly into a string list container, dropping empty elements
+            if (featuresOnly.Split(" ", true, tokens)) {
+                int32 tokenCount = tokens.CountStrings();
+                
+                for (int32 i = 0; i < tokenCount; ++i) {
+                    BString singleToken = tokens.StringAt(i);
+                    
+                    int32 eqIdx = singleToken.FindFirst("=");
+                    if (eqIdx != B_ERROR) {
+                        BString key, value;
+                        singleToken.CopyInto(key, 0, eqIdx);
+                        singleToken.CopyInto(value, eqIdx + 1, singleToken.Length() - (eqIdx + 1));
+                        
+                        // Example: Cache maximum nick length supported by Libera or OFTC
+                        if (key == "NICKLEN") {
+                            // contextServer->fMaxNickLength = atoi(value.String());
+                        }
+                    }
+                }
+            }
+
+            // Reconstruct a perfectly formatted status line showcasing what was actually received
+            BString supportNotice;
+            supportNotice.SetToFormat("--> Server Features: %s (%s)\n", featuresOnly.String(), trailing.String());
+
+            // Route the completed features notice straight into your server's status log tab
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, supportNotice);
+            } else {
+                LogToItemBuffer(fActiveBufferItem, supportNotice);
+            }
+            return;
+        }
+
+
     
     
             // =========================================================================
