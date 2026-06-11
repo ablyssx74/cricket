@@ -64,7 +64,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.22 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.23 (Haiku OS)";
 }
 
 
@@ -476,14 +476,53 @@ void load_config() {
 class UserListItem : public BStringItem {
 public:
     UserListItem(const char* nickname, bool isAway = false)
-        : BStringItem(nickname), fIsAway(isAway) {}
+        : BStringItem(""), fIsAway(isAway), fIsOwner(false), fIsAdmin(false), fIsOp(false), fIsHalfOp(false), fIsVoiced(false) {
+        
+        // Extract any leading prefix from the initial nickname string if passed directly
+        BString rawNick = nickname;
+        rawNick.Trim();
+        
+        while (rawNick.Length() > 0) {
+            char c = rawNick.ByteAt(0);
+            if (c == '~') { fIsOwner = true;  rawNick.Remove(0, 1); }
+            else if (c == '&') { fIsAdmin = true;  rawNick.Remove(0, 1); }
+            else if (c == '@') { fIsOp = true;     rawNick.Remove(0, 1); }
+            else if (c == '%') { fIsHalfOp = true; rawNick.Remove(0, 1); }
+            else if (c == '+') { fIsVoiced = true; rawNick.Remove(0, 1); }
+            else { break; }
+        }
+        fCleanNick = rawNick;
+        UpdateDisplay();
+    }
 
     void SetAway(bool isAway) { fIsAway = isAway; }
     bool IsAway() const { return fIsAway; }
 
-    // Custom drawing hook to render text dim/lighter when away
+    const char* GetCleanNick() const { return fCleanNick.String(); }
+
+    void SetMode(char modeChar, bool active) {
+        if (modeChar == 'q') fIsOwner = active;
+        else if (modeChar == 'a') fIsAdmin = active;
+        else if (modeChar == 'o') fIsOp = active;
+        else if (modeChar == 'h') fIsHalfOp = active;
+        else if (modeChar == 'v') fIsVoiced = active;
+        UpdateDisplay();
+    }
+
+    // Reconstruct the display string dynamically based on active modes hierarchy
+    void UpdateDisplay() {
+        BString displayString = "";
+        if (fIsOwner) displayString << "~";
+        else if (fIsAdmin) displayString << "&";
+        else if (fIsOp) displayString << "@";
+        else if (fIsHalfOp) displayString << "%";
+        else if (fIsVoiced) displayString << "+";
+        
+        displayString << fCleanNick;
+        SetText(displayString.String());
+    }
+
     virtual void DrawItem(BView* owner, BRect frame, bool complete = false) override {
-        // Clear background row depending on selection state
         if (IsSelected()) {
             owner->SetHighColor(ui_color(B_LIST_SELECTED_BACKGROUND_COLOR));
         } else {
@@ -491,18 +530,15 @@ public:
         }
         owner->FillRect(frame);
 
-        // Adjust text coloring based on selection and away status
         if (IsSelected()) {
             owner->SetHighColor(ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR));
         } else if (fIsAway) {
-            // Lighten the text. Adjust the RGB values (140, 140, 140) to taste!
             rgb_color awayColor = { 140, 140, 140, 255 }; 
             owner->SetHighColor(awayColor);
         } else {
             owner->SetHighColor(ui_color(B_LIST_ITEM_TEXT_COLOR));
         }
 
-        // Standard Haiku font alignment math
         font_height fh;
         owner->GetFontHeight(&fh);
         float textHeight = fh.ascent + fh.descent;
@@ -512,7 +548,15 @@ public:
     }
 
 private:
-    bool fIsAway;
+    BString fCleanNick;
+    bool    fIsAway;
+    
+    // Explicit mode tracking flags
+    bool    fIsOwner;  // ~
+    bool    fIsAdmin;  // &
+    bool    fIsOp;     // @
+    bool    fIsHalfOp; // %
+    bool    fIsVoiced; // +
 };
 
 
@@ -3468,9 +3512,10 @@ private:
 
 class OpDurationWindow : public BWindow {
 public:
-    OpDurationWindow(BRect frame, const char* title, const BString& nick, BHandler* mainWin)
+    // Updated constructor to explicitly accept the target channel context item
+    OpDurationWindow(BRect frame, const char* title, const BString& nick, BHandler* mainWin, ChannelTreeItem* contextItem)
         : BWindow(frame, title, B_MODAL_WINDOW, B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS),
-          fTargetNick(nick), fMainWindow(mainWin) {
+          fTargetNick(nick), fMainWindow(mainWin), fContextItem(contextItem) {
         
         BWindow* parentWin = dynamic_cast<BWindow*>(mainWin);
         if (parentWin != nullptr) {
@@ -3510,14 +3555,9 @@ public:
         cancelBtn->SetTarget(this);
         opBtn->SetTarget(this);
         
-        // Remove opBtn->MakeDefault(true); to prevent the keyboard focus lock!
-
         panel->AddChild(cancelBtn);
         panel->AddChild(opBtn);
 
-        // Force the button view component to gain focus immediately upon opening.
-        // This clears the active cursor focus out of the dropdown container list, 
-        // ensuring the very first mouse click fires the event loop transaction.
         opBtn->MakeFocus(true);
     }
 
@@ -3533,10 +3573,15 @@ public:
             BMessage finalPayload(MSG_CONTEXT_OP_SUBMIT);
             finalPayload.AddString("target_nick", fTargetNick);
             finalPayload.AddString("op_duration", selectedDuration);
+            
+            // NEW: Attach the captured tracking pointer directly to prevent background selection race-conditions
+            if (fContextItem != nullptr) {
+                finalPayload.AddPointer("channel_item", fContextItem);
+            }
+            
             fMainWindow->Looper()->PostMessage(&finalPayload, fMainWindow);
             
-            // Use SendMessage instead of PostMessage for the BMessenger object
-            // This safely queues the quit request at the tail-end of the message stack.
+            // Safely queue the quit request
             BMessenger(this).SendMessage(B_QUIT_REQUESTED);
 
         } else {
@@ -3544,13 +3589,11 @@ public:
         }
     }
 
-
-
-
 private:
-    BString      fTargetNick;
-    BHandler*    fMainWindow;
-    BPopUpMenu*  fTimeMenu;
+    BString           fTargetNick;
+    BHandler*         fMainWindow;
+    BPopUpMenu*       fTimeMenu;
+    ChannelTreeItem*  fContextItem; // Saved item context pointer field
 };
 
 
@@ -5071,8 +5114,15 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
        
        
       
+        // Live MODE & Channel Feature Syncer (RPL_CHANNELMODEIS / MODE Handler)
         if (command == "324" || command == "MODE") {
-            BString targetChannel = "";
+            // FIX 1: Abort processing if context background socket server is completely missing 
+            if (contextServer == nullptr) {
+                return;
+            }
+
+            // RENAMED to prevent scope conflict/shadowing with the user list room tracker!
+            BString dialogTargetChannel = ""; 
             BString activeFlags = "";
             BString tokenTrail = "";
             BString channelKey = "";
@@ -5089,7 +5139,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     
                     int32 secondSpace = payload.FindFirst(" ");
                     if (secondSpace != B_ERROR) {
-                        payload.CopyInto(targetChannel, 0, secondSpace);
+                        payload.CopyInto(dialogTargetChannel, 0, secondSpace);
                         
                         BString remaining = "";
                         payload.CopyInto(remaining, secondSpace + 1, payload.Length() - (secondSpace + 1));
@@ -5109,12 +5159,12 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             } 
             else if (command == "MODE") {
                 // Format: :nick!user@host MODE #channel +m [args]
-                targetChannel = line;
-                targetChannel.Trim();
+                dialogTargetChannel = line;
+                dialogTargetChannel.Trim();
                 
-                int32 lineSpace = targetChannel.FindFirst(" ");
+                int32 lineSpace = dialogTargetChannel.FindFirst(" ");
                 if (lineSpace != B_ERROR) {
-                    targetChannel.Truncate(lineSpace);
+                    dialogTargetChannel.Truncate(lineSpace);
                 }
                 
                 // For a live MODE command broadcast, parameters are appended in the 'trailing' or extra args context
@@ -5132,7 +5182,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             // =========================================================================
             // DATA-DRIVEN TOKEN LAYER ENGINE: Extract key/limit arguments dynamically
             // =========================================================================
-            if (contextServer != nullptr && activeFlags.Length() > 0 && tokenTrail.Length() > 0) {
+            if (activeFlags.Length() > 0 && tokenTrail.Length() > 0) {
                 bool addingMode = true;
                 int32 currentTokenIdx = 0;
 
@@ -5173,7 +5223,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             }
 
             // Sync the states up to the checkbox view container smoothly
-            if (fActiveModesDialog != nullptr && fActiveModesChannel == targetChannel) {
+            if (fActiveModesDialog != nullptr && fActiveModesChannel == dialogTargetChannel) {
                 bool hasM = (activeFlags.FindFirst("m") != B_ERROR);
                 bool hasS = (activeFlags.FindFirst("s") != B_ERROR);
                 bool hasI = (activeFlags.FindFirst("i") != B_ERROR);
@@ -6353,7 +6403,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-         // Live MODE & KICK Handlers (Tokenizer-Integrated Block)
+        // Live MODE & KICK Handlers (Tokenizer-Integrated Block)
         if (command == "MODE" || command == "KICK") {
             // FIX 1: Abort processing if context background socket server is completely missing 
             if (contextServer == nullptr) {
@@ -6386,14 +6436,13 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 BObjectList<UserListItem, true>* userVector = fChannelUsers[chanNode];
                 if (userVector == nullptr) continue;
 
-                // ==================== SUB-BRANCH A: MODE PROCESSING ====================
+                    // ==================== SUB-BRANCH A: MODE PROCESSING ====================
                 if (command == "MODE") {
                     int32 flagSpace = remainderParams.FindFirst(" ");
                     if (flagSpace != B_ERROR) {
                         BString flagString;
                         remainderParams.CopyInto(flagString, 0, flagSpace);
                         
-                        // FIX 2: Replace unsafe pointer arithmetic string indexing with safe CopyInto bounds bounds
                         BString targetNick;
                         remainderParams.CopyInto(targetNick, flagSpace + 1, remainderParams.Length() - flagSpace - 1);
                         targetNick.ReplaceAll("\r", "");
@@ -6401,24 +6450,30 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                         targetNick.Trim();
 
                         bool adding = flagString.StartsWith("+");
-                        BString symbol = "";
-                        if (flagString.FindFirst("o") != B_ERROR) symbol = "@";
-                        if (flagString.FindFirst("v") != B_ERROR) symbol = "+";
+                        
+                        // Identify mode character matching standard IRC protocol specs
+                        char targetModeChar = '\0';
+                        if (flagString.FindFirst("q") != B_ERROR) targetModeChar = 'q';
+                        else if (flagString.FindFirst("a") != B_ERROR) targetModeChar = 'a';
+                        else if (flagString.FindFirst("o") != B_ERROR) targetModeChar = 'o';
+                        else if (flagString.FindFirst("h") != B_ERROR) targetModeChar = 'h';
+                        else if (flagString.FindFirst("v") != B_ERROR) targetModeChar = 'v';
 
-                        if (symbol.Length() > 0) {
+                        if (targetModeChar != '\0') {
                             bool itemWasUpdated = false;
 
                             for (int32 i = 0; i < userVector->CountItems(); i++) {
                                 UserListItem* uiUser = userVector->ItemAt(i);
                                 if (uiUser == nullptr) continue;
 
-                                BString cleanName = GetCleanNickname(uiUser->Text());
+                                // Use our new safe clean nickname accessor
+                                BString cleanName = uiUser->GetCleanNick();
                                 if (cleanName == targetNick) {
-                                    if (adding) {
-                                        uiUser->SetText((BString(symbol) << cleanName).String());
-                                    } else {
-                                        uiUser->SetText(cleanName.String());
-                                    }
+                                    
+                                    // Set or unset the specific flag. 
+                                    // The class internally falls back to the next highest active prefix symbol!
+                                    uiUser->SetMode(targetModeChar, adding);
+                                    
                                     itemWasUpdated = true;
                                     break;
                                 }
@@ -6430,6 +6485,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                         }
                     }
                 }
+
                 // ==================== SUB-BRANCH B: KICK PROCESSING ====================
                 else if (command == "KICK") {
                     BString kicker = prefix;
@@ -6478,6 +6534,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             }
             return;
         }
+
 
 
 
@@ -7884,16 +7941,52 @@ public:
 
                 // Verify a valid list row selection was established before building network payload
                 if (selectedMask.Length() > 0) {
-                    ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
-                    BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                    
+                    // =========================================================================
+                    // BULLETPROOF FIX: TRACE NETWORK via EXPLICIT TARGETED CHANNEL MATCH
+                    // =========================================================================
+                    // Instead of risking a race condition with fCurrentServerNode, look through
+                    // the dynamic tree hierarchy to discover which server owns this channel.
+                    ServerTreeItem* contextServer = nullptr;
+                    
+                    if (fChannelTree != nullptr) {
+                        for (int32 idx = 0; idx < fChannelTree->CountItems(); idx++) {
+                            ChannelTreeItem* item = dynamic_cast<ChannelTreeItem*>(fChannelTree->ItemAt(idx));
+                            if (item != nullptr) {
+                                BString itemChanName(item->Text());
+                                int32 spaceIdx = itemChanName.FindLast(" ");
+                                if (spaceIdx != B_ERROR) {
+                                    itemChanName.Truncate(spaceIdx);
+                                }
+                                int32 tagPos = itemChanName.FindFirst(" [");
+                                if (tagPos != B_ERROR) {
+                                    itemChanName.Truncate(tagPos);
+                                }
 
-                    if (activeSocket != nullptr) {
-                        BString outgoingPayload;
-                        outgoingPayload << "MODE " << targetChannel << " -b " << selectedMask << "\r\n";
-                        activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
-                        
-                        // Close window frame cleanly
-                        modalWindow->PostMessage(B_QUIT_REQUESTED);
+                                if (targetChannel.ICompare(itemChanName) == 0) {
+                                    contextServer = static_cast<ServerTreeItem*>(fChannelTree->Superitem(item));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback safe assignment to current if tree scanning turned up empty
+                    if (contextServer == nullptr) {
+                        contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                    }
+
+                    if (contextServer != nullptr) {
+                        BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+
+                        if (activeSocket != nullptr) {
+                            BString outgoingPayload;
+                            outgoingPayload << "MODE " << targetChannel << " -b " << selectedMask << "\r\n";
+                            activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
+                            
+                            // Close window frame cleanly
+                            modalWindow->PostMessage(B_QUIT_REQUESTED);
+                        }
                     }
                 } else {
                     // Fallback helper notice alert box if no item row row highlight index was targeted
@@ -7909,6 +8002,7 @@ public:
 
 
 
+
         // BAN DUMP ENGINE: Requests the raw server ban list data structure
         case MSG_CONTEXT_SHOW_BANS: {
             void* chanPtr = nullptr;
@@ -7917,24 +8011,37 @@ public:
             if (message->FindPointer("chan_item", &chanPtr) == B_OK && chanPtr != nullptr) {
                 targetedChanNode = static_cast<ChannelTreeItem*>(chanPtr);
             } else {
-                // FIX: Cast fActiveBufferItem safely from BStringItem* to ChannelTreeItem*
-                targetedChanNode = dynamic_cast<ChannelTreeItem*>(fActiveBufferItem);
+                // FIXED: Use static_cast instead of dynamic_cast to match your tree's node guarantees
+                targetedChanNode = static_cast<ChannelTreeItem*>(fActiveBufferItem);
             }
             
             if (targetedChanNode == nullptr) break;
-            BString activeChannel = targetedChanNode->Text();
 
-            ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+            // =========================================================================
+            // BULLETPROOF FIX: TRACE SERVER AND CLEAN CHANNEL STRINGS VIA HIERARCHY
+            // =========================================================================
+            ServerTreeItem* contextServer = nullptr;
+            if (fChannelTree != nullptr) {
+                contextServer = static_cast<ServerTreeItem*>(fChannelTree->Superitem(targetedChanNode));
+            }
             if (contextServer == nullptr) break;
 
+            // Clean tracking tags from channel name safely
+            BString activeChannel(targetedChanNode->Text());
             int32 spaceIdx = activeChannel.FindLast(" ");
             if (spaceIdx != B_ERROR) {
                 BString extractedChannel;
                 activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
                 activeChannel = extractedChannel;
             }
-            if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&")) break;
+            int32 tagPos = activeChannel.FindFirst(" [");
+            if (tagPos != B_ERROR) {
+                activeChannel.Truncate(tagPos);
+            }
 
+            if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&") && !activeChannel.StartsWith("!")) break;
+
+            // Safely query the exact dynamic socket instance mapping matching this layout
             BSecureSocket* activeSocket = GetActiveSocket(contextServer);
             if (activeSocket != nullptr) {
                 BString outgoingPayload;
@@ -7955,30 +8062,43 @@ public:
             BString targetNick;
             if (message->FindString("target_nick", &targetNick) == B_OK && targetNick.Length() > 0) {
                 
-                ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                // Ensure an active chat buffer room is actually targeted
+                if (fActiveBufferItem == nullptr) break;
+
+                // =========================================================================
+                // BULLETPROOF FIX: TRACE SERVER AND CLEAN CHANNEL STRINGS VIA HIERARCHY
+                // =========================================================================
+                ServerTreeItem* contextServer = nullptr;
+                if (fChannelTree != nullptr) {
+                    contextServer = static_cast<ServerTreeItem*>(fChannelTree->Superitem(fActiveBufferItem));
+                }
                 if (contextServer == nullptr) break;
 
-                if (fActiveBufferItem == nullptr) break;
-                BString activeChannel = fActiveBufferItem->Text();
-
+                // Clean tracking tags from channel name safely
+                BString activeChannel(fActiveBufferItem->Text());
                 int32 spaceIdx = activeChannel.FindLast(" ");
                 if (spaceIdx != B_ERROR) {
                     BString extractedChannel;
                     activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
                     activeChannel = extractedChannel;
                 }
+                int32 tagPos = activeChannel.FindFirst(" [");
+                if (tagPos != B_ERROR) {
+                    activeChannel.Truncate(tagPos);
+                }
 
-                if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&")) break; 
+                if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&") && !activeChannel.StartsWith("!")) break; 
 
                 BString flag;
                 switch (message->what) {
-                    case MSG_CONTEXT_OP:      flag = "+o"; break;
                     case MSG_CONTEXT_DEOP:    flag = "-o"; break;
                     case MSG_CONTEXT_VOICE:   flag = "+v"; break;
                     case MSG_CONTEXT_DEVOICE: flag = "-v"; break;
+                    default:                  break; // Guards unexpected fallthroughs safely
                 }
+                if (flag.Length() == 0) break;
 
-                // DRY Call replaces the old 6-line map check block
+                // Safely query the exact dynamic socket instance mapping
                 BSecureSocket* activeSocket = GetActiveSocket(contextServer);
 
                 if (activeSocket != nullptr) {
@@ -7989,6 +8109,7 @@ public:
             }
             break;
         }
+
         
  
  
@@ -7996,9 +8117,12 @@ public:
             BString targetNick;
             if (message->FindString("target_nick", &targetNick) == B_OK && targetNick.Length() > 0) {
                 BRect windowFrame(0, 0, 400, 140);
-                // Center math remains identical...
                 
-                OpDurationWindow* inputWin = new OpDurationWindow(windowFrame, "Give Operator Status", targetNick, this);
+                // FIXED: Explicitly cast the BStringItem* to a ChannelTreeItem*
+                ChannelTreeItem* contextItem = static_cast<ChannelTreeItem*>(fActiveBufferItem);
+                
+                OpDurationWindow* inputWin = new OpDurationWindow(windowFrame, "Give Operator Status", 
+                                                                  targetNick, this, contextItem);
                 inputWin->Show();
             }
             break;
@@ -8006,57 +8130,115 @@ public:
 
 
 
+
+
   
   
-        // OP TRANSMITTER: Grants operator status and schedules the auto-deop runner
         case MSG_CONTEXT_OP_SUBMIT: {
             BString targetNick;
             BString opDuration = "Permanently";
             
+            // Core entry trace
+            printf("[DEBUG_OP] Entering MSG_CONTEXT_OP_SUBMIT loop...\n");
+
             if (message->FindString("target_nick", &targetNick) == B_OK) {
-                // FIX: Pull directly from our newly streamlined payload string parameter
                 message->FindString("op_duration", &opDuration);
+                printf("[DEBUG_OP] Parameters parsed -> Nick: '%s', Duration: '%s'\n", 
+                       targetNick.String(), opDuration.String());
 
-                ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
-                if (contextServer == nullptr) break;
+                // DYNAMIC VERIFICATION: Pull the context item straight out of the message bundle.
+                ChannelTreeItem* targetItem = nullptr;
+                if (message->FindPointer("channel_item", (void**)&targetItem) != B_OK || targetItem == nullptr) {
+                    printf("[DEBUG_OP] 'channel_item' missing from message. Falling back to fActiveBufferItem.\n");
+                    targetItem = static_cast<ChannelTreeItem*>(fActiveBufferItem);
+                } else {
+                    printf("[DEBUG_OP] Successfully extracted 'channel_item' from message envelope context.\n");
+                }
 
-                if (fActiveBufferItem == nullptr) break;
-                BString activeChannel = fActiveBufferItem->Text();
+                if (targetItem == nullptr) {
+                    printf("[DEBUG_OP] CRITICAL: Both channel_item and fActiveBufferItem are NULL! Aborting.\n");
+                    break;
+                }
+                
+                printf("[DEBUG_OP] Target Item raw text label: '%s'\n", targetItem->Text());
 
+                // Trace the true server instance using the validated item context
+                ServerTreeItem* contextServer = nullptr;
+                if (fChannelTree != nullptr) {
+                    contextServer = static_cast<ServerTreeItem*>(fChannelTree->Superitem(targetItem));
+                } else {
+                    printf("[DEBUG_OP] WARNING: fChannelTree itself is NULL!\n");
+                }
+
+                if (contextServer == nullptr) {
+                    printf("[DEBUG_OP] CRITICAL: fChannelTree->Superitem() returned NULL! The channel node is disconnected from its server parent in the UI tree layout. Aborting.\n");
+                    break;
+                }
+                printf("[DEBUG_OP] Parent server node identified: '%s'\n", contextServer->Text());
+
+                // Extract the clean network channel room string
+                BString activeChannel(targetItem->Text());
+                
+                // Track mutations step-by-step to see if it accidentally clears the string or cuts too much
                 int32 spaceIdx = activeChannel.FindLast(" ");
                 if (spaceIdx != B_ERROR) {
                     BString extractedChannel;
                     activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
                     activeChannel = extractedChannel;
+                    printf("[DEBUG_OP] Truncated after last space -> '%s'\n", activeChannel.String());
                 }
-                if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&")) break;
+                
+                int32 tagPos = activeChannel.FindFirst(" [");
+                if (tagPos != B_ERROR) {
+                    activeChannel.Truncate(tagPos);
+                    printf("[DEBUG_OP] Truncated layout bracket tag -> '%s'\n", activeChannel.String());
+                }
 
+                // Check prefixes
+                if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&") && !activeChannel.StartsWith("!")) {
+                    printf("[DEBUG_OP] CRITICAL: Parsed room string '%s' does not start with a valid IRC prefix (#, &, !). Aborting.\n", 
+                           activeChannel.String());
+                    break;
+                }
+
+                printf("[DEBUG_OP] Requesting socket for server node pointer: %p...\n", contextServer);
                 BSecureSocket* activeSocket = GetActiveSocket(contextServer);
-                if (activeSocket != nullptr) {
-                    BString outgoingPayload;
-                    outgoingPayload << "MODE " << activeChannel << " +o " << targetNick << "\r\n";
-                    activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
-
-                    bigtime_t delayMicroseconds = 0;
-                    if (opDuration == "5 Minutes") delayMicroseconds = 5LL * 60LL * 1000000LL;
-                    else if (opDuration == "1 Hour") delayMicroseconds = 60LL * 60LL * 1000000LL;
-                    else if (opDuration == "1 Day")  delayMicroseconds = 24LL * 60LL * 60LL * 1000000LL;
-
-                    if (delayMicroseconds > 0) {
-                        BString* trackedNick = new BString(targetNick);
-                        fAutoOpList.AddItem(trackedNick);
-
-                        BMessage* deopTrigger = new BMessage(MSG_CONTEXT_TIMED_DEOP_TRIGGER);
-                        deopTrigger->AddString("target_channel", activeChannel);
-                        deopTrigger->AddString("target_nick", targetNick);
-                        deopTrigger->AddPointer("server_node", contextServer);
-
-                        new BMessageRunner(BMessenger(this), deopTrigger, delayMicroseconds, 1);
-                    }
+                
+                if (activeSocket == nullptr) {
+                    printf("[DEBUG_OP] CRITICAL: GetActiveSocket() returned NULL! No matching live socket connection map entry found for this server. Aborting.\n");
+                    break;
                 }
+
+                // If it passes every check, it reaches here
+                BString outgoingPayload;
+                outgoingPayload << "MODE " << activeChannel << " +o " << targetNick << "\r\n";
+                printf("[DEBUG_OP] SUCCESS! Transmitting payload: %s", outgoingPayload.String());
+                
+                activeSocket->Write(outgoingPayload.String(), outgoingPayload.Length());
+
+                bigtime_t delayMicroseconds = 0;
+                if (opDuration == "5 Minutes") delayMicroseconds = 5LL * 60LL * 1000000LL;
+                else if (opDuration == "1 Hour") delayMicroseconds = 60LL * 60LL * 1000000LL;
+                else if (opDuration == "1 Day")  delayMicroseconds = 24LL * 60LL * 60LL * 1000000LL;
+
+                if (delayMicroseconds > 0) {
+                    printf("[DEBUG_OP] Scheduling timed auto-deop runner...\n");
+                    BString* trackedNick = new BString(targetNick);
+                    fAutoOpList.AddItem(trackedNick);
+
+                    BMessage* deopTrigger = new BMessage(MSG_CONTEXT_TIMED_DEOP_TRIGGER);
+                    deopTrigger->AddString("target_channel", activeChannel);
+                    deopTrigger->AddString("target_nick", targetNick);
+                    deopTrigger->AddPointer("server_node", contextServer);
+
+                    new BMessageRunner(BMessenger(this), deopTrigger, delayMicroseconds, 1);
+                }
+            } else {
+                printf("[DEBUG_OP] CRITICAL: 'target_nick' field missing entirely inside BMessage payload.\n");
             }
             break;
         }
+
 
 
   
@@ -8080,8 +8262,29 @@ public:
                 }
 
                 ServerTreeItem* targetServer = static_cast<ServerTreeItem*>(serverPtr);
-                BSecureSocket* activeSocket = GetActiveSocket(targetServer);
+                
+                // =========================================================================
+                // CRASH PROTECTION PASS: VERIFY THE SERVER NODE STILL EXISTS IN MEMORY
+                // =========================================================================
+                // Check our active network socket map to ensure this server pointer wasn't 
+                // deleted or freed due to a user disconnection while the timer was running.
+                bool serverStillExists = false;
+                
+                Lock(); // Keep map exploration thread-safe
+                if (fServerSockets.find(targetServer) != fServerSockets.end()) {
+                    serverStillExists = true;
+                }
+                Unlock();
 
+                if (!serverStillExists) {
+                    if (cfg.debugEnable) {
+                        printf("[DEBUG] Timed de-op aborted. Target server node was destroyed before timer expired.\n");
+                    }
+                    break; 
+                }
+
+                // Safe to proceed now that we've verified the memory address is alive
+                BSecureSocket* activeSocket = GetActiveSocket(targetServer);
                 if (activeSocket != nullptr) {
                     BString stripPayload;
                     stripPayload << "MODE " << targetChannel << " -o " << targetNick << "\r\n";
@@ -8606,10 +8809,6 @@ public:
 
 
 
-
-
-
-
         case MSG_DISCONNECT_SERVER: {
             ServerTreeItem* srvItem = nullptr;
             if (message->FindPointer("server_item", (void**)&srvItem) == B_OK && srvItem != nullptr) {
@@ -8632,11 +8831,35 @@ public:
                     if (serverLog != nullptr) {
                         LogToItemBuffer(serverLog, "--- Disconnected from server by user choice.\n");
                     }
+
+                    // =========================================================================
+                    // NEW: RECALIBRATE SELECTED CONFIG BASED ON COMPONENT PROPERTY INSTEAD OF SELECTION
+                    // =========================================================================
+                    size_t srvConfigIndex = srvItem->GetIndex();
+                    
+                    if (srvItem->IsCustom()) {
+                        // Offset it properly so it maps back accurately to your global profile arrays
+                        selectedConfig = (int)(cfg.servers.size() + srvConfigIndex);
+                    } else {
+                        selectedConfig = (int)srvConfigIndex;
+                    }
+
+                    // Note: If you also want the UI tree highlight to jump to this server 
+                    // upon disconnecting, uncomment the fallback selection logic below:
+                    /*
+                    if (fChannelTree != nullptr) {
+                        int32 itemVisualIndex = fChannelTree->IndexOf(srvItem);
+                        if (itemVisualIndex != B_ERROR) {
+                            fChannelTree->Select(itemVisualIndex);
+                        }
+                    }
+                    */
                 }
                 Unlock();
             }
             break;
         }
+
 
 
         case 'dlcs': { // Delete Custom Server Message
