@@ -70,7 +70,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.27 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.28 (Haiku OS)";
 }
 
 
@@ -674,7 +674,8 @@ public:
     void SetBackgroundImage(const char* filePath);
     void SetBackgroundDimming(int32 level); 
 
-
+	virtual void KeyDown(const char* bytes, int32 numBytes) override;
+	BString GetSelectedText(); 
     virtual void MessageReceived(BMessage* message); 
     virtual void MouseMoved(BPoint point, uint32 transit, const BMessage* dragMessage) override;
 	virtual void MouseUp(BPoint point) override;
@@ -692,7 +693,6 @@ private:
     float                         fLineHeight;
     BBitmap* fBackgroundBitmap;
     int32    fBackgroundDimmingLevel; 
-    BString GetSelectedText();
     bool        fIsSelecting;       // Is the user actively dragging the mouse?
     BPoint      fSelectionStart;    // Mouse down starting point
     BPoint      fSelectionEnd;      // Current mouse dragging point
@@ -720,6 +720,45 @@ CustomChatView::CustomChatView(BRect frame, const char* name, uint32 resizingMod
 }
 
 
+void CustomChatView::KeyDown(const char* bytes, int32 numBytes)
+{
+    if (Window() == nullptr) return;
+
+    // Check if exactly one byte was captured (a standard alphanumeric keystroke)
+    if (numBytes == 1) {
+        char key = bytes[0];
+
+        // Read the currently active system modifier keys (Shift, Alt, Ctrl, etc.)
+        int32 modifiers = 0;
+        Window()->CurrentMessage()->FindInt32("modifiers", &modifiers);
+
+        // --- INTERCEPT CTRL+C OR COMMAND+C ---
+        // Haiku maps its application shortcuts primarily via the B_COMMAND_KEY modifier flag
+        if ((key == 'c' || key == 'C') && (modifiers & B_COMMAND_KEY) != 0) {
+            
+            BString selectedText = GetSelectedText();
+            if (selectedText.Length() > 0) {
+                
+                // Native Haiku System Clipboard Transaction
+                if (be_clipboard->Lock()) {
+                    be_clipboard->Clear();
+                    
+                    BMessage* clipData = be_clipboard->Data();
+                    if (clipData != nullptr) {
+                        // Pack your text selection as raw system character data bytes
+                        clipData->AddData("text/plain", B_MIME_TYPE, selectedText.String(), selectedText.Length());
+                        be_clipboard->Commit();
+                    }
+                    be_clipboard->Unlock();
+                }
+            }
+            return; // Swallows the keystroke event so it doesn't leak into underlying views
+        }
+    }
+
+    // Always pass unhandled keystrokes up to the base class to maintain scrollability
+    BView::KeyDown(bytes, numBytes);
+}
 
 
 void CustomChatView::ParseTextAndIcons(const BString& text, const text_run_array* runs, BObjectList<StyledRunFragment, true>* rawFragments)
@@ -1826,7 +1865,7 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
 // Scoped layout mouse click tracker logic implementation with Channel Filtering Isolation and Text Selection
 void CustomChatView::MouseDown(BPoint point) {
     if (Window() == nullptr) return;
-
+	 MakeFocus(true);
     // =========================================================================
     // NEW: INITIAL APP BOOT HOVER CLICK TARGET CHECK
     // =========================================================================
@@ -4213,10 +4252,13 @@ public:
         BScrollView* chatScroll = new BScrollView("scroll_chat", fChatLog, 0, false, true);
 
         // --- NEW: Custom Draw Engine View Canvas Instantiation ---
-        fCustomChatLog = new CustomChatView(BRect(), "custom_draw_view", B_FOLLOW_ALL, B_WILL_DRAW);
+        // FIXED: Added B_NAVIGABLE so this layout surface can accept keyboard events!
+        fCustomChatLog = new CustomChatView(BRect(), "custom_draw_view", B_FOLLOW_ALL, B_WILL_DRAW | B_NAVIGABLE);
+        
         // Note: Wrapping a direct BView inside a scrollview requires explicit scroll implementation.
         // For simple presentation management, we swap whole container view hierarchies.
         BScrollView* customScroll = new BScrollView("scroll_custom", fCustomChatLog, 0, false, true);
+
         
         
 
@@ -6219,13 +6261,11 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         if (command == "CAP") {
             if (contextServer == nullptr) return;
 
-            // 1. If we have already finalized the negotiation loop for this server,
-            // drop further CAP lines immediately to prevent an infinite handshake loop timeout!
-            // Make sure 'fHasFinalizedCap' is added as a boolean field inside ServerTreeItem
             if (contextServer->fHasFinalizedCap) {
                 return;
             }
 
+            // Clean custom line tokenization loop
             std::vector<BString> tokens;
             int32 currentPos = 0, nextSpace;
             while ((nextSpace = line.FindFirst(" ", currentPos)) != B_ERROR) {
@@ -6248,16 +6288,22 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 if (activeSocket != nullptr) {
                     
                     if (capSubCommand == "LS") {
-                        BString localCapBuffer;
-                        localCapBuffer << " " << trailing << " ";
-                        localCapBuffer.Trim();
+                        // Dynamic Multiline Chunk Storage Aggregator
+                        // Appends the current server chunk to a running class buffer string
+                        if (contextServer->fSupportedCaps.Length() > 0) contextServer->fSupportedCaps << " ";
+                        contextServer->fSupportedCaps << trailing;
 
                         bool hasMoreChunks = false;
+                        // Correctly detect multiline chunk flags passed by Libera's daemon
                         if (tokens.size() >= 3 && tokens[2] == "*") {
                             hasMoreChunks = true;
                         }
 
+                        // --- FIXED: Process capabilities ONLY when the final chunk has arrived! ---
                         if (!hasMoreChunks) {
+                            BString localCapBuffer;
+                            localCapBuffer << " " << contextServer->fSupportedCaps << " ";
+
                             const char* clientChecklist[] = {
                                 "away-notify", 
                                 "multi-prefix", 
@@ -6282,14 +6328,16 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                                 reqCommand << "CAP REQ :" << dynamicRequestFlags << "\r\n";
                                 activeSocket->Write(reqCommand.String(), reqCommand.Length());
                             } else {
+                                // Fallback safety: If no features intersect, end negotiation immediately
                                 BString capEnd = "CAP END\r\n";
                                 activeSocket->Write(capEnd.String(), capEnd.Length());
-                                contextServer->fHasFinalizedCap = true; // Lock the gate
+                                contextServer->fHasFinalizedCap = true; 
                             }
+                            
+                            contextServer->fSupportedCaps.Truncate(0); // Free layout buffer space
                         }
                         
                     } else if (capSubCommand == "ACK" || capSubCommand == "NAK") {
-                        // The server responded to our specific feature requests.
                         // Finalize negotiation and permanently lock the gate!
                         BString capEnd = "CAP END\r\n";
                         activeSocket->Write(capEnd.String(), capEnd.Length());
@@ -6297,14 +6345,14 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                         contextServer->fHasFinalizedCap = true; // LOCK THE GATE FOREVER FOR THIS SESSION
                         
                         if (cfg.debugEnable) {
-                            printf("[DEBUG] CAP Handshake finalized for %s. Socket channel closed.\n", 
-                                   contextServer->Text());
+                            printf("[DEBUG] CAP Handshake finalized for %s.\n", contextServer->Text());
                         }
                     }
                 }
             }
             return;
         }
+
 
 
 
@@ -8116,14 +8164,12 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             LogDebugStream(targetNode->Text(), "OUTGOING", userHandshake.String(), userHandshake.Length());
         }
 
-        // ==================== NEW: CLOSE CAPABILITY CAP WINDOW ====================
-        // Complete the handshake pass so registration can finalize completely on the server
-        BString capEndHandshake = "CAP END\r\n";
-        localSocket->Write(capEndHandshake.String(), capEndHandshake.Length());
-        if (cfg.debugEnable) {
-            LogDebugStream(targetNode->Text(), "OUTGOING", capEndHandshake.String(), capEndHandshake.Length());
-        }
-        // ===========================================================================
+		// ==================== REMOVE THIS ENTIRE BLOCK FROM THE WORKER THREAD ====================
+		// BString capEndHandshake = "CAP END\r\n";
+		// localSocket->Write(capEndHandshake.String(), capEndHandshake.Length());
+		// ... Remove completely so it doesn't slam the protocol window shut instantly ...
+		// =========================================================================================
+
 
         char buffer[1024]; // Cleanly absorbs high-traffic floods
         ssize_t bytesRead;
