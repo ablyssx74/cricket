@@ -52,6 +52,7 @@
 #include <MenuField.h>
 #include <Cursor.h>  
 #include <vector>
+#include <algorithm>
 
 // Data Types, Sockets & Networking Kit Headers
 #include <String.h>
@@ -158,6 +159,7 @@ struct ServerConfig {
     // Per-server Chat Logging Option (Defaults to false)
     bool logChatsToFile = false; 
     bool enableColorCodes;
+    std::vector<std::string> ignoredNicks; 
 };
 
 
@@ -232,6 +234,14 @@ void save_config() {
             ajArray.push_back(chan);
         }
         s["autojoin"] = ajArray;
+
+        // --- NEW: SERIALIZE IGNORED NICKS FOR STANDARD SERVERS ---
+        json ignoreArray = json::array();
+        for (const auto& nick : srv.ignoredNicks) {
+            ignoreArray.push_back(nick);
+        }
+        s["ignored_nicks"] = ignoreArray; 
+
         serverArray.push_back(s);
     }
     j["servers"] = serverArray;
@@ -273,6 +283,14 @@ void save_config() {
             ajArray.push_back(chan);
         }
         s["autojoin"] = ajArray;
+
+        // --- NEW: SERIALIZE IGNORED NICKS FOR CUSTOM SERVERS ---
+        json ignoreArray = json::array();
+        for (const auto& nick : srv.ignoredNicks) {
+            ignoreArray.push_back(nick);
+        }
+        s["ignored_nicks"] = ignoreArray; 
+
         customServerArray.push_back(s);
     }
     j["custom_servers"] = customServerArray;
@@ -355,6 +373,14 @@ void load_config() {
                                 srv.autojoin.push_back(chan.get<std::string>());
                             }
                         }
+
+                        // --- PARSE IGNORED NICKS FOR STANDARD SERVERS ---
+                        if (s.contains("ignored_nicks") && s["ignored_nicks"].is_array()) {
+                            for (const auto& nick : s["ignored_nicks"]) {
+                                srv.ignoredNicks.push_back(nick.get<std::string>());
+                            }
+                        }
+
                         cfg.servers.push_back(srv);
                     }
                 }
@@ -396,6 +422,14 @@ void load_config() {
                                 srv.autojoin.push_back(chan.get<std::string>());
                             }
                         }
+
+                        // --- PARSE IGNORED NICKS FOR CUSTOM SERVERS ---
+                        if (s.contains("ignored_nicks") && s["ignored_nicks"].is_array()) {
+                            for (const auto& nick : s["ignored_nicks"]) {
+                                srv.ignoredNicks.push_back(nick.get<std::string>());
+                            }
+                        }
+
                         cfg.customServers.push_back(srv);
                     }
                 }
@@ -428,6 +462,7 @@ void load_config() {
         libera.altNick2 = BString(dynamicNick).Append("__").String();
         libera.pass = "";
         libera.autojoin = {""};
+        libera.ignoredNicks = {}; 
         libera.autoConnect = false;
         libera.autoReconnect = false;
         libera.hideStatusMessages = false;
@@ -448,6 +483,8 @@ void load_config() {
         cfg.servers.push_back(libera);
          
         ServerConfig oftc;
+        // ... rest of your file handles OFTC setup exactly the same ...
+
         oftc.name = "OFTC";
         oftc.host = "irc.oftc.net";
         oftc.port = 6697;
@@ -2593,18 +2630,19 @@ private:
 class ServerTreeItem : public BStringItem {
 public:
     ServerTreeItem(const char* text, size_t configIndex, bool isChannel = false, bool isCustom = false) 
-        : BStringItem(text), fConfigIndex(configIndex), fIsChannel(isChannel), fIsCustom(isCustom) {
+        : BStringItem(text), 
+          fConfigIndex(configIndex), 
+          fIsChannel(isChannel), 
+          fIsCustom(isCustom),
+          fHasIdentifiedThisSession(false),
+          fHasFinalizedCap(false),
+          fEnableColorCodes(false) {
         	
-    	// 1. Declare the persistent memory variable field inside the class body
-    	BString fSupportedCaps;
-        bool    fEnableColorCodes; 
-        
-        // --- DATA-DRIVEN CAPABILITIES INIT: Dynamic Server Mode Class Allocations ---
-        // Pre-populates clean defaults matching common standard IRC specs (Libera/OFTC/Charybdis)
+        // --- DATA-DRIVEN CAPABILITIES INIT ---
         fTypeAModes = "eIbq"; // Type A: Lists (Bans, Quiets, Exceptions)
         fTypeBModes = "k";    // Type B: Channel Password Access Keys
         fTypeCModes = "l";    // Type C: User Count Maximum Limits
-        fTypeDModes = "cimnpstz"; // Type D: Parameterless Flags (Moderated, Secret, Invite-Only)
+        fTypeDModes = "cimnpstz"; // Type D: Parameterless Flags
 
         // Safety bounds check to pull structural configs securely
         if (fIsCustom) {
@@ -2615,6 +2653,7 @@ public:
             } else {
                 fAutoConnect = false;
                 fAutoReconnect = false;
+                fHideStatus = false;
             }
         } else {
             if (fConfigIndex < cfg.servers.size()) {
@@ -2624,6 +2663,7 @@ public:
             } else {
                 fAutoConnect = false;
                 fAutoReconnect = false;
+                fHideStatus = false;
             }
         }
     }
@@ -2683,13 +2723,11 @@ public:
             return cfg.servers[fConfigIndex].autojoin;
         return std::vector<std::string>();
     }
-
+	
     size_t GetIndex() const { return fConfigIndex; }
     bool   IsCustom() const { return fIsCustom; }
     bool   IsChannel() const { return fIsChannel; }
-    bool fHasIdentifiedThisSession;
-    bool fHasFinalizedCap;
-    bool fEnableColorCodes;
+    
     bool IsAutoConnect() const { return fAutoConnect; }
     void SetAutoConnect(bool autoConnect) { fAutoConnect = autoConnect; }
     bool IsAutoReconnect() const { return fAutoReconnect; }
@@ -2698,7 +2736,19 @@ public:
     void SetHideStatus(bool hide) { fHideStatus = hide; }
     void SetIndex(size_t idx) { fConfigIndex = idx; }
     
-    // DrawItem that centers text and indents channels perfectly at any font size
+    // --- CLASS MEMBERS PROPERTY FIELDS ---
+    bool fHasIdentifiedThisSession;
+    bool fHasFinalizedCap;
+    bool fEnableColorCodes;
+    BString fSupportedCaps;
+    std::vector<std::string> fRuntimeIgnoreList;
+    
+    // Dynamic server modes mapping
+    BString fTypeAModes; 
+    BString fTypeBModes; 
+    BString fTypeCModes; 
+    BString fTypeDModes; 
+
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
         owner->PushState();
         
@@ -2733,21 +2783,15 @@ public:
         owner->PopState();
     }
 
-    // --- NEW: Public data variables to map incoming server mode definitions dynamically ---
-    BString fTypeAModes; // Lists (Always expects parameter)
-    BString fTypeBModes; // Keys  (Always expects parameter)
-    BString fTypeCModes; // Limits (Expects parameter ONLY on setting +)
-    BString fTypeDModes; // Settings (Never expects parameter)
-
 private:
     size_t fConfigIndex;
-    bool fAutoConnect;
-    bool fAutoReconnect;
-    bool fHideStatus = false;
-    bool fIsChannel; 
-    bool fIsCustom; 
-    
+    bool   fAutoConnect;
+    bool   fAutoReconnect;
+    bool   fHideStatus;
+    bool   fIsChannel; 
+    bool   fIsCustom; 
 };
+
 
 
 
@@ -2866,6 +2910,24 @@ public:
         BButton* saveBtn = new BButton("save", "Save", new BMessage('cfsv'));
         saveBtn->MakeDefault(true);
 
+        // --- NEW: IGNORE FILTERS INTERFACE COMPONENTS ---
+        fIgnoreListView = new BListView("ignore_list");
+        BScrollView* ignoreScroll = new BScrollView("ignore_scroll", fIgnoreListView, 0, false, true);
+        ignoreScroll->SetExplicitMinSize(BSize(150, 100)); // Keeps the framing size identical to autojoin
+
+        // Populate the interactive ignore list from configuration data
+        fLocalIgnoreList = srv.ignoredNicks; 
+        for (const auto& nick : fLocalIgnoreList) {
+            if (!nick.empty()) {
+                fIgnoreListView->AddItem(new BStringItem(nick.c_str()));
+            }
+        }
+
+        // Custom action triggers
+        fIgnoreInput = new BTextControl("ignore_input", "", "", nullptr);
+        fAddIgnoreBtn = new BButton("add_ignore", "Add", new BMessage('igad'));
+        fRemoveIgnoreBtn = new BButton("rem_ignore", "Remove", new BMessage('igrm'));
+
         // --- Create Tab View Architecture ---
         BTabView* tabView = new BTabView("config_tabs", B_WIDTH_AS_USUAL);
 
@@ -2884,19 +2946,17 @@ public:
                 .Add(fPassInput->CreateLabelLayoutItem(), 0, 3)     
                 .Add(fPassInput->CreateTextViewLayoutItem(), 1, 3)
             .End()
-            .AddGlue(); // Absorbs excess vertical space evenly
+            .AddGlue(); 
 
         // --- TAB 2: PREFERENCES & THEMING ---
         BGroupView* prefsTab = new BGroupView(B_VERTICAL, 5);
         prefsTab->SetName("Preferences");
         
-        // Wrap checkboxes into an explicit scrollable container or compact grids
         BGroupView* scrollableCheckboxes = new BGroupView(B_VERTICAL, 2);
         BLayoutBuilder::Group<>(scrollableCheckboxes, B_VERTICAL, 2)
             .Add(fAutoConnectCheck)
             .Add(fAutoReconnectCheck)
             .Add(fHideStatusCheck)
-            // .Add(fDebugEnableCheck)
             .Add(fEnableEmoticonsCheck)
             .Add(fUseCustomDrawCheck)
             .Add(fLogChatsToFileCheck)
@@ -2904,7 +2964,6 @@ public:
 
         BLayoutBuilder::Group<>(prefsTab, B_HORIZONTAL, 10)
             .SetInsets(10)
-            // Left side layout column: Fonts & Wallpaper paths
             .AddGroup(B_VERTICAL, 5, 0.6)
                 .AddGrid(5.0f, 5.0f)
                     .Add(fServerListFontMenu->CreateLabelLayoutItem(), 0, 0)
@@ -2913,18 +2972,15 @@ public:
                     .Add(fChatLogFontMenu->CreateMenuBarLayoutItem(), 1, 1)
                     .Add(fUserListFontMenu->CreateLabelLayoutItem(), 0, 2)
                     .Add(fUserListFontMenu->CreateMenuBarLayoutItem(), 1, 2)
-                    // ... font menus ...
                     .Add(fBgPathInput->CreateLabelLayoutItem(), 0, 3)
                     .AddGroup(B_HORIZONTAL, 2, 1, 3)
                         .Add(fBgPathInput->CreateTextViewLayoutItem(), 1.0)
                         .Add(fBrowseBgBtn, 0.0)
                     .End()
                 .End()
-                .Add(new BSeparatorView(B_HORIZONTAL)) // <-- INJECTED VISUAL ANCHOR SEPARATOR
+                .Add(new BSeparatorView(B_HORIZONTAL)) 
                 .Add(fBgOpacitySlider)
             .End()
-
-            // Right side layout column: Operational UI Options Switches
             .Add(scrollableCheckboxes, 0.4);
 
         // --- TAB 3: AUTOJOIN INTERFACE ---
@@ -2934,7 +2990,7 @@ public:
         BBox* autojoinBox = new BBox(B_FANCY_BORDER);
         autojoinBox->SetLabel("Autojoin Channels");
         BLayoutBuilder::Group<>(autojoinBox, B_VERTICAL, 5)
-            .SetInsets(10, 20, 10, 10) 
+            .SetInsets(10, 20, 10, 10)
             .Add(autojoinScroll, 1.0)
             .AddGroup(B_HORIZONTAL, 5)
                 .Add(fAutojoinInput, 1.0)
@@ -2946,31 +3002,58 @@ public:
             .SetInsets(10)
             .Add(autojoinBox, 1.0);
 
+        // --- TAB 4: IGNORE FILTERS INTERFACE ---
+        BGroupView* filtersTab = new BGroupView(B_VERTICAL, 5);
+        filtersTab->SetName("Filters");
+        
+        // --- NEW: INJECT SIMPLE USER WILDCARD NOTICE STRINGS ---
+        BStringView* wildcardNotice = new BStringView("wildcard_notice", 
+            "💡 Supports wildcards: Use '*' to match multiple characters (e.g., SpamBot* or *Bot).");
+        
+        // Use a lighter/secondary text style color to keep the tip visually subtle
+        wildcardNotice->SetHighColor(ui_color(B_SHINE_COLOR)); 
+
+        BBox* filtersBox = new BBox(B_FANCY_BORDER);
+        filtersBox->SetLabel("Ignored Nicknames");
+        BLayoutBuilder::Group<>(filtersBox, B_VERTICAL, 5)
+            .SetInsets(10, 20, 10, 10) 
+            .Add(ignoreScroll, 1.0)
+            .Add(wildcardNotice, 0.0) // <-- INJECTED HERE: Anchored directly below the list box
+            .AddGroup(B_HORIZONTAL, 5)
+                .Add(fIgnoreInput, 1.0)
+                .Add(fAddIgnoreBtn, 0.0)
+                .Add(fRemoveIgnoreBtn, 0.0)
+            .End();
+
+        BLayoutBuilder::Group<>(filtersTab, B_VERTICAL, 0)
+            .SetInsets(10)
+            .Add(filtersBox, 1.0);
+
+
         // --- Assemble Tabs into the Window ---
         tabView->AddTab(identityTab);
         tabView->AddTab(prefsTab);
         tabView->AddTab(autojoinTab);
-        
+        tabView->AddTab(filtersTab); 
+
         // --- Master Window Root Layout ---
         BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
             .SetInsets(12)
             .Add(titleHeader, 0.0) 
             .Add(tabView, 1.0)     
             
-            // --- FIXED COMPACT FOOTER ROW DESIGN ---
             .AddGrid(5.0f, 5.0f)
-                // Row 1: Messages Fields cleanly matched up 
                 .Add(fAwayInput->CreateLabelLayoutItem(), 0, 0)
-                .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 0, 2, 1) // Spans across 2 columns
+                .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 0, 2, 1) 
                 .Add(fQuitInput->CreateLabelLayoutItem(), 3, 0)
-                .Add(fQuitInput->CreateTextViewLayoutItem(), 4, 0, 2, 1) // Spans across 2 columns
+                .Add(fQuitInput->CreateTextViewLayoutItem(), 4, 0, 2, 1) 
                 
-                // Row 2: Actions pushed neatly to the right
                 .Add(cancelBtn, 4, 1)
                 .Add(saveBtn, 5, 1)
             .End();
 
-        ResizeTo(540, 360); // Widened slightly to give the text inputs plenty of breathing room side-by-side
+        ResizeTo(540, 360); 
+
 
     
 
@@ -2985,6 +3068,87 @@ public:
 
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
+        	
+        	
+
+        // =========================================================================
+        // PROPERTIES DIALOG ACTION: ADD TYPED NICK TO LIST BOX ('igad')
+        // =========================================================================
+        case 'igad': {
+            BString newNick = fIgnoreInput->Text();
+            newNick.Trim();
+            if (newNick.Length() > 0) {
+                // 1. Prevent adding duplicate entries case-insensitively
+                bool duplicate = false;
+                for (auto& n : fLocalIgnoreList) {
+                    if (newNick.ICompare(n.c_str()) == 0) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                
+                if (!duplicate) {
+                    // 2. Add to local workspace tracking array
+                    fLocalIgnoreList.push_back(newNick.String());
+                    fIgnoreListView->AddItem(new BStringItem(newNick.String()));
+                    fIgnoreInput->SetText(""); // Clear box input field execution frame row
+
+                    // 3. Force synchronization back to your runtime ServerTreeItem instantly
+                    if (fItem != nullptr) {
+                        fItem->fRuntimeIgnoreList = fLocalIgnoreList;
+                    }
+
+                    // 4. Update your back-end persistent config data structures
+                    ServerConfig& srv = GetActiveConfig();
+                    srv.ignoredNicks = fLocalIgnoreList;
+                    
+                    // 5. Instantly save the updated settings file out to the hard disk
+                    save_config();
+                }
+            }
+            break;
+        }
+
+        // =========================================================================
+        // PROPERTIES DIALOG ACTION: REMOVE NICK FROM LIST BOX ('igrm')
+        // =========================================================================
+        case 'igrm': {
+            int32 selection = fIgnoreListView->CurrentSelection();
+            if (selection >= 0) {
+                BStringItem* item = static_cast<BStringItem*>(fIgnoreListView->ItemAt(selection));
+                if (item != nullptr && item->Text() != nullptr) {
+                    
+                    // 1. Isolate the target nickname string from the selected row
+                    std::string targetNick(item->Text());
+                    
+                    // 2. Erase the name from the local layout tracking vector array
+                    fLocalIgnoreList.erase(
+                        std::remove(fLocalIgnoreList.begin(), fLocalIgnoreList.end(), targetNick),
+                        fLocalIgnoreList.end()
+                    );
+                    
+                    // 3. Remove the graphic element row from the BListView and delete its memory allocation
+                    fIgnoreListView->RemoveItem(selection);
+                    delete item;
+
+                    // 4. Force synchronization back to your runtime ServerTreeItem instantly
+                    if (fItem != nullptr) {
+                        fItem->fRuntimeIgnoreList = fLocalIgnoreList;
+                    }
+
+                    // 5. Update your back-end persistent config data structures
+                    ServerConfig& srv = GetActiveConfig();
+                    srv.ignoredNicks = fLocalIgnoreList;
+                    
+                    // 6. Instantly save the settings file map out to the hard disk
+                    save_config();
+                }
+            }
+            break;
+        }
+
+   	
+        	
             
             case 'ajad': {
                 BString inputChan = fAutojoinInput->Text();
@@ -3101,7 +3265,7 @@ public:
                 srv.useCustomDrawFunction = (fUseCustomDrawCheck->Value() == B_CONTROL_ON);
                 srv.enableColorCodes = (fEnableColorCodesCheck->Value() == B_CONTROL_ON);
                 srv.logChatsToFile = (fLogChatsToFileCheck->Value() == B_CONTROL_ON);
-
+				
                 // --- NEW: COMMIT LOCAL AUTOJOIN CHANGED VECTOR PERMANENTLY ---
                 // If list is empty, we preserve a baseline blank value to prevent connection script stalls
                 if (fLocalAutojoinList.empty()) {
@@ -3160,6 +3324,11 @@ private:
     BButton*            fRemoveAutojoinBtn;
 	std::vector<std::string> fLocalAutojoinList;
 	BCheckBox*          fEnableColorCodesCheck; 
+    std::vector<std::string> fLocalIgnoreList;
+    BListView*               fIgnoreListView;
+    BTextControl*            fIgnoreInput;
+    BButton*                 fAddIgnoreBtn;
+    BButton*                 fRemoveIgnoreBtn;
 	
     // NEW: Safe helper function to fetch correct active reference target safely
     ServerConfig& GetActiveConfig() {
@@ -5216,9 +5385,66 @@ void RefreshUserListUI() {
 }
 
 
+// Lightweight, case-insensitive shell-style wildcard matcher (* and ?)
+static bool MatchWildcard(const char* stringToTest, const char* wildcardPattern) {
+    if (stringToTest == nullptr || wildcardPattern == nullptr) return false;
+
+    // Loop through both strings simultaneously
+    while (*wildcardPattern) {
+        if (*wildcardPattern == '*') {
+            // Consecutive wildcards can be compressed into a single match pass
+            while (*wildcardPattern == '*') {
+                wildcardPattern++;
+            }
+            // If the wildcard string ends in a trailing '*', it is an instant match prefix success
+            if (!*wildcardPattern) return true;
+            
+            // Scan through stringToTest to look for next matching segment
+            while (*stringToTest) {
+                if (MatchWildcard(stringToTest, wildcardPattern)) return true;
+                stringToTest++;
+            }
+            return false;
+        } 
+        else if (*wildcardPattern == '?' || 
+                 tolower(static_cast<unsigned char>(*stringToTest)) == tolower(static_cast<unsigned char>(*wildcardPattern))) {
+            // Character match or single-character wildcard match, step forward
+            if (!*stringToTest) return false;
+            stringToTest++;
+            wildcardPattern++;
+        } 
+        else {
+            // Explicit character mismatch
+            return false;
+        }
+    }
+    // Match is true only if both pointers reached their terminators at the same time
+    return !*stringToTest;
+}
 
 
-void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {   	    	
+void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {   	
+
+    // 1. Absolute Null Check
+    if (contextServer == nullptr) return;
+
+    // 2. Multi-Server Pointer Validation Check
+    // Scan the tree layout container to confirm this pointer address still actually exists
+    bool isPointerValid = false;
+    int32 totalTreeItems = fChannelTree->CountItems();
+    
+    for (int32 i = 0; i < totalTreeItems; ++i) {
+        if (fChannelTree->ItemAt(i) == static_cast<BListItem*>(contextServer)) {
+            isPointerValid = true;
+            break;
+        }
+    }
+
+    // If the pointer is dangling or orphaned from an old connection state, drop it safely
+    if (!isPointerValid) {
+        return; 
+    }    	
+    
     line.ReplaceAll("\r", "");
     line.ReplaceAll("\n", ""); // Safe to clean network markers; we append gracefully later
 
@@ -7449,15 +7675,28 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
       // PRIVMSG & NOTICE Message Routing Engine
         if (command == "PRIVMSG" || command == "NOTICE") {
-            // FIX 1: Secure guard to drop the data payload packet immediately if the context server is unmapped
-            if (contextServer == nullptr) {
-                return;
-            }
+            if (contextServer == nullptr) return;
 
             BString senderNick = prefix;
             int32 exclamIdx = senderNick.FindFirst("!");
             if (exclamIdx != B_ERROR) senderNick.Truncate(exclamIdx);            
             
+            // --- UPDATED: WILDCARD PRIVMSG / NOTICE FILTER ENGINE ---
+            if (senderNick.Length() > 0 && !contextServer->fRuntimeIgnoreList.empty()) {
+                bool shouldDrop = false;
+                for (const auto& ignoredNick : contextServer->fRuntimeIgnoreList) {
+                    
+                    // Call our wildcard matcher cleanly using the incoming nickname 
+                    if (MatchWildcard(senderNick.String(), ignoredNick.c_str())) {
+                        shouldDrop = true;
+                        break;
+                    }
+                }
+                if (shouldDrop) {
+                    return; // SILENTLY DROP PACKET PAYLOAD MESSAGES
+                }
+            }
+
             int32 msgTargetSpace = line.FindFirst(" ");
             BString targetRoom = line;
             if (msgTargetSpace != B_ERROR) targetRoom.Truncate(msgTargetSpace);
@@ -7514,6 +7753,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         // =========================================================================
         // FIXED PRIVATE MESSAGE INTAKE ROUTER (NETWORK ISOLATION FIX)
         // =========================================================================
+
         // 1. Establish destination nodes supporting Channels AND Private Message Queries
         BStringItem* targetNode = nullptr;
         if (targetRoom.StartsWith("#")) {
@@ -8061,6 +8301,129 @@ public:
 	//@messagereceived
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
+
+
+        // =========================================================================
+        // HANDLER FOR CONTEXT ACTION: ADD NICK TO IGNORE FILTER ENGINE ('igad')
+        // =========================================================================
+        case 'igad': {
+            BString targetNick;
+            void* serverPtr = nullptr;
+            
+            if (message->FindString("target_nick", &targetNick) == B_OK &&
+                message->FindPointer("context_server", &serverPtr) == B_OK) {
+                
+                ServerTreeItem* serverItem = static_cast<ServerTreeItem*>(serverPtr);
+                if (serverItem != nullptr && targetNick.Length() > 0) {
+                    
+                    // 1. Prevent duplicate entries in the live engine vector
+                    bool isDuplicate = false;
+                    for (const auto& ignored : serverItem->fRuntimeIgnoreList) {
+                        if (targetNick.ICompare(ignored.c_str()) == 0) {
+                            isDuplicate = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!isDuplicate) {
+                        // 2. Commit the new nickname string to the live runtime engine vector
+                        serverItem->fRuntimeIgnoreList.push_back(targetNick.String());
+                        
+                        // 3. Sync changes straight into your back-end persistent config lists
+                        std::string srvName = serverItem->Text();
+                        bool synced = false;
+                        
+                        for (auto& srv : cfg.servers) {
+                            if (srv.name == srvName) {
+                                srv.ignoredNicks.push_back(targetNick.String());
+                                synced = true;
+                                break;
+                            }
+                        }
+                        if (!synced) {
+                            for (auto& srv : cfg.customServers) {
+                                if (srv.name == srvName) {
+                                    srv.ignoredNicks.push_back(targetNick.String());
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // 4. Export the updated config file layout directly to your JSON settings disk
+                        save_config();
+                        
+                        // 5. Output a visual verification log line to the status console
+                        BString feedback;
+                        feedback.SetToFormat("--- [Filters] User '%s' is now being ignored on this network.\n", targetNick.String());
+                        LogToItemBuffer(FindServerLogNode(serverItem), feedback);
+                    }
+                }
+            }
+            break;
+        }
+
+        // =========================================================================
+        // HANDLER FOR CONTEXT ACTION: REMOVE NICK FROM IGNORE FILTER ENGINE ('igrm')
+        // =========================================================================
+        case 'igrm': {
+            BString targetNick;
+            void* serverPtr = nullptr;
+            
+            if (message->FindString("target_nick", &targetNick) == B_OK &&
+                message->FindPointer("context_server", &serverPtr) == B_OK) {
+                
+                ServerTreeItem* serverItem = static_cast<ServerTreeItem*>(serverPtr);
+                if (serverItem != nullptr && targetNick.Length() > 0) {
+                    
+                    // 1. Prune the rule completely from your active runtime engine vector
+                    std::string targetStr(targetNick.String());
+                    serverItem->fRuntimeIgnoreList.erase(
+                        std::remove_if(serverItem->fRuntimeIgnoreList.begin(), serverItem->fRuntimeIgnoreList.end(),
+                            [&](const std::string& item) { return targetNick.ICompare(item.c_str()) == 0; }),
+                        serverItem->fRuntimeIgnoreList.end()
+                    );
+                    
+                    // 2. Prune the rule from your back-end core config data structures
+                    std::string srvName = serverItem->Text();
+                    bool synced = false;
+                    
+                    for (auto& srv : cfg.servers) {
+                        if (srv.name == srvName) {
+                            srv.ignoredNicks.erase(
+                                std::remove_if(srv.ignoredNicks.begin(), srv.ignoredNicks.end(),
+                                    [&](const std::string& item) { return targetNick.ICompare(item.c_str()) == 0; }),
+                                srv.ignoredNicks.end()
+                            );
+                            synced = true;
+                            break;
+                        }
+                    }
+                    if (!synced) {
+                        for (auto& srv : cfg.customServers) {
+                            if (srv.name == srvName) {
+                                srv.ignoredNicks.erase(
+                                    std::remove_if(srv.ignoredNicks.begin(), srv.ignoredNicks.end(),
+                                        [&](const std::string& item) { return targetNick.ICompare(item.c_str()) == 0; }),
+                                    srv.ignoredNicks.end()
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // 3. Export the clean profile file out to your JSON storage system
+                    save_config();
+                    
+                    // 4. Output a visual removal verification line directly to the status console
+                    BString feedback;
+                    feedback.SetToFormat("--- [Filters] User '%s' has been unignored on this network.\n", targetNick.String());
+                    LogToItemBuffer(FindServerLogNode(serverItem), feedback);
+                }
+            }
+            break;
+        }
+
+
 
 
         // =========================================================================
@@ -8923,9 +9286,46 @@ public:
                 pmMsg->AddString("target_nick", cleanNick);
                 contextMenu->AddItem(new BMenuItem(menuLabel.String(), pmMsg));
                 
+                // --- NEW: DYNAMIC IGNORE / UNIGNORE INJECTION ---
+                ServerTreeItem* parentServer = nullptr;
+                ChannelTreeItem* activeChan = dynamic_cast<ChannelTreeItem*>(fActiveBufferItem);
+                
+                // Backtrack from the active channel row to find its parent server context node
+                if (activeChan != nullptr && fChannelTree != nullptr) {
+                    BListItem* parentItem = fChannelTree->Superitem(activeChan);
+                    if (parentItem != nullptr) {
+                        parentServer = dynamic_cast<ServerTreeItem*>(parentItem);
+                    }
+                }
+
+                if (parentServer != nullptr) {
+                    bool isIgnored = false;
+                    for (const auto& ignoredNick : parentServer->fRuntimeIgnoreList) {
+                        if (cleanNick.ICompare(ignoredNick.c_str()) == 0) {
+                            isIgnored = true;
+                            break;
+                        }
+                    }
+
+                    BString ignoreLabel;
+                    BMessage* ignoreMsg = nullptr;
+
+                    if (isIgnored) {
+                        ignoreLabel << "Unignore " << cleanNick;
+                        ignoreMsg = new BMessage('igrm'); // Reuses remove tag command
+                    } else {
+                        ignoreLabel << "Ignore " << cleanNick;
+                        ignoreMsg = new BMessage('igad'); // Reuses add tag command
+                    }
+
+                    ignoreMsg->AddString("target_nick", cleanNick);
+                    // Crucial: Attach parent pointer so your engine knows which server list to alter
+                    ignoreMsg->AddPointer("context_server", parentServer); 
+                    contextMenu->AddItem(new BMenuItem(ignoreLabel.String(), ignoreMsg));
+                }
+                
                 // DYNAMIC VISIBILITY FIX: Scan the channel cache to see if WE hold operator status (@)
                 bool iamOperator = false;
-                ChannelTreeItem* activeChan = dynamic_cast<ChannelTreeItem*>(fActiveBufferItem);
                 
                 if (activeChan != nullptr && fChannelUsers.count(activeChan) > 0) {
                     BObjectList<UserListItem, true>* userList = fChannelUsers[activeChan];
@@ -9655,12 +10055,19 @@ public:
                         textNotice << "--- [Auto-Reconnect] Connection lost. Attempting to reconnect to " << serverItem->Text() << "...\n";
                         LogToItemBuffer(FindServerLogNode(serverItem), textNotice);
                         
+                        // --- DEFENSIVE ENGINE RESET ---
+                        // Force volatile layout indices back to safe default zones 
+                        // so incoming packets from a dying thread can't write to wrong active buffers
+                        fHistoryIndex = 0; 
+                        fActiveBufferItem = FindServerLogNode(serverItem); 
+                        
                         // Fire up the native connection runner cleanly
                         ConnectToServer(serverItem);
                     }
                 }
                 break;
             }
+
 
 
             case MSG_TOGGLE_AUTORECONNECT: {
@@ -10850,6 +11257,7 @@ void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
 	
     BObjectList<BString, true> fHistoryList;  
     int32                      fHistoryIndex; 
+    
 	
 }; 
 
