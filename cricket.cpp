@@ -68,12 +68,6 @@
 #include "nlohmann/json.hpp"
 
 
-
-namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.28 (Haiku OS)";
-}
-
-
 // Define application messages
 enum {
     MSG_START_SIRC       = 'strt',
@@ -127,12 +121,14 @@ class CricketWindow;
 class ServerTreeItem; 
 
 
-
+namespace AppInfo {
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.28 (Haiku OS)";
+}
 
 using json = nlohmann::json;
 
 // Define the default background path as a constant
-// const std::string DEFAULT_BG_PATH = "/boot/system/data/cricket/default_background.png";
+
 const std::string DEFAULT_BG_PATH = "";
 
 struct ServerConfig {
@@ -194,7 +190,14 @@ void save_config() {
     j["serverListFontSize"] = cfg.serverListFontSize;
     j["chatLogFontSize"] = cfg.chatLogFontSize;
     j["userListFontSize"] = cfg.userListFontSize;
-    j["quitMessage"] = cfg.quitMessage;
+        // --- STRIP THE VERSION SUFFIX BEFORE SAVING ---
+    std::string cleanQuitMsg = cfg.quitMessage;
+    size_t suffixPos = cleanQuitMsg.find(" [Cricket IRC Client");
+    if (suffixPos != std::string::npos) {
+        // Strip out the bracketed application version suffix completely
+        cleanQuitMsg = cleanQuitMsg.substr(0, suffixPos); 
+    }
+    j["quitMessage"] = cleanQuitMsg; // Save ONLY the clean base message
     j["awayMessage"] = cfg.awayMessage;
     j["useCustomDrawFunction"] = cfg.useCustomDrawFunction;
     
@@ -321,8 +324,7 @@ void load_config() {
     bool mustSaveDefaults = false;
 
     // Ensure the fallback path constant is accessible
-    // const std::string DEFAULT_BG_PATH = "/boot/system/data/cricket/default_background.png";
-	const std::string DEFAULT_BG_PATH = "";
+    const std::string DEFAULT_BG_PATH = "";
 	
     if (find_directory(B_USER_SETTINGS_DIRECTORY, &path) == B_OK) {
         path.Append("cricket/cricketConfig.txt");
@@ -330,7 +332,28 @@ void load_config() {
         if (infile.is_open()) {
             try {
                 json j = json::parse(infile);
-                cfg.quitMessage = j.value("quitMessage", "App Quit: " + std::string(AppInfo::VERSION_STRING));
+                
+                // --- FIXED: DYNAMIC VERSION APFENDER AT BOOT ---
+                // 1. Fetch the raw saved string value from the json map
+                BString savedQuit = j.value("quitMessage", "App Quit").c_str();
+                
+                // 2. Clear out any legacy hardcoded string formats (like "App Quit: Cricket IRC Client...")
+                int32 legacyColonIdx = savedQuit.FindFirst(": Cricket IRC Client");
+                if (legacyColonIdx != B_ERROR) {
+                    savedQuit.Truncate(legacyColonIdx);
+                }
+                int32 legacyBracketIdx = savedQuit.FindFirst(" [Cricket IRC Client");
+                if (legacyBracketIdx != B_ERROR) {
+                    savedQuit.Truncate(legacyBracketIdx);
+                }
+                savedQuit.Trim();
+                
+                // 3. Combine user text with the active version string
+                BString finalQuitMsg;
+                finalQuitMsg << savedQuit << " [" << AppInfo::VERSION_STRING << "]";
+                cfg.quitMessage = finalQuitMsg.String();
+                // -----------------------------------------------
+
                 cfg.awayMessage = j.value("awayMessage", "I am away from my computer right now.");
                 cfg.debugEnable = j.value("debugEnable", false);             
                 cfg.serverListFontSize = j.value("serverListFontSize", (int32)12);
@@ -353,7 +376,6 @@ void load_config() {
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
                         
-                        // 1. Fallback if key missing or evaluates to empty string
                         srv.backgroundImagePath = s.value("background_image", DEFAULT_BG_PATH); 
                         if (srv.backgroundImagePath.empty()) {
                             srv.backgroundImagePath = DEFAULT_BG_PATH;
@@ -365,7 +387,6 @@ void load_config() {
                         srv.logChatsToFile = s.value("logChatsToFile", false);
                         srv.enableColorCodes = s.value("enableColorCodes", false);
 						
-                        // Parse per-server fonts; falls back to the global configurations parsed above
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
                         srv.userListFontSize   = s.value("userListFontSize", cfg.userListFontSize);
@@ -376,7 +397,6 @@ void load_config() {
                             }
                         }
 
-                        // --- PARSE IGNORED NICKS FOR STANDARD SERVERS ---
                         if (s.contains("ignored_nicks") && s["ignored_nicks"].is_array()) {
                             for (const auto& nick : s["ignored_nicks"]) {
                                 srv.ignoredNicks.push_back(nick.get<std::string>());
@@ -402,7 +422,6 @@ void load_config() {
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
                         
-                        // 2. Fallback if key missing or evaluates to empty string
                         srv.backgroundImagePath = s.value("background_image", DEFAULT_BG_PATH); 
                         if (srv.backgroundImagePath.empty()) {
                             srv.backgroundImagePath = DEFAULT_BG_PATH;
@@ -414,7 +433,6 @@ void load_config() {
                         srv.logChatsToFile = s.value("logChatsToFile", false);
                         srv.enableColorCodes = s.value("enableColorCodes", false);
                         
-                        // Parse per-server fonts; falls back to the global configurations parsed above
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
                         srv.userListFontSize   = s.value("userListFontSize", cfg.userListFontSize);
@@ -425,7 +443,6 @@ void load_config() {
                             }
                         }
 
-                        // --- PARSE IGNORED NICKS FOR CUSTOM SERVERS ---
                         if (s.contains("ignored_nicks") && s["ignored_nicks"].is_array()) {
                             for (const auto& nick : s["ignored_nicks"]) {
                                 srv.ignoredNicks.push_back(nick.get<std::string>());
@@ -448,7 +465,12 @@ void load_config() {
         cfg.servers.clear();        
         cfg.customServers.clear(); 
         cfg.useCustomDrawFunction = true; 
-        cfg.quitMessage = "App Quit: " + std::string(AppInfo::VERSION_STRING);
+        
+        // --- FIXED FALLBACK FORMAT MATCH ---
+        BString defaultQuit;
+        defaultQuit << "App Quit [" << AppInfo::VERSION_STRING << "]";
+        cfg.quitMessage = defaultQuit.String();
+        cfg.awayMessage = "I am away from my computer right now.";
 		
         srand(static_cast<unsigned int>(real_time_clock_usecs()));
         int randomSuffix = 1000 + (rand() % 9000);
@@ -465,53 +487,18 @@ void load_config() {
         libera.pass = "";
         libera.autojoin = {""};
         libera.ignoredNicks = {}; 
-        libera.autoConnect = false;
-        libera.autoReconnect = false;
-        libera.hideStatusMessages = false;
         
-        // 3. Fallback for hardcoded Libera profile
         libera.backgroundImagePath = DEFAULT_BG_PATH; 
-        
         libera.backgroundOpacity = 30; 
         libera.enableEmoticons = true; 
         libera.useCustomDrawFunction = cfg.useCustomDrawFunction;
         libera.logChatsToFile = false;
         libera.enableColorCodes = false;
          
-        // Fallbacks for the hardcoded defaults
         libera.serverListFontSize = cfg.serverListFontSize;
         libera.chatLogFontSize    = cfg.chatLogFontSize;
         libera.userListFontSize   = cfg.userListFontSize;
         cfg.servers.push_back(libera);
-         
-        ServerConfig oftc;
-        // ... rest of your file handles OFTC setup exactly the same ...
-
-        oftc.name = "OFTC";
-        oftc.host = "irc.oftc.net";
-        oftc.port = 6697;
-        oftc.nick = dynamicNick.String();
-        oftc.altNick = BString(dynamicNick).Append("+").String(); 
-        oftc.altNick2 = BString(dynamicNick).Append("__").String();
-        oftc.pass = "";
-        oftc.autojoin = {"#haiku"};
-        oftc.autoConnect = false;
-        oftc.autoReconnect = false;
-        oftc.hideStatusMessages = false;
-        
-        // 4. Fallback for hardcoded OFTC profile
-        oftc.backgroundImagePath = DEFAULT_BG_PATH; 
-        
-        oftc.backgroundOpacity = 30; 
-        oftc.enableEmoticons = true; 
-        oftc.useCustomDrawFunction = cfg.useCustomDrawFunction;
-        oftc.logChatsToFile = false;
-        oftc.enableColorCodes = false;
-        
-        oftc.serverListFontSize = cfg.serverListFontSize;
-        oftc.chatLogFontSize    = cfg.chatLogFontSize;
-        oftc.userListFontSize   = cfg.userListFontSize;
-        cfg.servers.push_back(oftc);
     }
 }
 
