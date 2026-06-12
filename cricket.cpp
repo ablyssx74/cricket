@@ -18,6 +18,7 @@
 #include <TabView.h>
 #include <StringView.h>
 #include <SeparatorView.h>
+#include <ColorControl.h>
 
 // Storage, Path Finder & System File Kits
 #include <Directory.h>
@@ -70,6 +71,8 @@
 
 // Define application messages
 enum {
+	MSG_CONTEXT_ADD_COLOR = 'cccl',
+	MSG_TRIGGER_REPLIES_SEARCH = 'trrs',
     MSG_START_SIRC       = 'strt',
     MSG_SEND_MESSAGE     = 'send',
     MSG_IRC_RECEIVED     = 'recv',
@@ -122,12 +125,10 @@ class ServerTreeItem;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.28 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.29 (Haiku OS)";
 }
 
 using json = nlohmann::json;
-
-// Define the default background path as a constant
 
 const std::string DEFAULT_BG_PATH = "";
 
@@ -157,6 +158,9 @@ struct ServerConfig {
     bool logChatsToFile = false; 
     bool enableColorCodes;
     std::vector<std::string> ignoredNicks; 
+    std::vector<std::string> nickColors;
+    std::vector<rgb_color>   nickColorValues;
+    int32 timestampInterval = 30;
 };
 
 
@@ -169,7 +173,8 @@ struct Config {
     int32 userListFontSize = 12;
     std::string quitMessage = "App Quit: " + std::string(AppInfo::VERSION_STRING); 
     std::string awayMessage = "I am away from my computer right now."; 
-    bool useCustomDrawFunction = true; // Acts as fallback standard for new profiles
+    bool useCustomDrawFunction = true;
+    int32 timestampInterval = 30;
 } cfg;
 
 
@@ -190,7 +195,8 @@ void save_config() {
     j["serverListFontSize"] = cfg.serverListFontSize;
     j["chatLogFontSize"] = cfg.chatLogFontSize;
     j["userListFontSize"] = cfg.userListFontSize;
-        // --- STRIP THE VERSION SUFFIX BEFORE SAVING ---
+    
+    // --- STRIP THE VERSION SUFFIX BEFORE SAVING ---
     std::string cleanQuitMsg = cfg.quitMessage;
     size_t suffixPos = cleanQuitMsg.find(" [Cricket IRC Client");
     if (suffixPos != std::string::npos) {
@@ -215,6 +221,7 @@ void save_config() {
         s["autoConnect"] = srv.autoConnect; 
         s["autoReconnect"] = srv.autoReconnect;
         s["hideStatusMessages"] = srv.hideStatusMessages; 
+        s["timestampInterval"] = srv.timestampInterval;
         
         // Fallback check: Use default path if empty
         if (srv.backgroundImagePath.empty()) {
@@ -245,6 +252,23 @@ void save_config() {
             ignoreArray.push_back(nick);
         }
         s["ignored_nicks"] = ignoreArray; 
+
+        // --- NEW: SERIALIZE NICKNAME COLORS FOR STANDARD SERVERS ---
+        json colorNickArray = json::array();
+        for (const auto& name : srv.nickColors) {
+            colorNickArray.push_back(name);
+        }
+        s["nick_color_names"] = colorNickArray;
+
+        json colorValueArray = json::array();
+        for (const auto& color : srv.nickColorValues) {
+            json rgbObj;
+            rgbObj["r"] = color.red;
+            rgbObj["g"] = color.green;
+            rgbObj["b"] = color.blue;
+            colorValueArray.push_back(rgbObj);
+        }
+        s["nick_color_values"] = colorValueArray;
 
         serverArray.push_back(s);
     }
@@ -294,6 +318,23 @@ void save_config() {
             ignoreArray.push_back(nick);
         }
         s["ignored_nicks"] = ignoreArray; 
+
+        // --- NEW: SERIALIZE NICKNAME COLORS FOR CUSTOM SERVERS ---
+        json colorNickArray = json::array();
+        for (const auto& name : srv.nickColors) {
+            colorNickArray.push_back(name);
+        }
+        s["nick_color_names"] = colorNickArray;
+
+        json colorValueArray = json::array();
+        for (const auto& color : srv.nickColorValues) {
+            json rgbObj;
+            rgbObj["r"] = color.red;
+            rgbObj["g"] = color.green;
+            rgbObj["b"] = color.blue;
+            colorValueArray.push_back(rgbObj);
+        }
+        s["nick_color_values"] = colorValueArray;
 
         customServerArray.push_back(s);
     }
@@ -375,6 +416,7 @@ void load_config() {
                         srv.autoReconnect = s.value("autoReconnect", false); 
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
+                        srv.timestampInterval = s.value("timestampInterval", cfg.timestampInterval);
                         
                         srv.backgroundImagePath = s.value("background_image", DEFAULT_BG_PATH); 
                         if (srv.backgroundImagePath.empty()) {
@@ -402,6 +444,27 @@ void load_config() {
                                 srv.ignoredNicks.push_back(nick.get<std::string>());
                             }
                         }
+                        
+                         // --- NEW: DESERIALIZE NICKNAME COLORS ---
+                        srv.nickColors.clear();
+                        if (s.contains("nick_color_names") && s["nick_color_names"].is_array()) {
+                            for (const auto& name : s["nick_color_names"]) {
+                                srv.nickColors.push_back(name.get<std::string>());
+                            }
+                        }
+
+                        srv.nickColorValues.clear();
+                        if (s.contains("nick_color_values") && s["nick_color_values"].is_array()) {
+                            for (const auto& colorVal : s["nick_color_values"]) {
+                                rgb_color c;
+                                c.red   = colorVal.value("r", 255);
+                                c.green = colorVal.value("g", 255);
+                                c.blue  = colorVal.value("b", 255);
+                                c.alpha = 255;
+                                srv.nickColorValues.push_back(c);
+                            }
+                        }
+
 
                         cfg.servers.push_back(srv);
                     }
@@ -448,6 +511,27 @@ void load_config() {
                                 srv.ignoredNicks.push_back(nick.get<std::string>());
                             }
                         }
+                        
+                        // --- NEW: DESERIALIZE NICKNAME COLORS ---
+                        srv.nickColors.clear();
+                        if (s.contains("nick_color_names") && s["nick_color_names"].is_array()) {
+                            for (const auto& name : s["nick_color_names"]) {
+                                srv.nickColors.push_back(name.get<std::string>());
+                            }
+                        }
+
+                        srv.nickColorValues.clear();
+                        if (s.contains("nick_color_values") && s["nick_color_values"].is_array()) {
+                            for (const auto& colorVal : s["nick_color_values"]) {
+                                rgb_color c;
+                                c.red   = colorVal.value("r", 255);
+                                c.green = colorVal.value("g", 255);
+                                c.blue  = colorVal.value("b", 255);
+                                c.alpha = 255;
+                                srv.nickColorValues.push_back(c);
+                            }
+                        }
+
 
                         cfg.customServers.push_back(srv);
                     }
@@ -477,6 +561,7 @@ void load_config() {
         BString dynamicNick;
         dynamicNick << "HaikuIRCUser" << randomSuffix;
 
+        // 1. RECONSTRUCT LIBERA CHAT DEFAULT PROFILE
         ServerConfig libera;
         libera.name = "Libera Chat";
         libera.host = "irc.libera.chat";
@@ -487,6 +572,9 @@ void load_config() {
         libera.pass = "";
         libera.autojoin = {""};
         libera.ignoredNicks = {}; 
+        libera.nickColors = {};       
+        libera.nickColorValues = {};  
+        libera.timestampInterval = 30;
         
         libera.backgroundImagePath = DEFAULT_BG_PATH; 
         libera.backgroundOpacity = 30; 
@@ -499,6 +587,33 @@ void load_config() {
         libera.chatLogFontSize    = cfg.chatLogFontSize;
         libera.userListFontSize   = cfg.userListFontSize;
         cfg.servers.push_back(libera);
+
+        // 2. OFTC NETWORK DEFAULT PROFILE
+        ServerConfig oftc;
+        oftc.name = "OFTC";
+        oftc.host = "irc.oftc.net";
+        oftc.port = 6697;
+        oftc.nick = dynamicNick.String();
+        oftc.altNick = BString(dynamicNick).Append("+").String();
+        oftc.altNick2 = BString(dynamicNick).Append("__").String();
+        oftc.pass = "";
+        oftc.autojoin = {""};
+        oftc.ignoredNicks = {};
+        oftc.nickColors = {};       
+        oftc.nickColorValues = {};  
+		oftc.timestampInterval = 30;
+		
+        oftc.backgroundImagePath = DEFAULT_BG_PATH;
+        oftc.backgroundOpacity = 30;
+        oftc.enableEmoticons = true;
+        oftc.useCustomDrawFunction = cfg.useCustomDrawFunction;
+        oftc.logChatsToFile = false;
+        oftc.enableColorCodes = false;
+
+        oftc.serverListFontSize = cfg.serverListFontSize;
+        oftc.chatLogFontSize    = cfg.chatLogFontSize;
+        oftc.userListFontSize   = cfg.userListFontSize;
+        cfg.servers.push_back(oftc);
     }
 }
 
@@ -669,6 +784,8 @@ public:
 	virtual void MouseDown(BPoint point);
 	virtual void Draw(BRect updateRect);
     virtual void FrameResized(float newWidth, float newHeight);
+    int32 CountTotalLines() const;
+    BString GetLineTextAt(int32 index) const;
 
 private:
     void ParseTextAndIcons(const BString& text, const text_run_array* runs, BObjectList<StyledRunFragment, true>* rawFragments);
@@ -705,6 +822,21 @@ CustomChatView::CustomChatView(BRect frame, const char* name, uint32 resizingMod
     SetViewColor(B_TRANSPARENT_COLOR);
     SetLowColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
 }
+
+
+int32 CustomChatView::CountTotalLines() const {
+    return fLines.CountItems();
+}
+
+BString CustomChatView::GetLineTextAt(int32 index) const {
+    StyledLine* line = fLines.ItemAt(index);
+    if (line != nullptr) {
+        // Returns the clean unformatted text representation stored in your struct
+        return line->text; 
+    }
+    return BString("");
+}
+
 
 
 void CustomChatView::KeyDown(const char* bytes, int32 numBytes)
@@ -911,7 +1043,7 @@ void CustomChatView::ParseTextAndIcons(const BString& text, const text_run_array
                     }
                 }
 
-                // If it's a valid formatting tag OR a recognized timestamp, process it
+ 				// If it's a valid formatting tag OR a recognized timestamp, process it
                 if (isValidTag) {
                     if (colorCodesEnabled) {
                         if (tagContent.StartsWith("C:") && tagContent != "C:Reset") {
@@ -961,14 +1093,77 @@ void CustomChatView::ParseTextAndIcons(const BString& text, const text_run_array
             }
 
 
-              // 2. Process Emoticon Token Fragment Block
+               // 2. Process Emoticon Token Fragment Block
             else {
                 if (nextTrigger > currentPos) {
                     StyledRunFragment* frag = new StyledRunFragment();
                     frag->type = FRAG_TEXT;
                     runText.CopyInto(frag->subText, currentPos, nextTrigger - currentPos);
                     frag->font = activeFont;
-                    frag->color = activeColor;
+                    
+                    BString cleanCandidate = frag->subText;
+                    cleanCandidate.Trim();
+                    
+                    // --- REVERTED & CLEANED STRING STRIPPER ---
+                    if (cleanCandidate.Length() > 0) {
+                        // 1. Strip common channel ranking prefixes (@, +, %)
+                        if (cleanCandidate.ByteAt(0) == '@' || cleanCandidate.ByteAt(0) == '+' || cleanCandidate.ByteAt(0) == '%') {
+                            cleanCandidate.Remove(0, 1);
+                        }
+                        
+                        // 2. Strip surrounding message angle brackets (<ablyss> -> ablyss)
+                        if (cleanCandidate.StartsWith("<") && cleanCandidate.EndsWith(">")) {
+                            cleanCandidate.Remove(0, 1);
+                            cleanCandidate.Truncate(cleanCandidate.Length() - 1);
+                        }
+                        
+                        // 3. Strip surrounding alternative message parenthesis
+                        if (cleanCandidate.StartsWith("(") && cleanCandidate.EndsWith(")")) {
+                            cleanCandidate.Remove(0, 1);
+                            cleanCandidate.Truncate(cleanCandidate.Length() - 1);
+                        }
+                        
+                        // 4. Strip typical trailing message delimiters
+                        if (cleanCandidate.EndsWith(":")) {
+                            cleanCandidate.Truncate(cleanCandidate.Length() - 1);
+                        }
+                        cleanCandidate.Trim();
+                    }
+                    
+                    rgb_color textFragmentColor = activeColor;
+                    
+                    // --- CLEAN REVERTED INDEX LOOKUP LOOP ---
+                    if (cleanCandidate.Length() > 0) {
+                        // A. Check standard servers array
+                        if (selectedConfig >= 0 && selectedConfig < (int)cfg.servers.size()) {
+                            const auto& colorNicks = cfg.servers[selectedConfig].nickColors;
+                            const auto& colorVals  = cfg.servers[selectedConfig].nickColorValues;
+                            
+                            for (size_t k = 0; k < colorNicks.size(); k++) {
+                                if (cleanCandidate.ICompare(colorNicks[k].c_str()) == 0) {
+                                    textFragmentColor = colorVals[k];
+                                    break;
+                                }
+                            }
+                        } 
+                        // B. Check custom servers array
+                        else {
+                            int customIdx = selectedConfig - (int)cfg.servers.size();
+                            if (customIdx >= 0 && customIdx < (int)cfg.customServers.size()) {
+                                const auto& colorNicks = cfg.customServers[customIdx].nickColors;
+                                const auto& colorVals  = cfg.customServers[customIdx].nickColorValues;
+                                
+                                for (size_t k = 0; k < colorNicks.size(); k++) {
+                                    if (cleanCandidate.ICompare(colorNicks[k].c_str()) == 0) {
+                                        textFragmentColor = colorVals[k];
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    frag->color = textFragmentColor; 
                     frag->width = activeFont.StringWidth(frag->subText.String());
                     rawFragments->AddItem(frag);
                 }
@@ -977,7 +1172,6 @@ void CustomChatView::ParseTextAndIcons(const BString& text, const text_run_array
                     float iconDimension = fLineHeight;
                     BBitmap* cachedIcon = new BBitmap(BRect(0, 0, iconDimension - 1.0f, iconDimension - 1.0f), B_RGBA32);
                     
-                    // Note: Assuming a standard 1024-byte buffer allocation rule for your vector icon resources
                     if (cachedIcon->InitCheck() == B_OK && BIconUtils::GetVectorIcon(foundIcon, 1024, cachedIcon) == B_OK) {
                         StyledRunFragment* frag = new StyledRunFragment();
                         frag->type = FRAG_ICON;
@@ -995,6 +1189,7 @@ void CustomChatView::ParseTextAndIcons(const BString& text, const text_run_array
         }
     }
 }
+
 
 
 void CustomChatView::SetBackgroundDimming(int32 level)
@@ -1380,7 +1575,14 @@ void CustomChatView::MessageReceived(BMessage* message) {
             break;
         }
 
-        
+        case MSG_TRIGGER_REPLIES_SEARCH: {
+            if (Window() != nullptr) {
+                // Post our unique identifier token cleanly up to the main window thread
+                BMessage searchCmd(MSG_TRIGGER_REPLIES_SEARCH);
+                Window()->PostMessage(&searchCmd);
+            }
+            break;
+        }   
 
         case MSG_CLEAR_CUSTOM_BUFFER: {
             // 1. Loop backward and purge only rows matching our current active room context node
@@ -1927,6 +2129,10 @@ void CustomChatView::MouseDown(BPoint point) {
             contextMenu->AddSeparatorItem();
         }
            
+        // --- PASSIVE CATCH UP ROW (Injected right above Clear Buffer) ---
+        // Uses a soft, human-centric name instead of rigid terms like "Mentions"
+        BMenuItem* repliesItem = new BMenuItem("Catch Up on Replies", new BMessage(MSG_TRIGGER_REPLIES_SEARCH));
+        contextMenu->AddItem(repliesItem);
         
         // Add the Clear option tied to our unique identifier token constant
         BMenuItem* clearItem = new BMenuItem("Clear Buffer", new BMessage(MSG_CLEAR_CUSTOM_BUFFER));
@@ -2770,6 +2976,8 @@ public:
     bool fEnableColorCodes;
     BString fSupportedCaps;
     std::vector<std::string> fRuntimeIgnoreList;
+    std::vector<std::string> fRuntimeColorNicks;
+    std::vector<rgb_color>   fRuntimeColorValues;
     
     // Dynamic server modes mapping
     BString fTypeAModes; 
@@ -2938,6 +3146,7 @@ public:
         BButton* saveBtn = new BButton("save", "Save", new BMessage('cfsv'));
         saveBtn->MakeDefault(true);
 
+
         // --- NEW: IGNORE FILTERS INTERFACE COMPONENTS ---
         fIgnoreListView = new BListView("ignore_list");
         BScrollView* ignoreScroll = new BScrollView("ignore_scroll", fIgnoreListView, 0, false, true);
@@ -2955,6 +3164,28 @@ public:
         fIgnoreInput = new BTextControl("ignore_input", "", "", nullptr);
         fAddIgnoreBtn = new BButton("add_ignore", "Add", new BMessage('igad'));
         fRemoveIgnoreBtn = new BButton("rem_ignore", "Remove", new BMessage('igrm'));
+
+        // --- NEW: CUSTOM NICKNAME COLORS INTERFACE COMPONENTS ---
+        fColorListView = new BListView("color_nicks_list");
+        BScrollView* colorScroll = new BScrollView("color_scroll", fColorListView, 0, false, true);
+        colorScroll->SetExplicitMinSize(BSize(150, 60));
+       fColorListView->SetSelectionMessage(new BMessage(0xCC005544));
+
+        // Populate color entries from configuration data arrays
+        // (Assumes srv.nickColors and srv.nickColorValues vectors exist in your ServerConfig structure)
+        fLocalColorNicknames = srv.nickColors;
+        fLocalColorValues = srv.nickColorValues;
+        for (const auto& nick : fLocalColorNicknames) {
+            if (!nick.empty()) {
+                fColorListView->AddItem(new BStringItem(nick.c_str()));
+            }
+        }
+
+        fColorNickInput = new BTextControl("color_nick_input", "Target Nickname:", "", nullptr);
+        // Instantiates a layout-compact 32-cell native Haiku block palette picker
+        fColorPicker = new BColorControl(BPoint(0, 0), B_CELLS_32x8, 1.0f, "color_picker");
+        fAddColorBtn = new BButton("add_color", "Assign Color", new BMessage('clad'));
+        fRemoveColorBtn = new BButton("rem_color", "Remove Color", new BMessage('clrm'));
 
         // --- Create Tab View Architecture ---
         BTabView* tabView = new BTabView("config_tabs", B_WIDTH_AS_USUAL);
@@ -2976,12 +3207,12 @@ public:
             .End()
             .AddGlue(); 
 
-        // --- TAB 2: PREFERENCES & THEMING ---
+        // --- TAB 2: PREFERENCES & THEMING (COMPACT LAYOUT WITH TIMESTAMP OPTION) ---
         BGroupView* prefsTab = new BGroupView(B_VERTICAL, 5);
         prefsTab->SetName("Preferences");
         
-        BGroupView* scrollableCheckboxes = new BGroupView(B_VERTICAL, 2);
-        BLayoutBuilder::Group<>(scrollableCheckboxes, B_VERTICAL, 2)
+        BGroupView* scrollableCheckboxes = new BGroupView(B_VERTICAL, 4);
+        BLayoutBuilder::Group<>(scrollableCheckboxes, B_VERTICAL, 4)
             .Add(fAutoConnectCheck)
             .Add(fAutoReconnectCheck)
             .Add(fHideStatusCheck)
@@ -2990,26 +3221,48 @@ public:
             .Add(fLogChatsToFileCheck)
             .Add(fEnableColorCodesCheck);
 
-        BLayoutBuilder::Group<>(prefsTab, B_HORIZONTAL, 10)
-            .SetInsets(10)
-            .AddGroup(B_VERTICAL, 5, 0.6)
+        // --- NEW: INSTANTIATE THE TIMESTAMP INTERVAL POPUP MENU ---
+        BPopUpMenu* tsMenu = new BPopUpMenu("timestamp_select");
+        int32 intervals[] = { 5, 10, 15, 30, 60 };
+        
+        for (int32 i = 0; i < 5; i++) {
+            BString label;
+            label << "Every " << intervals[i] << " minutes";
+            
+            // Create item message containing the target minutes integer token payload
+            BMessage* msg = new BMessage('tsch'); // Timestamp changed token constant
+            msg->AddInt32("minutes", intervals[i]);
+            
+            BMenuItem* item = new BMenuItem(label.String(), msg);
+            if (intervals[i] == srv.timestampInterval) {
+                item->SetMarked(true); // Pre-select their active saved choice matching disk
+            }
+            tsMenu->AddItem(item);
+        }
+        fTimestampMenu = new BMenuField("ts_menu", "Timestamp Frequency:", tsMenu);
+
+        BLayoutBuilder::Group<>(prefsTab, B_HORIZONTAL, 15)
+            .SetInsets(12)
+            .AddGroup(B_VERTICAL, 5, 0.55)
+                // 3-COLUMN CONTROL GRID MATRIX
                 .AddGrid(5.0f, 5.0f)
                     .Add(fServerListFontMenu->CreateLabelLayoutItem(), 0, 0)
-                    .Add(fServerListFontMenu->CreateMenuBarLayoutItem(), 1, 0)
+                    .Add(fServerListFontMenu->CreateMenuBarLayoutItem(), 1, 0, 2, 1)
                     .Add(fChatLogFontMenu->CreateLabelLayoutItem(), 0, 1)
-                    .Add(fChatLogFontMenu->CreateMenuBarLayoutItem(), 1, 1)
+                    .Add(fChatLogFontMenu->CreateMenuBarLayoutItem(), 1, 1, 2, 1)
                     .Add(fUserListFontMenu->CreateLabelLayoutItem(), 0, 2)
-                    .Add(fUserListFontMenu->CreateMenuBarLayoutItem(), 1, 2)
+                    .Add(fUserListFontMenu->CreateMenuBarLayoutItem(), 1, 2, 2, 1)
                     .Add(fBgPathInput->CreateLabelLayoutItem(), 0, 3)
-                    .AddGroup(B_HORIZONTAL, 2, 1, 3)
-                        .Add(fBgPathInput->CreateTextViewLayoutItem(), 1.0)
-                        .Add(fBrowseBgBtn, 0.0)
-                    .End()
+                    .Add(fBgPathInput->CreateTextViewLayoutItem(), 1, 3, 1, 1)
+                    .Add(fBrowseBgBtn, 2, 3)
                 .End()
-                .Add(new BSeparatorView(B_HORIZONTAL)) 
                 .Add(fBgOpacitySlider)
+                // --- INJECTED DIRECTLY UNDERNEATH WALLPAPER SLIDER ---
+                .AddStrut(5.0f) // Soft micro-padding gap separator spacer
+                .Add(fTimestampMenu)
+                .AddGlue() 
             .End()
-            .Add(scrollableCheckboxes, 0.4);
+            .Add(scrollableCheckboxes, 0.45);
 
         // --- TAB 3: AUTOJOIN INTERFACE ---
         BGroupView* autojoinTab = new BGroupView(B_VERTICAL, 5);
@@ -3028,36 +3281,50 @@ public:
 
         BLayoutBuilder::Group<>(autojoinTab, B_VERTICAL, 0)
             .SetInsets(10)
-            .Add(autojoinBox, 1.0);
-       
-        // --- TAB 4: IGNORE FILTERS INTERFACE ---
+            .Add(autojoinBox, 1.0);          
+
+        // --- TAB 4: FILTERS & COLORS INTERFACE ---
         BGroupView* filtersTab = new BGroupView(B_VERTICAL, 5);
         filtersTab->SetName("Filters");
         
-        // --- SIMPLIFIED UNTINTED LABEL ---
-        // Let Haiku handle the theme colors automatically!
-        BStringView* wildcardNotice = new BStringView("wildcard_notice", 
-            "💡 Supports wildcards: Use '*' to match multiple characters (e.g., SpamBot* or *Bot).");
+        // A. Top Box Section: Color Setup Matrix
+        BBox* colorBox = new BBox(B_FANCY_BORDER);
+        colorBox->SetLabel("Custom Nickname Coloring");
+        BLayoutBuilder::Group<>(colorBox, B_HORIZONTAL, 10)
+            .SetInsets(10, 20, 10, 10)
+            .Add(colorScroll, 1.0)
+            .AddGroup(B_VERTICAL, 5, 1.0)
+                .Add(fColorNickInput)
+                .Add(fColorPicker)
+                .AddGroup(B_HORIZONTAL, 5)
+                    .AddGlue()
+                    .Add(fRemoveColorBtn)
+                    .Add(fAddColorBtn)
+                .End()
+            .End();
 
-
-
-
+        // B. Bottom Box Section: Spam / Wildcard Ignorers
         BBox* filtersBox = new BBox(B_FANCY_BORDER);
         filtersBox->SetLabel("Ignored Nicknames");
         BLayoutBuilder::Group<>(filtersBox, B_VERTICAL, 5)
             .SetInsets(10, 20, 10, 10) 
             .Add(ignoreScroll, 1.0)
-            .Add(wildcardNotice, 0.0) // <-- Stays perfectly readable and dynamic
             .AddGroup(B_HORIZONTAL, 5)
                 .Add(fIgnoreInput, 1.0)
                 .Add(fAddIgnoreBtn, 0.0)
                 .Add(fRemoveIgnoreBtn, 0.0)
             .End();
 
-        BLayoutBuilder::Group<>(filtersTab, B_VERTICAL, 0)
-            .SetInsets(10)
-            .Add(filtersBox, 1.0);
+        // Unified layout notice string positioned as a clean master header element
+        BStringView* wildcardNotice = new BStringView("wildcard_notice", 
+            "💡 Both Colored Nicknames and Ignored Nicknames support wildcard filters (e.g., nickname* or *nickname).");
 
+        // Combine all layout blocks vertically from top to bottom
+        BLayoutBuilder::Group<>(filtersTab, B_VERTICAL, 8)
+            .SetInsets(10)
+            .Add(wildcardNotice, 0.0) // Positioned directly above both configurations boxes
+            .Add(colorBox, 1.0)     
+            .Add(filtersBox, 1.0);
 
         // --- Assemble Tabs into the Window ---
         tabView->AddTab(identityTab);
@@ -3081,7 +3348,7 @@ public:
                 .Add(saveBtn, 5, 1)
             .End();
 
-        ResizeTo(540, 360); 
+        ResizeTo(560, 440);
 
 
     
@@ -3098,7 +3365,163 @@ public:
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
         	
+ 
+         case 'tsch': {
+            int32 minutes = 30;
+            if (message->FindInt32("minutes", &minutes) == B_OK) {
+                if (fIsCustom) {
+                    if (fServerIdx < cfg.customServers.size()) cfg.customServers[fServerIdx].timestampInterval = minutes;
+                } else {
+                    if (fServerIdx < cfg.servers.size()) cfg.servers[fServerIdx].timestampInterval = minutes;
+                }
+                save_config();
+            }
+            break;
+        }
+ 
+        // =========================================================================
+        // PROPERTIES DIALOG ACTION: SELECTION CHANGED IN COLOR ROSTER
+        // =========================================================================
+        case 0xCC005544: {
+            int32 selection = fColorListView->CurrentSelection();
+            if (selection >= 0) {
+                BStringItem* item = static_cast<BStringItem*>(fColorListView->ItemAt(selection));
+                if (item != nullptr && item->Text() != nullptr) {
+                    
+                    // 1. Pre-populate the text input box with the selected nickname handle
+                    fColorNickInput->SetText(item->Text());
+
+                    // 2. Safeguard bounds check against our local parallel configuration vectors
+                    if (selection >= 0 && selection < (int32)fLocalColorValues.size()) {
+                        rgb_color savedColor = fLocalColorValues[selection];
+                        
+                        // 3. Force the native BColorControl sliders to update their visual states instantly
+                        fColorPicker->SetValue(savedColor);
+                    }
+                }
+            }
+            break;
+        }
+
+ 
+  
+        // =========================================================================
+        // HANDLER FOR WINDOW SYNCHRONIZATION: PRE-FILL COLOR TARGET NICKNAME ('fllc')
+        // =========================================================================
+        case 'fllc': {
+            BString targetNick;
+            if (message->FindString("nick", &targetNick) == B_OK) {
+                // 1. Force the Tab View layout to select TAB 3 (Index 3 is Filters)
+                // (Assumes tabView pointer is tracked or findable via FindView)
+                BTabView* tabs = dynamic_cast<BTabView*>(FindView("config_tabs"));
+                if (tabs != nullptr) {
+                    tabs->Select(3);
+                }
+
+                // 2. Pre-fill text and snap cursor focus to the user coloring controls
+                if (fColorNickInput != nullptr) {
+                    fColorNickInput->SetText(targetNick.String());
+                    fColorNickInput->MakeFocus(true);
+                }
+            }
+            break;
+        }
+
+  
+  
         	
+          // --- ADD / UPDATE CUSTOM NICKNAME COLOR ('clad') ---
+        case 'clad': {
+            BString targetNick = fColorNickInput->Text();
+            targetNick.Trim();
+            if (targetNick.Length() > 0) {
+                rgb_color chosenColor = fColorPicker->ValueAsColor();
+                
+                // 1. Scan your local vector array to see if the name already exists
+                int32 existingIndex = -1;
+                for (size_t i = 0; i < fLocalColorNicknames.size(); ++i) {
+                    if (targetNick.ICompare(fLocalColorNicknames[i].c_str()) == 0) {
+                        existingIndex = static_cast<int32>(i);
+                        break;
+                    }
+                }
+
+                if (existingIndex != -1) {
+                    // --- PATH A: OVERWRITE EXISTING RULE COLOR ---
+                    fLocalColorValues[existingIndex] = chosenColor;
+                    
+                    // Update the visual selection matrix if the list matches the row index
+                    // Note: This updates the list item color tracking instantly if you use custom row colors
+                    fColorListView->InvalidateItem(existingIndex);
+                } else {
+                    // --- PATH B: APPEND A BRAND NEW NICKNAME RULE ---
+                    fLocalColorNicknames.push_back(targetNick.String());
+                    fLocalColorValues.push_back(chosenColor);
+                    fColorListView->AddItem(new BStringItem(targetNick.String()));
+                }
+
+                fColorNickInput->SetText(""); // Clear box input field
+
+                // 2. Sync modifications directly down to the running server row item
+                if (fItem != nullptr) {
+                    fItem->fRuntimeColorNicks = fLocalColorNicknames;
+                    fItem->fRuntimeColorValues = fLocalColorValues;
+                }
+
+                // 3. Sync changes directly into the global app config engine vectors
+                if (fIsCustom) {
+                    if (fServerIdx < cfg.customServers.size()) {
+                        cfg.customServers[fServerIdx].nickColors = fLocalColorNicknames;
+                        cfg.customServers[fServerIdx].nickColorValues = fLocalColorValues;
+                    }
+                } else {
+                    if (fServerIdx < cfg.servers.size()) {
+                        cfg.servers[fServerIdx].nickColors = fLocalColorNicknames;
+                        cfg.servers[fServerIdx].nickColorValues = fLocalColorValues;
+                    }
+                }
+
+                // 4. Export the data immediately out to your text file on the hard disk
+                save_config();
+            }
+            break;
+        }
+
+
+        // --- REMOVE CUSTOM NICKNAME COLOR ('clrm') ---
+        case 'clrm': {
+            int32 selection = fColorListView->CurrentSelection();
+            if (selection >= 0) {
+                fLocalColorNicknames.erase(fLocalColorNicknames.begin() + selection);
+                fLocalColorValues.erase(fLocalColorValues.begin() + selection);
+                BStringItem* item = static_cast<BStringItem*>(fColorListView->RemoveItem(selection));
+                delete item;
+
+                // 1. Sync right to the runtime node
+                if (fItem != nullptr) {
+                    fItem->fRuntimeColorNicks = fLocalColorNicknames;
+                    fItem->fRuntimeColorValues = fLocalColorValues;
+                }
+
+                // 2. FIXED: Remove directly from the global config arrays via index bounds
+                if (fIsCustom) {
+                    if (fServerIdx < cfg.customServers.size()) {
+                        cfg.customServers[fServerIdx].nickColors = fLocalColorNicknames;
+                        cfg.customServers[fServerIdx].nickColorValues = fLocalColorValues;
+                    }
+                } else {
+                    if (fServerIdx < cfg.servers.size()) {
+                        cfg.servers[fServerIdx].nickColors = fLocalColorNicknames;
+                        cfg.servers[fServerIdx].nickColorValues = fLocalColorValues;
+                    }
+                }
+
+                // 3. Save clean layout tables out to disk
+                save_config();
+            }
+            break;
+        }
+
 
         // =========================================================================
         // PROPERTIES DIALOG ACTION: ADD TYPED NICK TO LIST BOX ('igad')
@@ -3323,6 +3746,18 @@ public:
 
 
 private:
+
+    BMenuField* fTimestampMenu;
+    
+    std::vector<std::string> fLocalColorNicknames;
+    std::vector<rgb_color>   fLocalColorValues;
+
+    BListView*    fColorListView;
+    BTextControl* fColorNickInput;
+    BColorControl* fColorPicker; 
+    BButton*      fAddColorBtn;
+    BButton*      fRemoveColorBtn;
+
     BWindow*            fParentWindow;
     ServerTreeItem*     fItem;
     size_t              fServerIdx;
@@ -3359,7 +3794,7 @@ private:
     BButton*                 fAddIgnoreBtn;
     BButton*                 fRemoveIgnoreBtn;
 	
-    // NEW: Safe helper function to fetch correct active reference target safely
+    //  Safe helper function to fetch correct active reference target safely
     ServerConfig& GetActiveConfig() {
         if (fIsCustom && fServerIdx < cfg.customServers.size()) {
             return cfg.customServers[fServerIdx];
@@ -4155,7 +4590,6 @@ private:
 
 
 
-
 class CricketWindow : public BWindow {
 public:
     // --- Restore flexible window border decoration masks ---
@@ -4465,7 +4899,7 @@ void Show()
 
 
 
-
+    int32 GetServerIndexFromNode(BStringItem* node);
 
     ~CricketWindow() {
         // 1. Prepare the custom sign-off message payload
@@ -7834,15 +8268,33 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             // 2. Thread-Safe Timing Calculation Engine
             BString timestampPrefix = "";
             bigtime_t currentTime = real_time_clock_usecs(); // Native Haiku system clock            
-            bigtime_t thirtyMinutesInUsecs = (bigtime_t)30 * 60 * 1000000;
             
             if (targetNode != nullptr) {
+                // 1. FETCH DYNAMIC CONFIGURATION INTERVAL
+                int32 intervalMinutes = 30; // Foolproof fallback baseline standard
+                int32 activeSrvIdx = GetServerIndexFromNode(targetNode); // Query server index matrix
+                
+                if (activeSrvIdx >= 0) {
+                    if (activeSrvIdx < (int32)cfg.servers.size()) {
+                        intervalMinutes = cfg.servers[activeSrvIdx].timestampInterval;
+                    } else {
+                        int32 cIdx = activeSrvIdx - (int32)cfg.servers.size();
+                        if (cIdx >= 0 && cIdx < (int32)cfg.customServers.size()) {
+                            intervalMinutes = cfg.customServers[cIdx].timestampInterval;
+                        }
+                    }
+                }
+
+                // 2. Mathematically compute intervals dynamically
+                bigtime_t dynamicIntervalInUsecs = (bigtime_t)intervalMinutes * 60 * 1000000;
+
                 bool needsTimestamp = false;
                 if (fLastTimestampTime.count(targetNode) == 0) {
                     needsTimestamp = true;
                 } else {
                     bigtime_t lastTime = fLastTimestampTime.find(targetNode)->second;
-                    if ((currentTime - lastTime) >= thirtyMinutesInUsecs) {
+                    // FIXED: Checks against dynamic duration choice instead of hardcoded 30 minutes!
+                    if ((currentTime - lastTime) >= dynamicIntervalInUsecs) {
                         needsTimestamp = true;
                     }
                 }
@@ -8337,6 +8789,74 @@ public:
 	//@messagereceived
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
+
+
+
+        // =========================================================================
+        // HANDLER FOR CONTEXT ACTION: CHOOSE USER NICKNAME COLOR ('cxcl')
+        // =========================================================================
+        case MSG_CONTEXT_ADD_COLOR: {
+            BString targetNick;
+            void* serverPtr = nullptr;
+            
+            if (message->FindString("target_nick", &targetNick) == B_OK &&
+                message->FindPointer("context_server", &serverPtr) == B_OK) {
+                
+                ServerTreeItem* serverItem = static_cast<ServerTreeItem*>(serverPtr);
+                if (serverItem != nullptr && targetNick.Length() > 0) {
+                    
+                    // FIXED: Allocate as a clean local ServerConfigWindow instead of breaking types
+                    ServerConfigWindow* configWin = new ServerConfigWindow(this, serverItem, serverItem->GetIndex(), serverItem->IsCustom());
+                    configWin->Show();
+
+                    // Pass an explicit data messenger payload to pre-fill the nickname text entry box
+                    BMessage fillMsg('fllc'); 
+                    fillMsg.AddString("nick", targetNick);
+                    configWin->PostMessage(&fillMsg);
+                }
+            }
+            break;
+        }
+
+
+
+        // =========================================================================
+        // HANDLER FOR CONTEXT ACTION: MOUSE CLICK CATCH-UP SEARCH
+        // =========================================================================
+        case MSG_TRIGGER_REPLIES_SEARCH: {
+            if (fMyNick.Length() == 0) {
+                LogToItemBuffer(fActiveBufferItem, "System Error: Cannot query replies until nickname registration is finalized.\n");
+            } else if (fCustomChatLog == nullptr) {
+                LogToItemBuffer(fActiveBufferItem, "System Error: Chat view engine canvas is currently unmapped.\n");
+            } else {
+                BString resultsSummary = "\n--- [Quiet Replies Catch-Up Search Log] ---\n";
+                int32 matchCount = 0;
+                
+                // Read the lines safely right from the active custom draw engine canvas
+                int32 totalStoredLines = fCustomChatLog->CountTotalLines(); 
+                
+                for (int32 i = 0; i < totalStoredLines; ++i) {
+                    BString lineText = fCustomChatLog->GetLineTextAt(i);
+                    
+                    // Perform a case-insensitive check for your nickname
+                    if (lineText.IFindFirst(fMyNick) != B_ERROR) {
+                        resultsSummary << "  " << lineText << "\n";
+                        matchCount++;
+                    }
+                }
+
+                if (matchCount == 0) {
+                    resultsSummary << "No background mentions or nickname replies found across active log windows.\n";
+                } else {
+                    resultsSummary.SetToFormat("%s--- Found %" B_PRId32 " total matching unread catch-up threads above ---\n\n", 
+                                               resultsSummary.String(), matchCount);
+                }
+
+                // Append the output directly to the active channel layout node
+                LogToItemBuffer(fActiveBufferItem, resultsSummary);
+            }
+            break;
+        }
 
 
         // =========================================================================
@@ -9343,22 +9863,31 @@ public:
                         }
                     }
 
+                    // --- NEW: INJECT NICKNAME COLOR ASSIGNMENT RIGHT ABOVE IGNORE ---
+                    BString colorLabel;
+                    colorLabel << "Add Color to " << cleanNick;
+                    BMessage* colorMsg = new BMessage(MSG_CONTEXT_ADD_COLOR);
+                    colorMsg->AddString("target_nick", cleanNick);
+                    colorMsg->AddPointer("context_server", parentServer);
+                    contextMenu->AddItem(new BMenuItem(colorLabel.String(), colorMsg));
+                    // -----------------------------------------------------------------
+
                     BString ignoreLabel;
                     BMessage* ignoreMsg = nullptr;
 
                     if (isIgnored) {
                         ignoreLabel << "Unignore " << cleanNick;
-                        ignoreMsg = new BMessage('igrm'); // Reuses remove tag command
+                        ignoreMsg = new BMessage('igrm'); 
                     } else {
                         ignoreLabel << "Ignore " << cleanNick;
-                        ignoreMsg = new BMessage('igad'); // Reuses add tag command
+                        ignoreMsg = new BMessage('igad'); 
                     }
 
                     ignoreMsg->AddString("target_nick", cleanNick);
-                    // Crucial: Attach parent pointer so your engine knows which server list to alter
                     ignoreMsg->AddPointer("context_server", parentServer); 
                     contextMenu->AddItem(new BMenuItem(ignoreLabel.String(), ignoreMsg));
                 }
+
                 
                 // DYNAMIC VISIBILITY FIX: Scan the channel cache to see if WE hold operator status (@)
                 bool iamOperator = false;
@@ -10844,38 +11373,53 @@ public:
                             if (activeTarget.Length() > 0 && commandLine.Length() > 0) {
                                 rawPayload << "PRIVMSG " << activeTarget << " :" "\x01" "ACTION " << commandLine << "\x01\r\n";
                                 
-                                BString timestampPrefix = "";
-                                bigtime_t currentTime = real_time_clock_usecs();
-                                bigtime_t thirtyMinutesInUsecs = (bigtime_t)30 * 60 * 1000000;
-                                BStringItem* targetNode = fActiveBufferItem;
+                            BString timestampPrefix = "";
+                            bigtime_t currentTime = real_time_clock_usecs();
+                            BStringItem* targetNode = fActiveBufferItem;
 
-                                if (targetNode != nullptr) {
-                                    bool needsTimestamp = (fLastTimestampTime.count(targetNode) == 0);
-                                    if (!needsTimestamp) {
-                                        bigtime_t lastTime = fLastTimestampTime.find(targetNode)->second;
-                                        if ((currentTime - lastTime) >= thirtyMinutesInUsecs) {
-                                            needsTimestamp = true;
-                                        }
-                                    }
-
-                                    if (needsTimestamp) {
-                                        fLastTimestampTime[targetNode] = currentTime;
-                                        time_t rawTime = (time_t)(currentTime / 1000000);
-                                        struct tm* timeInfo = localtime(&rawTime);
-                                        if (timeInfo != nullptr) {
-                                            char timeBuffer[32];
-                                            strftime(timeBuffer, sizeof(timeBuffer), "[%H:%M] ", timeInfo);
-                                            timestampPrefix = timeBuffer;
+                            if (targetNode != nullptr) {
+                                // 1. FETCH CONFIGURATION: Isolate the user's custom duration minutes standard
+                                int32 intervalMinutes = 30; // Foolproof fallback baseline standard
+                                int32 activeSrvIdx = GetServerIndexFromNode(targetNode); // Query server index matrix
+                                
+                                if (activeSrvIdx >= 0) {
+                                    if (activeSrvIdx < (int32)cfg.servers.size()) {
+                                        intervalMinutes = cfg.servers[activeSrvIdx].timestampInterval;
+                                    } else {
+                                        int32 cIdx = activeSrvIdx - (int32)cfg.servers.size();
+                                        if (cIdx >= 0 && cIdx < (int32)cfg.customServers.size()) {
+                                            intervalMinutes = cfg.customServers[cIdx].timestampInterval;
                                         }
                                     }
                                 }
 
-                                BString echoStr;
-                                echoStr << timestampPrefix << "* " << fMyNick << " " << commandLine << "\n";
-                                LogToItemBuffer(fActiveBufferItem, echoStr);
-                            } else {
-                                BString warning = "System Error: You can only use /me actions inside a channel room leaf node.\n";
-                                LogToItemBuffer(fActiveBufferItem, warning);
+                                // 2. Compute the dynamic microsecond duration bounds mapping threshold
+                                bigtime_t dynamicIntervalInUsecs = (bigtime_t)intervalMinutes * 60 * 1000000;
+
+                                bool needsTimestamp = (fLastTimestampTime.count(targetNode) == 0);
+                                if (!needsTimestamp) {
+                                    bigtime_t lastTime = fLastTimestampTime.find(targetNode)->second;
+                                    // FIXED: Checks interval using the active user selection configuration vector
+                                    if ((currentTime - lastTime) >= dynamicIntervalInUsecs) {
+                                        needsTimestamp = true;
+                                    }
+                                }
+
+                                if (needsTimestamp) {
+                                    fLastTimestampTime[targetNode] = currentTime;
+                                    time_t rawTime = (time_t)(currentTime / 1000000);
+                                    struct tm* timeInfo = localtime(&rawTime);
+                                    if (timeInfo != nullptr) {
+                                        char timeBuffer[32];
+                                        strftime(timeBuffer, sizeof(timeBuffer), "[%H:%M] ", timeInfo);
+                                        timestampPrefix = timeBuffer;
+                                    }
+                                }
+                            }
+
+                            BString echoStr;
+                            echoStr << timestampPrefix << "<" << fMyNick << "> " << text << "\n";
+                            LogToItemBuffer(fActiveBufferItem, echoStr);
                             }
                         }
                         
@@ -10894,24 +11438,7 @@ public:
                                 BString warning = "System Error: You can only set a topic inside a channel room leaf node.\n";
                                 LogToItemBuffer(fActiveBufferItem, warning);
                             }
-                        }
-
-                        else if (commandLine.ICompare("msg ", 4) == 0) {
-                            commandLine.Remove(0, 4); // strip "msg " keyword
-                            int32 firstSpace = commandLine.FindFirst(" ");
-                            
-                            if (firstSpace != B_ERROR) {
-                                BString dmTarget, msgBody;
-                                commandLine.CopyInto(dmTarget, 0, firstSpace);
-                                commandLine.CopyInto(msgBody, firstSpace + 1, commandLine.Length() - (firstSpace + 1));
-                                
-                                rawPayload << "PRIVMSG " << dmTarget << " :" << msgBody << "\r\n";
-                                
-                                BString echoStr;
-                                echoStr << "-> To " << dmTarget << ": " << msgBody << "\n";
-                                LogToItemBuffer(fActiveBufferItem, echoStr);
-                            }
-                        } else if (commandLine.ICompare("list", 4) == 0) {
+                                                } else if (commandLine.ICompare("list", 4) == 0) {
                             bool windowIsValid = false;
                             if (fActiveListWindow != nullptr) {
                                 BMessenger messenger(fActiveListWindow);
@@ -10931,13 +11458,52 @@ public:
                                     fActiveListWindow->Unlock();
                                 }
                             }
-                        } else {
+                        } 
+                        // =========================================================================
+                        // ON-DEMAND QUIET REPLIES LOG: SEARCH NICKNAME MENTIONS (/mentions)
+                        // =========================================================================
+                        else if (commandLine.ICompare("mentions", 8) == 0) {
+                            if (fMyNick.Length() == 0) {
+                                LogToItemBuffer(fActiveBufferItem, "System Error: Cannot query mentions until nickname registration is finalized.\n");
+                            } else if (fCustomChatLog == nullptr) {
+                                LogToItemBuffer(fActiveBufferItem, "System Error: Chat view engine canvas is currently unmapped.\n");
+                            } else {
+                                BString resultsSummary = "\n--- [Quiet Mentions Catch-Up Search Log] ---\n";
+                                int32 matchCount = 0;
+                                
+                                // Direct access lookup into the CustomChatView's underlying line list matrix
+                                // Note: Adjust the public getter signature names to match your view implementation
+                                int32 totalStoredLines = fCustomChatLog->CountTotalLines(); 
+                                
+                                for (int32 i = 0; i < totalStoredLines; ++i) {
+                                    BString lineText = fCustomChatLog->GetLineTextAt(i);
+                                    
+                                    // Perform a case-insensitive lookup checking for your nickname
+                                    if (lineText.IFindFirst(fMyNick) != B_ERROR) {
+                                        resultsSummary << "  " << lineText << "\n";
+                                        matchCount++;
+                                    }
+                                }
+
+                                if (matchCount == 0) {
+                                    resultsSummary << "No background mentions or nickname replies found across active log windows.\n";
+                                } else {
+                                    resultsSummary.SetToFormat("%s--- Found %" B_PRId32 " total matching unread catch-up threads above ---\n\n", 
+                                                               resultsSummary.String(), matchCount);
+                                }
+
+                                // Output text quietly right inside the window tab you ran the query from
+                                LogToItemBuffer(fActiveBufferItem, resultsSummary);
+                            }
+                        } 
+                        else {
                             rawPayload << commandLine << "\r\n";
                         }
                     } else {
                         // =========================================================================
                         // REGULAR CHAT TEXT ROUTING ENGINE (PLAIN CHAT SUBMISSION)
                         // =========================================================================
+
                         if (isServerLogTab) {
                             BString warning = "System Error: Use slash commands (like /JOIN) when typing inside the server status log.\n";
                             LogToItemBuffer(fActiveBufferItem, warning);
@@ -10946,14 +11512,32 @@ public:
                             
                             BString timestampPrefix = "";
                             bigtime_t currentTime = real_time_clock_usecs();
-                            bigtime_t thirtyMinutesInUsecs = (bigtime_t)30 * 60 * 1000000;
                             BStringItem* targetNode = fActiveBufferItem;
 
                             if (targetNode != nullptr) {
+                                // 1. FETCH CONFIGURATION: Isolate the user's custom duration minutes standard
+                                int32 intervalMinutes = 30; // Foolproof fallback baseline standard
+                                int32 activeSrvIdx = GetServerIndexFromNode(targetNode); // Query server index matrix
+                                
+                                if (activeSrvIdx >= 0) {
+                                    if (activeSrvIdx < (int32)cfg.servers.size()) {
+                                        intervalMinutes = cfg.servers[activeSrvIdx].timestampInterval;
+                                    } else {
+                                        int32 cIdx = activeSrvIdx - (int32)cfg.servers.size();
+                                        if (cIdx >= 0 && cIdx < (int32)cfg.customServers.size()) {
+                                            intervalMinutes = cfg.customServers[cIdx].timestampInterval;
+                                        }
+                                    }
+                                }
+
+                                // 2. Compute the dynamic microsecond duration bounds mapping threshold
+                                bigtime_t dynamicIntervalInUsecs = (bigtime_t)intervalMinutes * 60 * 1000000;
+
                                 bool needsTimestamp = (fLastTimestampTime.count(targetNode) == 0);
                                 if (!needsTimestamp) {
                                     bigtime_t lastTime = fLastTimestampTime.find(targetNode)->second;
-                                    if ((currentTime - lastTime) >= thirtyMinutesInUsecs) {
+                                    // FIXED: Checks interval using the active user selection configuration vector
+                                    if ((currentTime - lastTime) >= dynamicIntervalInUsecs) {
                                         needsTimestamp = true;
                                     }
                                 }
@@ -11296,6 +11880,41 @@ void UpdateMyGlobalAwayState(ServerTreeItem* contextServer, bool isAway)
     
 	
 }; 
+
+int32 CricketWindow::GetServerIndexFromNode(BStringItem* node)
+{
+    if (node == nullptr) return -1;
+
+    // 1. If the active node is a channel leaf, crawl up the tree layout to isolate the parent server
+    ServerTreeItem* serverItem = nullptr;
+    if (fChannelTree != nullptr) {
+        BListItem* parentItem = fChannelTree->Superitem(node);
+        if (parentItem != nullptr) {
+            serverItem = dynamic_cast<ServerTreeItem*>(parentItem);
+        } else {
+            // It's already a root level server node item
+            serverItem = dynamic_cast<ServerTreeItem*>(node);
+        }
+    }
+
+    if (serverItem == nullptr) return -1;
+
+    // 2. Direct hardcoded fast-track lookup paths
+    if (serverItem == fLiberaNode) return 0;
+    if (serverItem == fOftcNode)   return 1;
+
+    // 3. Fallback traversal matching loop across custom servers array configurations
+    for (size_t i = 0; i < cfg.customServers.size(); i++) {
+        // Match custom servers by evaluating their server vector index positions
+        if (serverItem->IsCustom() && serverItem->GetIndex() == i) {
+            return static_cast<int32>(cfg.servers.size() + i);
+        }
+    }
+
+    // Fallback standard index mapping match via custom tracker property ID
+    return static_cast<int32>(serverItem->GetIndex());
+}
+
 
 class Cricket : public BApplication {
 public:
