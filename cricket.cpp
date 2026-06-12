@@ -132,7 +132,8 @@ class ServerTreeItem;
 using json = nlohmann::json;
 
 // Define the default background path as a constant
-const std::string DEFAULT_BG_PATH = "/boot/system/data/cricket/default_background.png";
+// const std::string DEFAULT_BG_PATH = "/boot/system/data/cricket/default_background.png";
+const std::string DEFAULT_BG_PATH = "";
 
 struct ServerConfig {
     std::string name;
@@ -320,8 +321,9 @@ void load_config() {
     bool mustSaveDefaults = false;
 
     // Ensure the fallback path constant is accessible
-    const std::string DEFAULT_BG_PATH = "/boot/system/data/cricket/default_background.png";
-
+    // const std::string DEFAULT_BG_PATH = "/boot/system/data/cricket/default_background.png";
+	const std::string DEFAULT_BG_PATH = "";
+	
     if (find_directory(B_USER_SETTINGS_DIRECTORY, &path) == B_OK) {
         path.Append("cricket/cricketConfig.txt");
         std::ifstream infile(path.Path());        
@@ -3001,24 +3003,25 @@ public:
         BLayoutBuilder::Group<>(autojoinTab, B_VERTICAL, 0)
             .SetInsets(10)
             .Add(autojoinBox, 1.0);
-
+       
         // --- TAB 4: IGNORE FILTERS INTERFACE ---
         BGroupView* filtersTab = new BGroupView(B_VERTICAL, 5);
         filtersTab->SetName("Filters");
         
-        // --- NEW: INJECT SIMPLE USER WILDCARD NOTICE STRINGS ---
+        // --- SIMPLIFIED UNTINTED LABEL ---
+        // Let Haiku handle the theme colors automatically!
         BStringView* wildcardNotice = new BStringView("wildcard_notice", 
             "💡 Supports wildcards: Use '*' to match multiple characters (e.g., SpamBot* or *Bot).");
-        
-        // Use a lighter/secondary text style color to keep the tip visually subtle
-        wildcardNotice->SetHighColor(ui_color(B_SHINE_COLOR)); 
+
+
+
 
         BBox* filtersBox = new BBox(B_FANCY_BORDER);
         filtersBox->SetLabel("Ignored Nicknames");
         BLayoutBuilder::Group<>(filtersBox, B_VERTICAL, 5)
             .SetInsets(10, 20, 10, 10) 
             .Add(ignoreScroll, 1.0)
-            .Add(wildcardNotice, 0.0) // <-- INJECTED HERE: Anchored directly below the list box
+            .Add(wildcardNotice, 0.0) // <-- Stays perfectly readable and dynamic
             .AddGroup(B_HORIZONTAL, 5)
                 .Add(fIgnoreInput, 1.0)
                 .Add(fAddIgnoreBtn, 0.0)
