@@ -1494,7 +1494,7 @@ void CustomChatView::Draw(BRect updateRect) {
         BBitmap* customIcon = new BBitmap(BRect(0, 0, iconDimension - 1.0f, iconDimension - 1.0f), B_RGBA32);
 
         if (customIcon != nullptr && customIcon->InitCheck() == B_OK) {
-            status_t err = BIconUtils::GetVectorIcon(kIconCricket, kIconkIconCricketSize, customIcon);
+            status_t err = BIconUtils::GetVectorIcon(kIconCricket, kIconCricketSize, customIcon);
             if (err == B_OK) {
                 BPoint iconDrawPoint(centerX - (iconDimension / 2.0f), centerY - (iconDimension / 2.0f) - 45.0f);
                 SetDrawingMode(B_OP_ALPHA);
