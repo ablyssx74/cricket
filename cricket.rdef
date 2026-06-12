@@ -3,11 +3,11 @@ resource app_signature "application/x-vnd.cricket";
 resource app_version {
     major  = 0,
     middle = 0,
-    minor  = 26,
+    minor  = 27,
     variety = B_APPV_DEVELOPMENT, 
     internal = 0,
-    short_info = "cricket 0.0.26",
-    long_info = "cricket 0.0.26 - A lightweight, multi-server IRC client."
+    short_info = "cricket 0.0.27",
+    long_info = "cricket 0.0.27 - A lightweight, multi-server IRC client."
 };
 
 //resource app_flags B_SINGLE_LAUNCH;

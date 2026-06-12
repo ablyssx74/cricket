@@ -69,7 +69,7 @@
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.26 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.27 (Haiku OS)";
 }
 
 
@@ -5529,6 +5529,45 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
     }
     
     
+        // =========================================================================
+        // HANDLER FOR NUMERIC 042: RPL_YOURID (Unique Connection Hash)
+        // =========================================================================
+        if (command == "042") {
+            if (contextServer == nullptr) return;
+
+            // Incoming Format: :server 042 YourNick 1ABCDE234 :your unique ID
+            // 'line' contains: "YourNick 1ABCDE234"
+            // 'trailing' contains: "your unique ID"
+
+            BString idPayload = line;
+            idPayload.Trim();
+
+            BString uniqueID = "";
+            int32 spaceIdx = idPayload.FindFirst(" ");
+            if (spaceIdx != B_ERROR) {
+                // Isolate the unique ID hash token following your nickname
+                idPayload.CopyInto(uniqueID, spaceIdx + 1, idPayload.Length() - (spaceIdx + 1));
+                uniqueID.Trim();
+            } else {
+                uniqueID = "UNKNOWN"; // Fallback safety
+            }
+
+            // Reconstruct a clean, informative notification string
+            BString idNotice;
+            idNotice.SetToFormat("--> Session Assigned: Unique ID '%s' (%s)\n", uniqueID.String(), trailing.String());
+
+            // Route it directly to your server's active logging destination
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, idNotice);
+            } else {
+                LogToItemBuffer(fActiveBufferItem, idNotice);
+            }
+            return;
+        }
+
+    
+    
          // =========================================================================
         // HANDLER FOR NUMERIC 005: RPL_ISUPPORT (Server Features List)
         // =========================================================================
@@ -6918,18 +6957,26 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         }
 
 
-        // RPL_WHOISUSER (311), RPL_WHOISSERVER (312), RPL_WHOISIDLE (317)
-        if (command == "311" || command == "312" || command == "317") {
-            // FIX 1: Ensure background data processing drops if server context is missing
-            if (contextServer == nullptr) {
-                return;
-            }
+        // =========================================================================
+        // HANDLER FOR NUMERIC 311: RPL_WHOISUSER
+        // =========================================================================
+        if (command == "311") {
+            if (contextServer == nullptr) return;
 
             BString whoisLogLine = "--- [WHOIS] ";
-            whoisLogLine << trailing << "\n";
+            BStringList tokens;
+            
+            if (line.Split(" ", true, tokens) && tokens.CountStrings() >= 4) {
+                BString targetNick = tokens.StringAt(1);
+                BString username   = tokens.StringAt(2);
+                BString hostname   = tokens.StringAt(3);
+                
+                whoisLogLine.SetToFormat("--- [WHOIS] %s is %s@%s (%s)\n", 
+                    targetNick.String(), username.String(), hostname.String(), trailing.String());
+            } else {
+                whoisLogLine << trailing << "\n"; // Safe fallback
+            }
 
-            // FIX 2: Route text explicitly into the origin server's status console log node 
-            // instead of volatile global references like fActiveBufferItem!
             BStringItem* serverLogNode = FindServerLogNode(contextServer);
             if (serverLogNode != nullptr) {
                 LogToItemBuffer(serverLogNode, whoisLogLine);
@@ -6939,13 +6986,148 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             return;
         }
 
-        // RPL_ENDOFWHOIS (318): Signals that the WHOIS data stream burst is finalized
-        if (command == "318") {
-            if (contextServer == nullptr) {
-                return;
+        // =========================================================================
+        // HANDLER FOR NUMERIC 312: RPL_WHOISSERVER
+        // =========================================================================
+        if (command == "312") {
+            if (contextServer == nullptr) return;
+
+            BString whoisLogLine = "--- [WHOIS] ";
+            BStringList tokens;
+            
+            if (line.Split(" ", true, tokens) && tokens.CountStrings() >= 3) {
+                BString targetNick = tokens.StringAt(1);
+                BString serverName = tokens.StringAt(2);
+                
+                whoisLogLine.SetToFormat("--- [WHOIS] %s is using server: %s (%s)\n", 
+                    targetNick.String(), serverName.String(), trailing.String());
+            } else {
+                whoisLogLine << trailing << "\n";
             }
 
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, whoisLogLine);
+            } else {
+                LogToItemBuffer(static_cast<BStringItem*>(contextServer), whoisLogLine);
+            }
+            return;
+        }
+
+        // =========================================================================
+        // HANDLER FOR NUMERIC 317: RPL_WHOISIDLE
+        // =========================================================================
+        if (command == "317") {
+            if (contextServer == nullptr) return;
+
+            BString whoisLogLine = "--- [WHOIS] ";
+            BStringList tokens;
+            
+            if (line.Split(" ", true, tokens) && tokens.CountStrings() >= 3) {
+                BString targetNick = tokens.StringAt(1);
+                BString seconds    = tokens.StringAt(2);
+                
+                whoisLogLine.SetToFormat("--- [WHOIS] %s has been %s: %s seconds\n", 
+                    targetNick.String(), trailing.String(), seconds.String());
+            } else {
+                whoisLogLine << trailing << "\n";
+            }
+
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, whoisLogLine);
+            } else {
+                LogToItemBuffer(static_cast<BStringItem*>(contextServer), whoisLogLine);
+            }
+            return;
+        }
+
+        // =========================================================================
+        // HANDLER FOR NUMERIC 319: RPL_WHOISCHANNELS
+        // =========================================================================
+        if (command == "319") {
+            if (contextServer == nullptr) return;
+
+            BString whoisLogLine = "--- [WHOIS] ";
+            BStringList tokens;
+            
+            if (line.Split(" ", true, tokens) && tokens.CountStrings() >= 2) {
+                BString targetNick = tokens.StringAt(1);
+                whoisLogLine.SetToFormat("--- [WHOIS] %s is on channels: %s\n", 
+                    targetNick.String(), trailing.String());
+            } else {
+                whoisLogLine << trailing << "\n";
+            }
+
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, whoisLogLine);
+            } else {
+                LogToItemBuffer(static_cast<BStringItem*>(contextServer), whoisLogLine);
+            }
+            return;
+        }
+
+        // =========================================================================
+        // HANDLER FOR NUMERIC 330: RPL_WHOISACCOUNT (Services Login Node)
+        // =========================================================================
+        if (command == "330") {
+            if (contextServer == nullptr) return;
+
+            BString whoisLogLine = "--- [WHOIS] ";
+            BStringList tokens;
+            
+            if (line.Split(" ", true, tokens) && tokens.CountStrings() >= 3) {
+                BString targetNick  = tokens.StringAt(1);
+                BString accountName = tokens.StringAt(2);
+                whoisLogLine.SetToFormat("--- [WHOIS] %s %s account: %s\n", 
+                    targetNick.String(), trailing.String(), accountName.String());
+            } else {
+                whoisLogLine << trailing << "\n";
+            }
+
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, whoisLogLine);
+            } else {
+                LogToItemBuffer(static_cast<BStringItem*>(contextServer), whoisLogLine);
+            }
+            return;
+        }
+
+        // =========================================================================
+        // HANDLER FOR NUMERIC 671: RPL_WHOISSECURE (TLS Security Protocols)
+        // =========================================================================
+        if (command == "671") {
+            if (contextServer == nullptr) return;
+
+            BString whoisLogLine = "--- [WHOIS] ";
+            BStringList tokens;
+            
+            if (line.Split(" ", true, tokens) && tokens.CountStrings() >= 2) {
+                BString targetNick = tokens.StringAt(1);
+                whoisLogLine.SetToFormat("--- [WHOIS] %s %s\n", targetNick.String(), trailing.String());
+            } else {
+                whoisLogLine << trailing << "\n";
+            }
+
+            BStringItem* serverLogNode = FindServerLogNode(contextServer);
+            if (serverLogNode != nullptr) {
+                LogToItemBuffer(serverLogNode, whoisLogLine);
+            } else {
+                LogToItemBuffer(static_cast<BStringItem*>(contextServer), whoisLogLine);
+            }
+            return;
+        }
+
+        // =========================================================================
+        // HANDLER FOR NUMERIC 318: RPL_ENDOFWHOIS (Data Burst Terminus)
+        // =========================================================================
+        if (command == "318") {
+            if (contextServer == nullptr) return;
+
             BString endNotice = "--- [WHOIS] End of WHOIS list.\n";
+            
             BStringItem* serverLogNode = FindServerLogNode(contextServer);
             if (serverLogNode != nullptr) {
                 LogToItemBuffer(serverLogNode, endNotice);
