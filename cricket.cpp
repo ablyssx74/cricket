@@ -125,7 +125,7 @@ class ServerTreeItem;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.29 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.30 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -8848,9 +8848,14 @@ public:
                 if (matchCount == 0) {
                     resultsSummary << "No background mentions or nickname replies found across active log windows.\n";
                 } else {
-                    resultsSummary.SetToFormat("%s--- Found %" B_PRId32 " total matching unread catch-up threads above ---\n\n", 
-                                               resultsSummary.String(), matchCount);
+                    // FIX: Isolate the formatting to a temporary string object
+                    BString summaryFooter;
+                    summaryFooter.SetToFormat("--- Found %" B_PRId32 " total matching unread catch-up threads above ---\n\n", matchCount);
+                    
+                    // Safely append it to the main block
+                    resultsSummary << summaryFooter;
                 }
+
 
                 // Append the output directly to the active channel layout node
                 LogToItemBuffer(fActiveBufferItem, resultsSummary);
@@ -11418,7 +11423,7 @@ public:
                             }
 
                             BString echoStr;
-                            echoStr << timestampPrefix << "<" << fMyNick << "> " << text << "\n";
+                            echoStr << timestampPrefix << "* " << fMyNick << " " << commandLine << "\n";
                             LogToItemBuffer(fActiveBufferItem, echoStr);
                             }
                         }
@@ -11485,12 +11490,17 @@ public:
                                     }
                                 }
 
-                                if (matchCount == 0) {
-                                    resultsSummary << "No background mentions or nickname replies found across active log windows.\n";
-                                } else {
-                                    resultsSummary.SetToFormat("%s--- Found %" B_PRId32 " total matching unread catch-up threads above ---\n\n", 
-                                                               resultsSummary.String(), matchCount);
-                                }
+								if (matchCount == 0) {
+    								resultsSummary << "No background mentions or nickname replies found across active log windows.\n";
+								} else {
+    								// FIX: Format into a separate, clean temporary string
+    								BString summaryFooter;
+    								summaryFooter.SetToFormat("--- Found %" B_PRId32 " total matching unread catch-up threads above ---\n\n", matchCount);
+    
+    								// Safely append it to the main summary string
+    								resultsSummary << summaryFooter;
+								}
+
 
                                 // Output text quietly right inside the window tab you ran the query from
                                 LogToItemBuffer(fActiveBufferItem, resultsSummary);
