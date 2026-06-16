@@ -136,7 +136,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.32 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.33 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -7558,6 +7558,7 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
+
          // RPL_WELCOME: Network handshake authentication completed successfully
         if (command == "001") {
             // FIX 1: If contextServer is missing, we must abandon routing to avoid corrupting active tabs
@@ -7670,85 +7671,79 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
 
 
-        // =========================================================================
-        // HANDLER FOR NUMERIC 322: RPL_LIST (Incoming Channel Directory Row)
-        // =========================================================================
-        if (command == "322") {
-            // Raw syntax: :server 322 YourNick #channel UserCount :[Topic text]
-            // 'line' holds: "YourNick #channel UserCount" | 'trailing' holds: "Topic text"
-            if (cfg.debugEnable) {
-                printf("[DEBUG_LIST_INBOUND] 322 Captured -> line: '%s' | trailing: '%s'\n", 
-                       line.String(), trailing.String());
-            }
-
-            BString payload = line;
-            payload.Trim();
-
-            // Extract parameters out of the line frame safely
-            int32 firstSpace = payload.FindFirst(" ");
+        // RPL_LIST: Individual channel description entry token row
+        if (command == "322") { 
+            // Server data line parameter syntax: <YourNick> <#Channel> <UserCount> :[Topic Text]
+            BString channelName = "";
+            BString userCount = "";
+            
+            int32 firstSpace = line.FindFirst(" ");
             if (firstSpace != B_ERROR) {
-                BString remaining;
-                payload.CopyInto(remaining, firstSpace + 1, payload.Length() - (firstSpace + 1));
-                remaining.Trim();
-
-                int32 secondSpace = remaining.FindFirst(" ");
+                BString argsBlock = line;
+                argsBlock.Remove(0, firstSpace + 1); // Strip nickname
+                
+                int32 secondSpace = argsBlock.FindFirst(" ");
                 if (secondSpace != B_ERROR) {
-                    BString listChannel, userCountStr;
-                    remaining.CopyInto(listChannel, 0, secondSpace);
+                    argsBlock.CopyInto(channelName, 0, secondSpace);
                     
-                    remaining.CopyInto(userCountStr, secondSpace + 1, remaining.Length() - (secondSpace + 1));
-                    userCountStr.Trim();
-
-                    // Strip further trailing flags if the count block contains space padding
-                    int32 countSpace = userCountStr.FindFirst(" ");
-                    if (countSpace != B_ERROR) {
-                        userCountStr.Truncate(countSpace);
-                    }
-
-                    if (cfg.debugEnable) {
-                        printf("[DEBUG_LIST_INBOUND] Extracted -> Room: '%s' | Users: '%s'\n", 
-                               listChannel.String(), userCountStr.String());
-                        printf("[DEBUG_LIST_INBOUND] Window State -> fActiveListWindow Pointer: %p\n", 
-                               fActiveListWindow);
-                    }
-
-                    // =========================================================================
-                    // THREAD-SAFE UI DELIVERY PASS
-                    // =========================================================================
-                    if (fActiveListWindow != nullptr) {
-                        // Secure a window looper lock before populating foreign layout rows
-                        if (fActiveListWindow->Lock()) {
-                            // Call your list window's append method here!
-                            // Replace "AddChannelRow" with whatever your actual insertion function is named
-                            // e.g., fActiveListWindow->AddChannelRow(listChannel, userCountStr, trailing);
-                            
-                            fActiveListWindow->Unlock();
-                        } else {
-                            if (cfg.debugEnable) printf("[DEBUG_LIST_INBOUND] Warning: Failed to lock fActiveListWindow looper!\n");
-                        }
+                    BString countBlock = argsBlock;
+                    countBlock.Remove(0, secondSpace + 1);
+                    int32 thirdSpace = countBlock.FindFirst(" ");
+                    if (thirdSpace != B_ERROR) {
+                        countBlock.CopyInto(userCount, 0, thirdSpace);
+                    } else {
+                        userCount = countBlock;
                     }
                 }
-            }
-            return;
-        }
-
-        // =========================================================================
-        // HANDLER FOR NUMERIC 323: RPL_LISTEND (Channel Directory Complete)
-        // =========================================================================
-        if (command == "323") {
-            if (cfg.debugEnable) {
-                printf("[DEBUG_LIST_INBOUND] 323 Captured -> Channel listing completed by server.\n");
             }
             
-            if (fActiveListWindow != nullptr) {
-                if (fActiveListWindow->Lock()) {
-                    // Tell the window it's done loading so it can stop spinners or sort items
-                    // e.g., fActiveListWindow->SetLoadingComplete(true);
-                    fActiveListWindow->Unlock();
+            channelName.Trim();
+            userCount.Trim();
+
+            if (channelName.Length() == 0) return;
+
+            // FIX 1: If background socket context missing, drop packet to avoid populating wrong window
+            if (contextServer == nullptr) {
+                return;
+            }
+
+            IRCChannelListWindow* targetWindow = fActiveListWindow;
+
+            if (targetWindow != nullptr) {
+                // FIX 2: FETCH THE ACTIVE NETWORK PIPELINE STREAM SOCKET SECURELY
+                BSecureSocket* activeNetworkSocket = nullptr;
+                if (fServerSockets.count(contextServer) > 0) {
+                    activeNetworkSocket = fServerSockets[contextServer];
+                } else if (contextServer == fOftcNode) {
+                    activeNetworkSocket = fOftcSocket;
+                } else if (contextServer == fLiberaNode) {
+                    activeNetworkSocket = fLiberaSocket;
+                }
+
+                bool targetMatches = false;
+                
+                // In Haiku, if the window is being destroyed, Lock() will return false.
+                if (targetWindow->Lock()) {
+                    if (targetWindow->GetTargetSocket() == activeNetworkSocket) {
+                        targetMatches = true;
+                    }
+                    targetWindow->Unlock();
+                }
+
+                if (targetMatches) {
+                    BMessage* rowPackage = new BMessage(MSG_ADD_LIST_ROW);
+                    rowPackage->AddString("channel", channelName.String());
+                    rowPackage->AddString("users", userCount.String());
+                    rowPackage->AddString("topic", trailing.String()); 
+                    
+                    // PostMessage is thread-safe and won't crash even if the 
+                    // target thread dies immediately after this call.
+                    targetWindow->PostMessage(rowPackage);
                 }
             }
             return;
         }
+
 
 
 
@@ -7789,20 +7784,18 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 BObjectList<UserListItem, true>* userVector = fChannelUsers[chanNode];
                 if (userVector == nullptr) continue;
 
-                // ==================== SUB-BRANCH A: MODE PROCESSING ====================
+                    // ==================== SUB-BRANCH A: MODE PROCESSING ====================
                 if (command == "MODE") {
                     int32 flagSpace = remainderParams.FindFirst(" ");
-                    
-                    // CASE 1: Standard Mode Flag String with a Target Nick/Param (+o Nick, +k Key, etc.)
                     if (flagSpace != B_ERROR) {
                         BString flagString;
                         remainderParams.CopyInto(flagString, 0, flagSpace);
                         
-                        BString targetParam;
-                        remainderParams.CopyInto(targetParam, flagSpace + 1, remainderParams.Length() - flagSpace - 1);
-                        targetParam.ReplaceAll("\r", "");
-                        targetParam.ReplaceAll("\n", "");
-                        targetParam.Trim();
+                        BString targetNick;
+                        remainderParams.CopyInto(targetNick, flagSpace + 1, remainderParams.Length() - flagSpace - 1);
+                        targetNick.ReplaceAll("\r", "");
+                        targetNick.ReplaceAll("\n", "");
+                        targetNick.Trim();
 
                         bool adding = flagString.StartsWith("+");
                         
@@ -7814,7 +7807,6 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                         else if (flagString.FindFirst("h") != B_ERROR) targetModeChar = 'h';
                         else if (flagString.FindFirst("v") != B_ERROR) targetModeChar = 'v';
 
-                        // If it's a nick status change (op, voice, etc.), update the user entry
                         if (targetModeChar != '\0') {
                             bool itemWasUpdated = false;
 
@@ -7822,9 +7814,14 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                                 UserListItem* uiUser = userVector->ItemAt(i);
                                 if (uiUser == nullptr) continue;
 
+                                // Use our new safe clean nickname accessor
                                 BString cleanName = uiUser->GetCleanNick();
-                                if (cleanName == targetParam) {
+                                if (cleanName == targetNick) {
+                                    
+                                    // Set or unset the specific flag. 
+                                    // The class internally falls back to the next highest active prefix symbol!
                                     uiUser->SetMode(targetModeChar, adding);
+                                    
                                     itemWasUpdated = true;
                                     break;
                                 }
@@ -7834,85 +7831,11 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                                 RefreshUserListUI();
                             }
                         }
-                        
-                        // INTERACTION SYNC: Update Dialog UI inputs if Key (+k) or User Limit (+l) change live
-                        if (fActiveModesDialog != nullptr && fActiveModesChannel == targetChannel) {
-                            if (flagString.FindFirst("k") != B_ERROR) {
-                                fActiveModesDialog->UpdateCheckedStates(
-                                    fActiveModesDialog->fModeratedCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fSecretCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fInviteCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fTopicCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fNoExtCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fNoColorCheck->Value() == B_CONTROL_ON,
-                                    adding ? targetParam.String() : "", 
-                                    fActiveModesDialog->fLimitInput->Text()
-                                );
-                            }
-                            else if (flagString.FindFirst("l") != B_ERROR) {
-                                fActiveModesDialog->UpdateCheckedStates(
-                                    fActiveModesDialog->fModeratedCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fSecretCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fInviteCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fTopicCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fNoExtCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fNoColorCheck->Value() == B_CONTROL_ON,
-                                    fActiveModesDialog->fKeyInput->Text(),
-                                    adding ? targetParam.String() : ""
-                                );
-                            }
-                        }
-                    }
-                    // CASE 2: Raw Channel Toggle Mode String (+m, -s, +t, etc. without explicit targets)
-                    else {
-                        BString flagString = remainderParams;
-                        bool adding = flagString.StartsWith("+");
-
-                        // INTERACTION SYNC: Sync checkboxes dynamically inside your active dialog context
-                        if (fActiveModesDialog != nullptr && fActiveModesChannel == targetChannel) {
-                            
-                            // CRITICAL THREAD SAFETY GUARD: Secure window lock before touching UI components
-                            if (fActiveModesDialog->Lock()) {
-                                bool m = (fActiveModesDialog->fModeratedCheck->Value() == B_CONTROL_ON);
-                                bool s = (fActiveModesDialog->fSecretCheck->Value() == B_CONTROL_ON);
-                                bool i = (fActiveModesDialog->fInviteCheck->Value() == B_CONTROL_ON);
-                                bool t = (fActiveModesDialog->fTopicCheck->Value() == B_CONTROL_ON);
-                                bool n = (fActiveModesDialog->fNoExtCheck->Value() == B_CONTROL_ON);
-                                bool c = (fActiveModesDialog->fNoColorCheck->Value() == B_CONTROL_ON);
-
-                                // Deep-copy string memory arrays onto local thread stack safely
-                                BString safeKeyStr = fActiveModesDialog->fKeyInput->Text();
-                                BString safeLimitStr = fActiveModesDialog->fLimitInput->Text();
-
-                                if (flagString.FindFirst("m") != B_ERROR) m = adding;
-                                if (flagString.FindFirst("s") != B_ERROR) s = adding;
-                                if (flagString.FindFirst("i") != B_ERROR) i = adding;
-                                if (flagString.FindFirst("t") != B_ERROR) t = adding;
-                                if (flagString.FindFirst("n") != B_ERROR) n = adding;
-                                if (flagString.FindFirst("c") != B_ERROR) c = adding;
-
-                                fActiveModesDialog->UpdateCheckedStates(
-                                    m, s, i, t, n, c, 
-                                    safeKeyStr.String(), 
-                                    safeLimitStr.String()
-                                );
-
-                                // ALWAYS unlock looper when finished reading/writing fields
-                                fActiveModesDialog->Unlock();
-                            }
-                        }
                     }
                 }
 
                 // ==================== SUB-BRANCH B: KICK PROCESSING ====================
                 else if (command == "KICK") {
-                    // DIAGNOSTIC MONITOR PASS: Log the raw payload state on arrival
-                    if (cfg.debugEnable) {
-                        printf("[DEBUG_KICK] KICK Command captured in parser loop!\n");
-                        printf("[DEBUG_KICK] Prefix: '%s' | Remainder: '%s' | Trailing: '%s'\n", 
-                               prefix.String(), remainderParams.String(), trailing.String());
-                    }
-
                     BString kicker = prefix;
                     int32 exclamIdx = kicker.FindFirst("!");
                     if (exclamIdx != B_ERROR) kicker.Truncate(exclamIdx);
@@ -7931,19 +7854,11 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                     kickReason.ReplaceAll("\n", "");
                     kickReason.Trim();
 
-                    // DIAGNOSTIC MONITOR PASS: Verify localized text extractions
-                    if (cfg.debugEnable) {
-                        printf("[DEBUG_KICK] Processed Entities -> Kicker: '%s' | Target Victim: '%s' | Reason: '%s'\n",
-                               kicker.String(), targetNick.String(), kickReason.String());
-                    }
-
-                    bool victimFoundInLocalList = false;
                     for (int32 i = userVector->CountItems() - 1; i >= 0; i--) {
                         UserListItem* uiUser = userVector->ItemAt(i);
                         if (uiUser == nullptr) continue;
 
                         if (GetCleanNickname(uiUser->Text()) == targetNick) {
-                            victimFoundInLocalList = true;
                             UserListItem* removedUser = userVector->RemoveItemAt(i);
                             delete removedUser;
 
@@ -7962,21 +7877,11 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                             break;
                         }
                     }
-                    
-                         if (cfg.debugEnable && !victimFoundInLocalList) {
-                        printf("[DEBUG_KICK] Warning: Target nick '%s' was not found inside fChannelUsers userVector map loop.\n", 
-                               targetNick.String());
-                    }
-                    
-                }                
-                
+                }
                 break; 
             }
             return;
         }
-
-
-
 
 
            // =========================================================================
@@ -8106,7 +8011,6 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             }
             return;
         }
-
 
 
 
@@ -8591,7 +8495,14 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
 
         // RPL_NAMREPLY: Active channel user list payload burst
         if (command == "353") { 
-            if (contextServer == nullptr) return;
+            // Raw argument string syntax before the colon separator looks like:
+            // "<YourNick> <Type: = or * or @> <#Channel>"
+            // Since our main loop stripped prefixes, 'line' holds exactly this block.
+            
+            // FIX 1: Secure guard to drop the data payload packet immediately if the context server is unmapped
+            if (contextServer == nullptr) {
+                return;
+            }
 
             BString targetChannel = "";
             int32 lastSpace = line.FindLast(" ");
@@ -8601,69 +8512,52 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 targetChannel = line;
             }
             targetChannel.Trim();
+            targetChannel.ReplaceAll(" ", "");
 
             if (targetChannel.Length() == 0) return;
 
+            // Because contextServer is strictly verified, this search is safely sandboxed
             ChannelTreeItem* chanNode = FindChannelNode(contextServer, targetChannel);
             if (chanNode != nullptr && fChannelUsers[chanNode] != nullptr) {
                 BObjectList<UserListItem, true>* userVector = fChannelUsers[chanNode];
                 
+                // --- Isolate tokenization using a safe character loop to stop infinite freezes ---
                 BString namesBuffer = trailing;
-                namesBuffer.Trim();
+                namesBuffer.Trim(); // Strip trailing/leading space configurations
                 
                 int32 searchStart = 0;
                 while (searchStart < namesBuffer.Length()) {
                     int32 nextSpace = namesBuffer.FindFirst(" ", searchStart);
-                    BString rawToken;
+                    BString singleUser;
                     
                     if (nextSpace != B_ERROR) {
-                        namesBuffer.CopyInto(rawToken, searchStart, nextSpace - searchStart);
+                        namesBuffer.CopyInto(singleUser, searchStart, nextSpace - searchStart);
                         searchStart = nextSpace + 1;
                     } else {
-                        namesBuffer.CopyInto(rawToken, searchStart, namesBuffer.Length() - searchStart);
-                        searchStart = namesBuffer.Length();
+                        namesBuffer.CopyInto(singleUser, searchStart, namesBuffer.Length() - searchStart);
+                        searchStart = namesBuffer.Length(); // Terminates the loop cleanly
                     }
                     
-                    rawToken.Trim();
-                    if (rawToken.Length() == 0) continue;
+                    singleUser.Trim();
+                    if (singleUser.Length() == 0) continue;
 
-                    // 1. Create a temporary item to parse prefixes (~, @, +, etc.)
-                    UserListItem* tempUser = new UserListItem(rawToken.String(), false);
-                    BString cleanIncomingNick = tempUser->GetCleanNick();
-
-                    // 2. REFINED DUPLICATION & UPDATE GUARD
-                    bool userExists = false;
+                    // --- Duplication Guard Pass ---
+                    // Verify the name handle doesn't already occupy a slot in this channel vector array
+                    bool duplicateFound = false;
                     for (int32 u = 0; u < userVector->CountItems(); u++) {
-                        UserListItem* existingUser = userVector->ItemAt(u);
-                        if (existingUser != nullptr) {
-                            // Compare Clean Nick to Clean Nick (e.g., "haikuuser01" == "haikuuser01")
-                            if (cleanIncomingNick.ICompare(existingUser->GetCleanNick()) == 0) {
-                                userExists = true;
-                                
-                                // UPDATE LOGIC: If the prefix changed (e.g. they got @), update the existing row
-                                if (BString(existingUser->Text()) != BString(tempUser->Text())) {
-                                    existingUser->SetText(tempUser->Text());
-                                    // Transfer flags if your UserListItem has a Copy/Update method, 
-                                    // or just recreate the text as you've done here.
-                                }
-                                break;
-                            }
+                        if (userVector->ItemAt(u) != nullptr && 
+                            userVector->ItemAt(u)->Text() == singleUser) {
+                            duplicateFound = true;
+                            break;
                         }
                     }
-
-                    if (!userExists) {
-                        userVector->AddItem(tempUser);
-                    } else {
-                        delete tempUser; // Clean up the temporary object
+                    if (!duplicateFound) {
+                        userVector->AddItem(new UserListItem(singleUser.String(), false));
                     }
                 }
-                
-                // Refresh UI if this is the active channel
-                if (fActiveBufferItem == chanNode) {
-                    RefreshUserListUI();
-                }
+
             }
-            return; // Changed return to break for multi-line safety
+            return;
         }
 
 
@@ -8675,11 +8569,12 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
         }
 
 
-        // =========================================================================
-        // DYNAMIC NICK MODIFICATION HANDLER (FIXED LIFE-CYCLE SYNC)
-        // =========================================================================
+         // Dynamic NICK Modification Handlers (Saves identity renames for Us and other network users)
         if (command == "NICK") {
-            if (contextServer == nullptr) return;
+            // FIX 1: Drop packet immediately if background context server tracking node is dead
+            if (contextServer == nullptr) {
+                return;
+            }
 
             BString oldNick = prefix;
             int32 exclamIdx = oldNick.FindFirst("!");
@@ -8688,9 +8583,10 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
             BString newNick = trailing.Length() > 0 ? trailing : line;
             newNick.Trim();
             newNick.ReplaceAll(" ", "");
+
             if (newNick.Length() == 0) return;
 
-            // --- Map visual ServerTreeItem node down to its backend Config struct safely ---
+            // --- FIX 2: Map visual ServerTreeItem node down to its backend Config struct safely ---
             std::string targetServerName = contextServer->Text();
             bool foundProfile = false;
             ServerConfig* resolvedProfile = nullptr;
@@ -8712,94 +8608,74 @@ void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {
                 }
             }
 
-            // ==========================================================
-            // FIX 1: UPDATE SIDEBAR SERVER TAB (Dynamic Identity Sync)
-            // ==========================================================
-            // This ensures contextServer->Text() returns your NEW nick!
-            BString serverLabel = contextServer->Text();
-            int32 bracketPos = serverLabel.FindFirst(" [");
-            BString networkName = " [Network]";
-            
-            if (bracketPos != B_ERROR) {
-                // FIXED: Restored missing dot and parameter boundaries
-                serverLabel.CopyInto(networkName, bracketPos, serverLabel.Length() - bracketPos);
-            }
-            
-            BString newServerLabel;
-            newServerLabel << newNick << networkName; 
-            contextServer->SetText(newServerLabel.String());
-
             // Check nickname against the resolved specific server profile tracker
             if (resolvedProfile != nullptr && oldNick.ICompare(resolvedProfile->nick.c_str()) == 0) {
+                // Safely update config vector memory slot state cleanly
                 resolvedProfile->nick = newNick.String();
                 
                 BString itemNotice;
                 itemNotice << "--- Your nickname on this server is now " << newNick << "\n";
+                // FIX 4: Route the log message to the server's own tab instead of fActiveBufferItem
                 LogToItemBuffer(static_cast<BStringItem*>(contextServer), itemNotice);
                 
-                fMyNick = newNick; // Backwards compatibility
+                // Backwards compatibility sync if needed elsewhere
+                fMyNick = newNick;
             }
 
-            // ==========================================================
-            // FIX 2: UPDATE CHANNEL USER VECTORS SECURELY
-            // ==========================================================
+            // Safe Haiku BOutlineListView Sub-Item Traversal Loop
             int32 totalTreeItems = fChannelTree->CountItems();
             for (int32 c = 0; c < totalTreeItems; c++) {
                 BListItem* baseItem = fChannelTree->ItemAt(c);
                 if (baseItem == nullptr) continue;
-                
+
+                // Ensure this item is nested strictly under our targeted server connection node
                 if (fChannelTree->Superitem(baseItem) != contextServer) continue;
-                
+
                 ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(baseItem);
-                if (chanNode == nullptr) continue;
+                if (!chanNode) continue;
                 
                 if (fChannelUsers[chanNode] != nullptr) {
                     BObjectList<UserListItem, true>* userVector = fChannelUsers[chanNode];
                     
+                    // Slicing from top to bottom is safe because we preserve vector sizes via in-place updates
                     for (int32 i = 0; i < userVector->CountItems(); i++) {
-                        UserListItem* uiUser = userVector->ItemAt(i);
-                        if (uiUser == nullptr) continue;
+                        BStringItem* userItem = userVector->ItemAt(i);
+                        if (userItem == nullptr) continue;
 
-                        if (oldNick.ICompare(uiUser->GetCleanNick()) == 0) {
-                            // Create NEW item with NEW name but OLD prefixes
-                            BString fullOldText = uiUser->Text();
-                            BString prefixes = "";
+                        BString currentEntry = userItem->Text();
+                        BString modePrefix = "";
+                        
+                        if (currentEntry.StartsWith("@") || currentEntry.StartsWith("+")) {
+                            currentEntry.CopyInto(modePrefix, 0, 1);
+                            currentEntry.Remove(0, 1);
+                        }
+
+                        if (currentEntry == oldNick) {
+                            BString updatedEntry;
+                            updatedEntry << modePrefix << newNick;
                             
-                            // Extract all existing symbols (~, &, @, %, +)
-                            int32 pIdx = 0;
-                            while (pIdx < fullOldText.Length()) {
-                                char c = fullOldText.ByteAt(pIdx);
-                                if (c == '~' || c == '&' || c == '@' || c == '%' || c == '+') {
-                                    prefixes << c;
-                                    pIdx++;
-                                } else {
-                                    break;
-                                }
-                            }
-
-                            BString updatedDisplayName;
-                            updatedDisplayName << prefixes << newNick;
-
-                            // Replace the item to ensure UserListItem internal flags are re-parsed
-                            userVector->RemoveItemAt(i);
-                            delete uiUser;
-                            userVector->AddItem(new UserListItem(updatedDisplayName.String(), false), i);
+                            // Free old memory pool allocations and re-insert the updated string element
+                            BStringItem* oldItem = userVector->RemoveItemAt(i);
+                            delete oldItem;
+                            
+                            userVector->AddItem(new UserListItem(updatedEntry.String(), false), i);                      
                             
                             BString nickNotice;
                             nickNotice << "--- " << oldNick << " is now known as " << newNick << "\n";
                             LogToItemBuffer(chanNode, nickNotice);
                             
+                            // Force the UI to refresh live if the nickname changed in the active channel view
                             if (fActiveBufferItem == chanNode) {
                                 RefreshUserListUI();
                                 fUserList->SortItems(SortUsersByRank);
                                 fUserList->Invalidate();
                             }
-                            break; 
+                            break; // This user can only appear once per channel vector array
                         }
                     }
                 }
             }
-             // Change return to break for multi-line processing safety
+            return;
         }
 
 
