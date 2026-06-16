@@ -16,9 +16,7 @@ provides {
 }
 requires {
 	haiku
-	nlohmann_json
-	lib:libssl
-	lib:libcrypto
+	nlohmann_json	
 }
 conflicts {
 	hirc	
