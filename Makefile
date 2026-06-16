@@ -2,7 +2,7 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.30
+VERSION = 0.0.31
 
 # Target Arch
 UNAME_M := $(shell uname -p)
@@ -28,7 +28,7 @@ RDEFS = cricket.rdef
 RSRCS = $(RDEFS:.rdef=.rsrc)
 
 # Haiku specific libraries
-LIBS = -lbe -lnetwork -lnetservices -lbnetapi -lshared -ltranslation -ltracker
+LIBS = -lbe -lnetwork -lnetservices -lbnetapi -lshared -ltranslation -ltracker -lssl -lcrypto 
 
 # Default target
 all: $(TARGET)
