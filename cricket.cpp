@@ -6716,8 +6716,69 @@ private:
 	
 	    // 1. Absolute Null Check
 	    if (contextServer == nullptr) return;
+	    
+	    
+    // =========================================================================
+    // BRICK-WALL INTERCEPT ENGINE (ZERO-PARSING DEPENDENCY)
+    // =========================================================================
+    BString cleanRawLine = line;
+    cleanRawLine.ToLower();
+
+    // 1. Double-check if the phrase literally originated from NickServ / Network Services
+    bool isFromNickServ = (cleanRawLine.FindFirst("nickserv!") != B_ERROR && 
+                          (cleanRawLine.FindFirst(" notice ") != B_ERROR || cleanRawLine.FindFirst(" privmsg ") != B_ERROR));
+
+    if (isFromNickServ) {
+        // Resolve your server profile configurations directly within this standalone scope
+        std::string targetServerName = contextServer->Text();
+        bool foundProfile = false;
+        ServerConfig* resolvedProfile = nullptr;
+
+        for (auto& srv : cfg.servers) {
+            if ( srv.name == targetServerName) { resolvedProfile = &srv; foundProfile = true; break; }
+        }
+        if (!foundProfile) {
+            for (auto& srv : cfg.customServers) {
+                if (srv.name  == targetServerName) { resolvedProfile = &srv; break; }
+            }
+        }
+
+        if (resolvedProfile != nullptr && resolvedProfile->useCertFP) {
+            
+            // --- NEW: THE HARD FLOOD-GATE BLOCKER ---
+            // If we already activated the blocker gate for this connection session pass, 
+            // instantly drop ALL subsequent lines coming from NickServ silently!
+            if (contextServer->fHasIdentifiedThisSession) {
+                if (cfg.debugEnable) printf("[DEBUG_CERTFP] [%s] Dropping trailing NickServ line fragment natively.\n", contextServer->Text());
+                return;
+            }
+            // ----------------------------------------
+
+            // 2. Look for the exact character patterns NickServ uses when demanding identification
+            bool isLiteralChallenge = (cleanRawLine.FindFirst("identify") != B_ERROR || 
+                                       cleanRawLine.FindFirst("authenticate") != B_ERROR ||
+                                       cleanRawLine.FindFirst("registered and protected") != B_ERROR ||
+                                       cleanRawLine.FindFirst("access list") != B_ERROR);
+
+            if (isLiteralChallenge) {
+                if (cfg.debugEnable) printf("[DEBUG_CERTFP] [%s] Master Interceptor caught true NickServ prompt! Muting line.\n", contextServer->Text());
+
+                // Post a clean, professional network authentication status line to the server tab
+                BString certfpNotice = "--- [Authentication] Certificate authentication (CertFP) is active. Muting service identification prompts.\n";
+                LogToItemBuffer(FindServerLogNode(contextServer), certfpNotice);
+                
+                contextServer->fHasIdentifiedThisSession = true; // Engage flood gate blocker
+                return; 
+            }
+        }
+    }
+    // =========================================================================
+
+
+
+	    
 	
-	    // 2. Multi-Server Pointer Validation Check
+	    // Multi-Server Pointer Validation Check
 	    // Scan the tree layout container to confirm this pointer address still actually exists
 	    bool isPointerValid = false;
 	    int32 totalTreeItems = fChannelTree->CountItems();
@@ -9374,6 +9435,7 @@ private:
             // =========================================================================
             // FIXED INTEGRATED HOOK: UNIVERSAL INBOUND SERVICES SCANNER & DISPATCH (ANTI-FLOOD GATE)
             // =========================================================================
+            // Strict match validation layout targets service bots explicitly
             bool isServicesMessage = (prefix.IFindFirst("nickserv") != B_ERROR || 
                                       prefix.IFindFirst("services") != B_ERROR || 
                                       senderNick.ICompare("NickServ") == 0);
@@ -9381,41 +9443,73 @@ private:
             bool isIdentifyChallenge = (line.IFindFirst("identify") != B_ERROR || 
                                         trailing.IFindFirst("identify") != B_ERROR ||
                                         line.IFindFirst("authenticate") != B_ERROR ||
-                                        line.IFindFirst("registered and protected") != B_ERROR);
+                                        line.IFindFirst("registered and protected") != B_ERROR ||
+                                        line.IFindFirst("access list") != B_ERROR ||
+                                        trailing.IFindFirst("access list") != B_ERROR);
 
-            // ANTI-FLOOD ENFORCEMENT: Check fHasIdentifiedThisSession to prevent multi-line notification floods!
-            if (isServicesMessage && isIdentifyChallenge && contextServer != nullptr && 
-                !contextServer->fSASLSuccess && !contextServer->fHasIdentifiedThisSession) {                
-                
-                if (cfg.debugEnable) printf("[DEBUG_NOTICE] [%s] Fallback service request matched. Processing credentials...\n", contextServer->Text());
-                
-                if (foundProfile && resolvedProfile != nullptr && !resolvedProfile->pass.empty()) {
-                    BString autoIdentify = "";
-                    BString currentTargetHost = contextServer->GetHost();
-
-                    if (currentTargetHost.IFindFirst("oftc.net") != B_ERROR) {
-                        autoIdentify << "IDENTIFY " << resolvedProfile->pass.c_str() << "\r\n";
-                    } else {
-                        autoIdentify << "PRIVMSG NickServ :IDENTIFY " << resolvedProfile->pass.c_str() << "\r\n";
-                    }
+            // STRICT INTERCEPT GUARD: Only scan if it's a real chat command AND matches a known service bot prefix
+            if ((command == "PRIVMSG" || command == "NOTICE") && isServicesMessage && isIdentifyChallenge) {
+                if (contextServer != nullptr && !contextServer->fSASLSuccess && !contextServer->fHasIdentifiedThisSession) {                
                     
-                    SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(contextServer)];
-                    int activeFd = (gServerRawSockets.count(static_cast<void*>(contextServer)) > 0) ? 
-                                    gServerRawSockets[static_cast<void*>(contextServer)] : -1;
-
-                    if (activeSslHandle != nullptr && activeFd >= 0) {
-                        SSL_write(activeSslHandle, autoIdentify.String(), autoIdentify.Length());
+                    if (cfg.debugEnable) printf("[DEBUG_NOTICE] [%s] TRUE Fallback service request matched. Processing credentials...\n", contextServer->Text());
+                    
+                    if (foundProfile && resolvedProfile != nullptr) {
                         
-                        // ANTI-FLOOD LOCK: Hard lock the machine state instantly to skip following notices!
-                        contextServer->fHasIdentifiedThisSession = true;
-                        if (cfg.debugEnable) printf("[DEBUG_NOTICE] [%s] Auto-Identify sent via SSL_write. Anti-flood gate activated.\n", contextServer->Text());
-                    }
+                        // =========================================================================
+                        // INTEGRATED UPPER-LEVEL CERTFP INTERCEPT ENGINE
+                        // =========================================================================
+                        if (resolvedProfile->useCertFP) {
+                            if (cfg.debugEnable) printf("[DEBUG_NOTICE] [%s] CertFP bypass engaged. Suppressing NickServ loop.\n", contextServer->Text());
+                            
+                            // 1. Drop a clean, muted confirmation status note to your server view
+                            BString certfpNotice = "--- [Authentication] Certificate authentication (CertFP) is active. Muting service identification prompts.\n";
+                            LogToItemBuffer(FindServerLogNode(contextServer), certfpNotice);
+                            
+                            // 2. Hard lock the anti-flood machine state to suppress follow-up alert lines
+                            contextServer->fHasIdentifiedThisSession = true;
+                            
+                            // 3. MUTATION PASS: Completely wipe out the strings so the rest of the layout engine lower down cannot print or process anything!
+                            trailing.Truncate(0);
+                            line.Truncate(0);
+                            command.Truncate(0);
+                        }
+                        // =========================================================================
 
-                    BString logNotice = "--- [Auto-Services] Pre-registration identification payload sent to NickServ.\n";
-                    LogToItemBuffer(static_cast<BStringItem*>(contextServer), logNotice);
+                        else if (!resolvedProfile->pass.empty()) {
+                            BString autoIdentify = "";
+                            BString currentTargetHost = contextServer->GetHost();
+
+                            if (currentTargetHost.IFindFirst("oftc.net") != B_ERROR) {
+                                autoIdentify << "IDENTIFY " << resolvedProfile->pass.c_str() << "\r\n";
+                            } else {
+                                autoIdentify << "PRIVMSG NickServ :IDENTIFY " << resolvedProfile->pass.c_str() << "\r\n";
+                            }
+                            
+                            SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(contextServer)];
+                            int activeFd = (gServerRawSockets.count(static_cast<void*>(contextServer)) > 0) ? 
+                                            gServerRawSockets[static_cast<void*>(contextServer)] : -1;
+
+                            if (activeSslHandle != nullptr && activeFd >= 0) {
+                                SSL_write(activeSslHandle, autoIdentify.String(), autoIdentify.Length());
+                                contextServer->fHasIdentifiedThisSession = true;
+                                if (cfg.debugEnable) printf("[DEBUG_NOTICE] [%s] Auto-Identify sent via SSL_write. Anti-flood gate activated.\n", contextServer->Text());
+                            }
+
+                            BString logNotice = "--- [Auto-Services] Pre-registration identification payload sent to NickServ.\n";
+                            LogToItemBuffer(FindServerLogNode(contextServer), logNotice);
+                        }
+                    }
                 }
             }
             // =========================================================================
+
+            // --- PROTECTIVE SHORT-CIRCUIT PASSTHROUGH ---
+            if (command.Length() == 0 || trailing.Length() == 0) {
+                return;
+            }
+            // ---------------------------------------------
+
+
 
             // Assemble and Format Chat Log Lines
             BString formattedMessage = "";
@@ -9469,77 +9563,25 @@ private:
 
 
 
-
-
-
-
+		// LAST 
         // Bracket-Sanitized Global Server Protocol Fallback Route
         if (trailing.Length() > 0) {
             if (contextServer == nullptr) {
                 contextServer = fCurrentServerNode;
             }
             
-        // =========================================================================
-        // ASYNCHRONOUS NETWORK AUTHENTICATION ROUTER
-        // =========================================================================
-        BString lowerLine = line; lowerLine.ToLower();
-        BString lowerPrefix = prefix; lowerPrefix.ToLower();
-
-        bool isAuthNotice = (lowerPrefix.FindFirst("nickserv") != B_ERROR || 
-                             lowerPrefix.FindFirst("services@") != B_ERROR || 
-                             lowerLine.FindFirst("nickserv") != B_ERROR);
-                             
-        bool containsIdentifyReq = (lowerLine.FindFirst("identify") != B_ERROR || 
-                                    lowerLine.FindFirst("authenticate") != B_ERROR);
-
-        if (isAuthNotice && containsIdentifyReq && contextServer != nullptr && !contextServer->fSASLSuccess) {                
-            if (cfg.debugEnable) printf("[DEBUG_CAP] [%s] Inbound services challenge matched! Processing fallback authentication...\n", contextServer->Text());
-            
-            std::string targetServerName = contextServer->Text();
-            bool foundProfile = false;
-            ServerConfig* resolvedProfile = nullptr;
-
-            for (auto& srv : cfg.servers) {
-                if (srv.name == targetServerName) { resolvedProfile = &srv; foundProfile = true; break; }
-            }
-            if (!foundProfile) {
-                for (auto& srv : cfg.customServers) {
-                    if (srv.name == targetServerName) { resolvedProfile = &srv; break; }
-                }
-            }
-            
-            if (resolvedProfile != nullptr && resolvedProfile->pass.length() > 0) {
-                BString autoIdentify;
-                autoIdentify << "PRIVMSG NickServ :IDENTIFY " << resolvedProfile->pass.c_str() << "\r\n";
-                
-                // Fetch the live background encryption reference handle natively out of the top global tracker map
-                SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(contextServer)];
-                int activeFd = gServerRawSockets[static_cast<void*>(contextServer)];
-
-                if (activeSslHandle != nullptr && activeFd >= 0) {
-                    SSL_write(activeSslHandle, autoIdentify.String(), autoIdentify.Length());
-                    if (cfg.debugEnable) printf("[DEBUG_CAP] [%s] Auto-Identify sent successfully over live OpenSSL handle context.\n", contextServer->Text());
-                } else {
-                    BSecureSocket* activeSocket = GetActiveSocket(contextServer);
-                    if (activeSocket != nullptr) {
-                        activeSocket->Write(autoIdentify.String(), autoIdentify.Length());                        
-                    }
-                }
-
-                BString logNotice = "--- [Auto-Services] Pre-registration identification sent to NickServ.\n";
-                LogToItemBuffer(static_cast<BStringItem*>(contextServer), logNotice);
-            }
-        }
-        // =========================================================================
-
-            // FIX 2: Only print message data loops if we have a valid resolved text panel workspace node
+            // =========================================================================
+            // STANDALONE FALLBACK SERVER LOGGING TRACK
+            // =========================================================================
+            // Captures all raw protocols and server numeric data bursts not managed elsewhere
             if (contextServer != nullptr) {
                 BString rawLog;
                 rawLog << trailing << "\n";
-                LogToItemBuffer(static_cast<BStringItem*>(contextServer), rawLog);
+                LogToItemBuffer(FindServerLogNode(contextServer), rawLog);
             }
         }
-	}
+    }
+
 	
 	
 	
