@@ -624,97 +624,97 @@ void load_config() {
         }
     }
 
- if (mustSaveDefaults || cfg.servers.empty()) {
-        cfg.servers.clear();        
-        cfg.customServers.clear(); 
-        cfg.useCustomDrawFunction = true; 
-        
-        // --- FIXED FALLBACK FORMAT MATCH ---
-        BString defaultQuit;
-        defaultQuit << "App Quit [" << AppInfo::VERSION_STRING << "]";
-        cfg.quitMessage = defaultQuit.String();
-        cfg.awayMessage = "I am away from my computer right now.";
-		
-        srand(static_cast<unsigned int>(real_time_clock_usecs()));
-        int randomSuffix = 1000 + (rand() % 9000);
-        BString dynamicNick;
-        dynamicNick << "HaikuIRCUser" << randomSuffix;
-
-        // 1. RECONSTRUCT LIBERA CHAT DEFAULT PROFILE
-        ServerConfig libera;
-        libera.name = "Libera Chat";
-        libera.host = "irc.libera.chat";
-        libera.port = 6697;
-        libera.nick = dynamicNick.String();
-        libera.altNick = BString(dynamicNick).Append("+").String(); 
-        libera.altNick2 = BString(dynamicNick).Append("__").String();
-        libera.pass = "";  
-        libera.autoConnect = false;    
-        libera.autoReconnect = false;  
-       
-        libera.useSASL = false;
-        libera.saslUser = "";
-        libera.useCertFP = false;
-        libera.certProfileName = "";
-        libera.certFileName = "";                    
-        libera.keyFileName = "";   
-        
-        libera.autojoin = {""};
-        libera.autocmdlist = {""};
-        libera.ignoredNicks = {}; 
-        libera.nickColors = {};       
-        libera.nickColorValues = {};  
-        libera.timestampInterval = 30;
-        
-        libera.backgroundImagePath = "";
-        libera.backgroundOpacity = 30; 
-        libera.enableEmoticons = true; 
-        libera.useCustomDrawFunction = cfg.useCustomDrawFunction;
-        libera.logChatsToFile = false;
-        libera.enableColorCodes = true;
-         
-        libera.serverListFontSize = cfg.serverListFontSize;
-        libera.chatLogFontSize    = cfg.chatLogFontSize;
-        libera.userListFontSize   = cfg.userListFontSize;
-        cfg.servers.push_back(libera);
-
-        // 2. OFTC NETWORK DEFAULT PROFILE
-        ServerConfig oftc;
-        oftc.name = "OFTC";
-        oftc.host = "irc.oftc.net";
-        oftc.port = 6697;
-        oftc.nick = dynamicNick.String();
-        oftc.altNick = BString(dynamicNick).Append("+").String();
-        oftc.altNick2 = BString(dynamicNick).Append("__").String();
-        oftc.pass = ""; 
-        oftc.autoConnect = false;
-        oftc.autoReconnect = false;         
-        oftc.useSASL = false;
-        oftc.saslUser = "";
-        oftc.useCertFP = false;
-        oftc.certProfileName = "";
-        oftc.certFileName = "";                    
-        oftc.keyFileName = "";          
-        
-        oftc.autojoin = {"#haiku"};
-        oftc.autocmdlist = {""};
-        oftc.ignoredNicks = {};
-        oftc.nickColors = {};       
-        oftc.nickColorValues = {};  
-		oftc.timestampInterval = 30;
-		
-        oftc.backgroundImagePath = "";
-        oftc.backgroundOpacity = 30;
-        oftc.enableEmoticons = true;
-        oftc.useCustomDrawFunction = cfg.useCustomDrawFunction;
-        oftc.logChatsToFile = false;
-        oftc.enableColorCodes = true;
-
-        oftc.serverListFontSize = cfg.serverListFontSize;
-        oftc.chatLogFontSize    = cfg.chatLogFontSize;
-        oftc.userListFontSize   = cfg.userListFontSize;
-        cfg.servers.push_back(oftc);
-    }
+	 if (mustSaveDefaults || cfg.servers.empty()) {
+	        cfg.servers.clear();        
+	        cfg.customServers.clear(); 
+	        cfg.useCustomDrawFunction = true; 
+	        
+	        // --- FIXED FALLBACK FORMAT MATCH ---
+	        BString defaultQuit;
+	        defaultQuit << "App Quit [" << AppInfo::VERSION_STRING << "]";
+	        cfg.quitMessage = defaultQuit.String();
+	        cfg.awayMessage = "I am away from my computer right now.";
+			
+	        srand(static_cast<unsigned int>(real_time_clock_usecs()));
+	        int randomSuffix = 1000 + (rand() % 9000);
+	        BString dynamicNick;
+	        dynamicNick << "HaikuIRCUser" << randomSuffix;
+	
+	        // 1. RECONSTRUCT LIBERA CHAT DEFAULT PROFILE
+	        ServerConfig libera;
+	        libera.name = "Libera Chat";
+	        libera.host = "irc.libera.chat";
+	        libera.port = 6697;
+	        libera.nick = dynamicNick.String();
+	        libera.altNick = BString(dynamicNick).Append("+").String(); 
+	        libera.altNick2 = BString(dynamicNick).Append("__").String();
+	        libera.pass = "";  
+	        libera.autoConnect = false;    
+	        libera.autoReconnect = false;  
+	       
+	        libera.useSASL = false;
+	        libera.saslUser = "";
+	        libera.useCertFP = false;
+	        libera.certProfileName = "";
+	        libera.certFileName = "";                    
+	        libera.keyFileName = "";   
+	        
+	        libera.autojoin = {""};
+	        libera.autocmdlist = {""};
+	        libera.ignoredNicks = {}; 
+	        libera.nickColors = {};       
+	        libera.nickColorValues = {};  
+	        libera.timestampInterval = 30;
+	        
+	        libera.backgroundImagePath = "";
+	        libera.backgroundOpacity = 30; 
+	        libera.enableEmoticons = true; 
+	        libera.useCustomDrawFunction = cfg.useCustomDrawFunction;
+	        libera.logChatsToFile = false;
+	        libera.enableColorCodes = true;
+	         
+	        libera.serverListFontSize = cfg.serverListFontSize;
+	        libera.chatLogFontSize    = cfg.chatLogFontSize;
+	        libera.userListFontSize   = cfg.userListFontSize;
+	        cfg.servers.push_back(libera);
+	
+	        // 2. OFTC NETWORK DEFAULT PROFILE
+	        ServerConfig oftc;
+	        oftc.name = "OFTC";
+	        oftc.host = "irc.oftc.net";
+	        oftc.port = 6697;
+	        oftc.nick = dynamicNick.String();
+	        oftc.altNick = BString(dynamicNick).Append("+").String();
+	        oftc.altNick2 = BString(dynamicNick).Append("__").String();
+	        oftc.pass = ""; 
+	        oftc.autoConnect = false;
+	        oftc.autoReconnect = false;         
+	        oftc.useSASL = false;
+	        oftc.saslUser = "";
+	        oftc.useCertFP = false;
+	        oftc.certProfileName = "";
+	        oftc.certFileName = "";                    
+	        oftc.keyFileName = "";          
+	        
+	        oftc.autojoin = {"#haiku"};
+	        oftc.autocmdlist = {""};
+	        oftc.ignoredNicks = {};
+	        oftc.nickColors = {};       
+	        oftc.nickColorValues = {};  
+			oftc.timestampInterval = 30;
+			
+	        oftc.backgroundImagePath = "";
+	        oftc.backgroundOpacity = 30;
+	        oftc.enableEmoticons = true;
+	        oftc.useCustomDrawFunction = cfg.useCustomDrawFunction;
+	        oftc.logChatsToFile = false;
+	        oftc.enableColorCodes = true;
+	
+	        oftc.serverListFontSize = cfg.serverListFontSize;
+	        oftc.chatLogFontSize    = cfg.chatLogFontSize;
+	        oftc.userListFontSize   = cfg.userListFontSize;
+	        cfg.servers.push_back(oftc);
+	    }
 }
 
 
@@ -788,7 +788,7 @@ static int32 BackgroundUpdateChecker(void* data) {
             // =========================================================================
             // CHANNELS AUTO-HIDE PREFERENCE INTERCEPT
             // =========================================================================
-            if (cfg.showUpdateNotifications) {
+            if (!cfg.showUpdateNotifications) {
                 if (cfg.debugEnable) printf("[DEBUG_UPDATE] Suppressing desktop alert toast\n");
                 return B_OK; // Break out cleanly and silently without throwing the alert box!
             }
