@@ -122,6 +122,9 @@ enum {
     MSG_CONTEXT_SHOW_MODES = 'mCSM',
     MSG_GENERATE_CERTFP_KEYPAIR = 'gcfp',
     MSG_AUTO_REGISTER_FINGERPRINT = 'argf',
+    MSG_CONTEXT_ADD_COLOR_FROM_TEXT = 'acft',
+    MSG_CONTEXT_IGNORE_FROM_TEXT = 'igft',
+
 };
 
 
@@ -136,7 +139,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.34 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.36 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -165,7 +168,7 @@ struct ServerConfig {
     int32 chatLogFontSize = 12;
     int32 userListFontSize = 12;
     bool useCustomDrawFunction = true; 
-    bool debugEnable = false; 
+
 
     // Per-server Chat Logging Option (Defaults to false)
     bool logChatsToFile = false; 
@@ -174,7 +177,6 @@ struct ServerConfig {
     std::vector<std::string> nickColors;
     std::vector<rgb_color>   nickColorValues;
     int32 timestampInterval = 30;
-    std::string searchEngine = "https://duckduckgo.com"; 
     bool useSASL = false;
     std::string saslUser;
     bool useCertFP = false;      
@@ -195,6 +197,7 @@ struct Config {
     std::string awayMessage = "I am away from my computer right now."; 
     bool useCustomDrawFunction = true;
     int32 timestampInterval = 30;
+    std::string searchEngine = "https://duckduckgo.com"; 
 } cfg;
 
 
@@ -212,6 +215,7 @@ void save_config() {
     ensure_config_dir();
     json j;
     j["debugEnable"] = cfg.debugEnable;
+    j["search_engine"] = cfg.searchEngine;
     j["serverListFontSize"] = cfg.serverListFontSize;
     j["chatLogFontSize"] = cfg.chatLogFontSize;
     j["userListFontSize"] = cfg.userListFontSize;
@@ -241,21 +245,15 @@ void save_config() {
         s["autoReconnect"] = srv.autoReconnect;
         s["hideStatusMessages"] = srv.hideStatusMessages; 
         s["timestampInterval"] = srv.timestampInterval;
-        s["search_engine"]      = srv.searchEngine; 
+
         s["use_sasl"] = srv.useSASL;
         s["sasl_user"] = srv.saslUser;
         s["use_certfp"] = srv.useCertFP;
         s["cert_profile_name"] = srv.certProfileName;
         s["cert_file_name"] = srv.certFileName;
         s["key_file_name"]  = srv.keyFileName;
-        // @Delete
-        /*
-        if (srv.backgroundImagePath.empty()) {
-            srv.backgroundImagePath = DEFAULT_BG_PATH;
-        }
-        */
-        s["background_image"] = srv.backgroundImagePath; 
-        
+      
+        s["background_image"] = srv.backgroundImagePath;         
         s["bg_opacity"] = srv.backgroundOpacity; 
         s["enable_emoticons"] = srv.enableEmoticons; 
         s["useCustomDrawFunction"] = srv.useCustomDrawFunction;
@@ -319,7 +317,6 @@ void save_config() {
         s["autoConnect"] = srv.autoConnect; 
         s["autoReconnect"] = srv.autoReconnect;
         s["hideStatusMessages"] = srv.hideStatusMessages; 
-        s["search_engine"]      = srv.searchEngine; 
          
         s["use_sasl"] = srv.useSASL;
         s["sasl_user"] = srv.saslUser;
@@ -331,6 +328,7 @@ void save_config() {
         if (srv.backgroundImagePath.empty()) {
             srv.backgroundImagePath = DEFAULT_BG_PATH;
         }
+        
         s["background_image"] = srv.backgroundImagePath;
         
         s["bg_opacity"] = srv.backgroundOpacity; 
@@ -443,8 +441,9 @@ void load_config() {
                 cfg.chatLogFontSize    = j.value("chatLogFontSize", (int32)12);
                 cfg.userListFontSize   = j.value("userListFontSize", (int32)12);  
                 cfg.useCustomDrawFunction = j.value("useCustomDrawFunction", true);
-                
+                cfg.searchEngine = j.value("search_engine", "https://duckduckgo.com");
                 // Parse standard servers array
+                
                 if (j.contains("servers") && j["servers"].is_array()) {
                     for (const auto& s : j["servers"]) {
                         ServerConfig srv;
@@ -459,12 +458,7 @@ void load_config() {
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
                         srv.timestampInterval = s.value("timestampInterval", cfg.timestampInterval);
-                        srv.searchEngine       = s.value("search_engine", "https://duckduckgo.com"); 
-                        srv.backgroundImagePath = s.value("background_image", DEFAULT_BG_PATH); 
-                        if (srv.backgroundImagePath.empty()) {
-                            srv.backgroundImagePath = DEFAULT_BG_PATH;
-                        }
-
+						srv.backgroundImagePath = s.value("background_image", ""); 
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
                         srv.useCustomDrawFunction = s.value("useCustomDrawFunction", cfg.useCustomDrawFunction);
@@ -476,8 +470,6 @@ void load_config() {
                         srv.certProfileName = s.value("cert_profile_name", "");                        
                         srv.certFileName = s.value("cert_file_name", "");                    
                         srv.keyFileName = s.value("key_file_name", "");   
-
-
                         
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
@@ -540,13 +532,7 @@ void load_config() {
                         srv.autoReconnect = s.value("autoReconnect", false); 
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
-                        srv.searchEngine       = s.value("search_engine", "https://duckduckgo.com"); 
-                        
-                        srv.backgroundImagePath = s.value("background_image", DEFAULT_BG_PATH); 
-                        if (srv.backgroundImagePath.empty()) {
-                            srv.backgroundImagePath = DEFAULT_BG_PATH;
-                        }
-
+						srv.backgroundImagePath = s.value("background_image", ""); 
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
                         srv.useCustomDrawFunction = s.value("useCustomDrawFunction", cfg.useCustomDrawFunction);
@@ -656,7 +642,7 @@ void load_config() {
         libera.nickColorValues = {};  
         libera.timestampInterval = 30;
         
-        libera.backgroundImagePath = DEFAULT_BG_PATH; 
+        libera.backgroundImagePath = "";
         libera.backgroundOpacity = 30; 
         libera.enableEmoticons = true; 
         libera.useCustomDrawFunction = cfg.useCustomDrawFunction;
@@ -693,7 +679,7 @@ void load_config() {
         oftc.nickColorValues = {};  
 		oftc.timestampInterval = 30;
 		
-        oftc.backgroundImagePath = DEFAULT_BG_PATH;
+        oftc.backgroundImagePath = "";
         oftc.backgroundOpacity = 30;
         oftc.enableEmoticons = true;
         oftc.useCustomDrawFunction = cfg.useCustomDrawFunction;
@@ -1655,12 +1641,55 @@ void CustomChatView::ScrollTo(BPoint point) {
 void CustomChatView::SetActiveChannel(BStringItem* activeNode) {
     if (fActiveChannelNode != activeNode) {
         fActiveChannelNode = activeNode;
+
+        // =========================================================================
+        // DYNAMIC MULTI-SERVER CONFIGURATION SYNC ENGINE
+        // =========================================================================
+        // Traverse the view hierarchy on the fly to find the parent server node
+        if (fActiveChannelNode != nullptr && Window() != nullptr) {
+            // Locate your sidebar tree control dynamically from the parent window context
+            BOutlineListView* channelTree = dynamic_cast<BOutlineListView*>(Window()->FindView("ChannelTree"));
+            
+            if (channelTree != nullptr) {
+                // Use Superitem instead of Parent to trace the tree node hierarchy upward
+                BStringItem* parentServer = static_cast<BStringItem*>(channelTree->Superitem(fActiveChannelNode));
+                
+                if (parentServer != nullptr && parentServer->Text() != nullptr) {
+                    std::string targetServerName = parentServer->Text();
+                    bool foundProfile = false;
+
+                    // Match the parent node's text against your global profile vectors
+                    for (size_t i = 0; i < cfg.servers.size(); i++) {
+                        if (cfg.servers[i].name == targetServerName) {
+                            fServerIdx = i;
+                            fIsCustom = false;
+                            foundProfile = true;
+                            break;
+                        }
+                    }
+                    if (!foundProfile) {
+                        for (size_t i = 0; i < cfg.customServers.size(); i++) {
+                            if (cfg.customServers[i].name == targetServerName) {
+                                fServerIdx = i;
+                                fIsCustom = true;
+                                foundProfile = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // =========================================================================
+
         // Re-wrap rows because a different chat window layout might require different view space setups
         RecalculateAllLineWraps(); 
         UpdateScrollRange(true); 
         Invalidate();
     }
 }
+
+
 
 // Intercept System-wide Color/Theme Changes Live
 void CustomChatView::MessageReceived(BMessage* message) {
@@ -1780,15 +1809,8 @@ void CustomChatView::MessageReceived(BMessage* message) {
                 selectedText.ReplaceAll("/", "%2F"); 
                 
                 BString baseSearchUrl = "https://duckduckgo.com"; 
-                if (fIsCustom) {
-                    if (fServerIdx < cfg.customServers.size()) {
-                        baseSearchUrl = cfg.customServers[fServerIdx].searchEngine.c_str();
-                    }
-                } else {
-                    if (fServerIdx < cfg.servers.size()) {
-                        baseSearchUrl = cfg.servers[fServerIdx].searchEngine.c_str();
-                    }
-                } 
+				baseSearchUrl = cfg.searchEngine.c_str();
+
 				baseSearchUrl << "/search?q=" << selectedText;
 
                 
@@ -2226,12 +2248,48 @@ void CustomChatView::MouseDown(BPoint point) {
 
 
             //  Search Option choice row
-            BString googleLabel = "Search for \"";
-            googleLabel << labelText;
-            contextMenu->AddItem(new BMenuItem(googleLabel.String(), new BMessage('gsh')));
+            BString srcLabel = "Search \"";
+            srcLabel << labelText;
+            contextMenu->AddItem(new BMenuItem(srcLabel.String(), new BMessage('gsh')));
+
+            // =========================================================================
+            // INTEGRATED TEXT-SELECTION NICKNAME COLOR ASSIGNMENT
+            // =========================================================================
+            BString cleanNick = selectedText;
+            cleanNick.Trim();
+            cleanNick.ReplaceAll("\r", "");
+            cleanNick.ReplaceAll("\n", "");
+            
+            // --- NEW: STRIP ANGLE BRACKETS FROM NICKNAME ONLY FOR COLOR SELECTION ---
+            if (cleanNick.StartsWith("<") && cleanNick.EndsWith(">")) {
+                cleanNick.Remove(0, 1);                  // Remove leading '<'
+                cleanNick.Truncate(cleanNick.Length() - 1);  // Remove trailing '>'
+                cleanNick.Trim();                        // Final clean pass
+            }
+            // -----------------------------------------------------------------------
+            
+            // Only show the color option if they highlighted an actual single word/nickname
+            if (cleanNick.Length() > 0 && cleanNick.FindFirst(" ") == B_ERROR) {
+                BString colorLabel;
+                // Safely wraps the cleaned username text inside double quotes
+                colorLabel << "Add Color to \"" << cleanNick << "\"";
+                
+                // Use our new isolated message constant
+                BMessage* colorMsg = new BMessage(MSG_CONTEXT_ADD_COLOR_FROM_TEXT);
+                colorMsg->AddString("target_nick", cleanNick);
+                
+                // Pack our class instance variables directly into the message data matrix
+                colorMsg->AddInt64("server_index", static_cast<int64>(fServerIdx));
+                colorMsg->AddBool("is_custom_server", fIsCustom);
+                
+                contextMenu->AddItem(new BMenuItem(colorLabel.String(), colorMsg));
+            }
+            // =========================================================================
+
+
             
             // =========================================================================
-            // DYNAMIC GOOGLE TRANSLATION SUBMENU WITH EMBEDDED TITLE LAYOUT
+            // DYNAMIC TRANSLATION SUBMENU WITH EMBEDDED TITLE LAYOUT
             // =========================================================================
             // 1. Build a clean, safely truncated label for the main sub-menu header row
             BString subMenuHeaderLabel = "Translate \"";
@@ -2249,7 +2307,7 @@ void CustomChatView::MouseDown(BPoint point) {
 
             // 2. Instantiate the sub-menu container using our dynamic header label string
             BMenu* translateSubMenu = new BMenu(subMenuHeaderLabel.String());
-            
+
             BString labelEng = BString("English");
             BString labelSpa = BString("Spanish");
             BString labelFre = BString("French");
@@ -2430,6 +2488,16 @@ void CustomChatView::MouseDown(BPoint point) {
                                         wordEnd++;
                                     }
 
+                                    // =========================================================================
+                                    // AUTOMATIC IRC ANGLE BRACKET STRIPPING PASSTHROUGH
+                                    // =========================================================================
+                                    // Check if the mapped word boundaries are perfectly encapsulated by IRC brackets
+                                    if (wordStart < wordEnd && rawStr[wordStart] == '<' && rawStr[wordEnd - 1] == '>') {
+                                        wordStart++; // Step past the opening '<'
+                                        wordEnd--;   // Step behind the closing '>'
+                                    }
+                                    // =========================================================================
+
                                     // Calculate the exact bounding coordinates of our target word
                                     float selectPixelLeft = fragLeft + font.StringWidth(rawStr, wordStart);
                                     float selectPixelRight = fragLeft + font.StringWidth(rawStr, wordEnd);
@@ -2453,6 +2521,7 @@ void CustomChatView::MouseDown(BPoint point) {
         }
         return;
     }
+
 
     // --- SINGLE CLICK MODE: Fallback to manual selection dragging logic ---
     fIsSelecting = true;
@@ -2522,17 +2591,22 @@ void CustomChatView::SetBackgroundImage(const char* filePath)
 
 
 static void LogDebugStream(const char* serverName, const char* direction, const char* rawData, int32 dataLength) {
+	
+	// Currently needs updating but low priority
+	return;
+	
     if (!cfg.debugEnable || rawData == nullptr || dataLength <= 0) return;
 
     // Use static thread-local string buffers to accumulate single-byte streams into full lines
-    // This stops disk I/O throttling and prevents printing binary chunk artifacts!
     static std::map<BString, BString> sLineAccumulators;
     BString keyKey = BString(serverName) << "_" << direction;
     
     sLineAccumulators[keyKey].Append(rawData, dataLength);
     
-    // Only proceed to disk output once a complete line boundary (\n) is finalized
-    if (sLineAccumulators[keyKey].FindFirst("\n") == B_ERROR) {
+    // SAFE PARSE GUARD: If we have data but no newline, and the accumulated buffer 
+    // grows larger than a standard network packet window (1KB), force a flush pass.
+    bool hasNewline = (sLineAccumulators[keyKey].FindFirst("\n") != B_ERROR);
+    if (!hasNewline && sLineAccumulators[keyKey].Length() < 1024) {
         return; 
     }
 
@@ -2543,12 +2617,19 @@ static void LogDebugStream(const char* serverName, const char* direction, const 
         std::ofstream logFile(path.Path(), std::ios::out | std::ios::app);
         if (logFile.is_open()) {
             
-            // Process all completed lines trapped in our string cache container
-            while (sLineAccumulators[keyKey].FindFirst("\n") != B_ERROR) {
+            // Process completed lines or clean up a full buffer pass
+            while (sLineAccumulators[keyKey].Length() > 0) {
                 int32 newlinePos = sLineAccumulators[keyKey].FindFirst("\n");
                 BString line;
-                sLineAccumulators[keyKey].CopyInto(line, 0, newlinePos + 1);
-                sLineAccumulators[keyKey].Remove(0, newlinePos + 1);
+                
+                if (newlinePos != B_ERROR) {
+                    sLineAccumulators[keyKey].CopyInto(line, 0, newlinePos + 1);
+                    sLineAccumulators[keyKey].Remove(0, newlinePos + 1);
+                } else {
+                    // Fallback pass: No newline found, flush out the rest of the stream chunk safely
+                    line = sLineAccumulators[keyKey];
+                    sLineAccumulators[keyKey].Truncate(0);
+                }
                 
                 BString cleanBuffer = line;
                 cleanBuffer.ReplaceAll("\r", "");
@@ -2574,6 +2655,7 @@ static void LogDebugStream(const char* serverName, const char* direction, const 
         }
     }
 }
+
 
 
 
@@ -2846,7 +2928,7 @@ public:
             .End();
 
         // =========================================================================
-        // FIXED MULTI-SERVER SSL_WRITE CHANNEL LIST REQUEST GATE
+        // MULTI-SERVER SSL_WRITE CHANNEL LIST REQUEST GATE
         // =========================================================================
         if (fServerContext != nullptr) {
             // Check the static global matrix map registry for a live OpenSSL session handle
@@ -2890,6 +2972,15 @@ public:
                     if (selectedItem != nullptr) {
                         BPopUpMenu* menu = new BPopUpMenu("ChannelActions", false, false);
                         menu->AddItem(new BMenuItem("Join Channel", new BMessage('join')));
+                        
+                        // =========================================================================
+                        // INTEGRATED CONTEXT ITEM: ADD TO AUTOJOIN WITH CHANNEL LABEL MATCH
+                        // =========================================================================
+                        BString autojoinLabel = "Add ";
+                        autojoinLabel << selectedItem->GetChannelName() << " to Autojoin";
+                        menu->AddItem(new BMenuItem(autojoinLabel.String(), new BMessage('autj')));
+                        // =========================================================================
+                        
                         menu->AddItem(new BMenuItem("Clear Filter Bar", new BMessage('clrf')));
                         
                         menu->SetTargetForItems(this);
@@ -2941,6 +3032,62 @@ public:
                 break;
             }
 
+            // =========================================================================
+            // INTEGRATED CONFIG CHECK & DYNAMIC VECTOR PUSH AUTOJOIN HANDLER
+            // =========================================================================
+            case 'autj': {
+                int32 selectedIdx = fListView->CurrentSelection();
+                if (selectedIdx >= 0 && fServerContext != nullptr) {
+                    ChannelRowItem* selectedItem = dynamic_cast<ChannelRowItem*>(fListView->ItemAt(selectedIdx));
+                    if (selectedItem != nullptr && selectedItem->GetChannelName() != nullptr) {
+                        
+                        BString channelNameTarget(selectedItem->GetChannelName());
+                        std::string stdChanString = channelNameTarget.String();
+                        
+                        // FIXED VIA REINTERPRET_CAST: Bypasses forward-declaration constraints 
+                        // to expose the underlying BStringItem base class methods safely.
+                        BStringItem* baseServerItem = reinterpret_cast<BStringItem*>(fServerContext);
+                        
+                        if (baseServerItem != nullptr && baseServerItem->Text() != nullptr) {
+                            std::string targetServerName = baseServerItem->Text();
+                            bool foundAndSynced = false;
+
+                            // 1. Loop through configurations using your working vector rules
+                            for (auto& srv : cfg.servers) {
+                                if (srv.name == targetServerName) {
+                                    auto& vec = srv.autojoin;
+                                    if (std::find(vec.begin(), vec.end(), stdChanString) == vec.end()) {
+                                        vec.push_back(stdChanString);
+                                    }
+                                    foundAndSynced = true;
+                                    break;
+                                }
+                            }
+                            
+                            // 2. Fallback check against custom server profiles
+                            if (!foundAndSynced) {
+                                for (auto& srv : cfg.customServers) {
+                                    if (srv.name == targetServerName) {
+                                        auto& vec = srv.autojoin;
+                                        if (std::find(vec.begin(), vec.end(), stdChanString) == vec.end()) {
+                                            vec.push_back(stdChanString);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // 3. Force commit changes directly onto your JSON configuration file disk
+                            save_config();
+                        }
+                    }
+                }
+                break;
+            }
+            // =========================================================================
+
+
+
             case 'join': {
                 int32 selectedIdx = fListView->CurrentSelection();
                 if (selectedIdx >= 0) {
@@ -2948,10 +3095,7 @@ public:
                     if (selectedItem != nullptr && fServerContext != nullptr) {
                         BString joinCmd;
                         joinCmd << "JOIN " << selectedItem->GetChannelName() << "\r\n";
-                        
-                        // =========================================================================
-                        // FIXED MULTI-SERVER SSL_WRITE JOIN TRANSIT ENGINE
-                        // =========================================================================
+
                         SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(fServerContext)];
                         
                         if (activeSslHandle != nullptr) {
@@ -3317,7 +3461,7 @@ public:
         ServerConfig& srv = GetActiveConfig();
         bool useSASL = false;
         std::string saslUser;
-	    fLocalSearchEngineChoice = srv.searchEngine.c_str();
+	    fLocalSearchEngineChoice = cfg.searchEngine.c_str();
 
 
         // Deep copy active server configuration autojoin and autocmd fields onto local tracking array space
@@ -3396,8 +3540,8 @@ public:
         fHideStatusCheck->SetValue(srv.hideStatusMessages ? B_CONTROL_ON : B_CONTROL_OFF);
         fHideStatusCheck->SetToolTip("Hides user join, part, and quit messages to keep busy chat channels less cluttered.");
 
-        fDebugEnableCheck = new BCheckBox("debug", "Enable low-level socket engine logs", nullptr);
-        fDebugEnableCheck->SetValue(srv.debugEnable ? B_CONTROL_ON : B_CONTROL_OFF);
+        fDebugEnableCheck = new BCheckBox("debug", "Enable Debug log to termnial", nullptr);
+        fDebugEnableCheck->SetValue(cfg.debugEnable ? B_CONTROL_ON : B_CONTROL_OFF);
         fDebugEnableCheck->SetToolTip("Outputs detailed raw socket traffic data to the system console for debugging connection issues.");
 
         fEnableEmoticonsCheck = new BCheckBox("enable_emotes", "Enable custom inline emoticons for this server", nullptr);
@@ -3581,7 +3725,8 @@ public:
             .Add(fEnableEmoticonsCheck)
             .Add(fUseCustomDrawCheck)
             .Add(fLogChatsToFileCheck)
-            .Add(fEnableColorCodesCheck);
+            .Add(fEnableColorCodesCheck)
+            .Add(fDebugEnableCheck);
 
         // --- INSTANTIATE THE TIMESTAMP INTERVAL POPUP MENU ---
         BPopUpMenu* tsMenu = new BPopUpMenu("timestamp_select");
@@ -3676,7 +3821,7 @@ public:
 
         // Build the Autojoin Commands Box
         BBox* cmdBox = new BBox(B_FANCY_BORDER);
-        cmdBox->SetLabel("Autojoin Commands");
+        cmdBox->SetLabel("Autoconnect Commands");
         BLayoutBuilder::Group<>(cmdBox, B_VERTICAL, 5)
             .SetInsets(10, 20, 10, 10)
             .Add(cmdScroll, 1.0)
@@ -3806,49 +3951,80 @@ public:
         }
 
         case MSG_GENERATE_CERTFP_KEYPAIR: {
-            // 1. Resolve active target nickname strings to name the cert profile cleanly
+            // =========================================================================
+            // 1. EXTRACT AND SANITIZE THE SERVER NETWORK NAME VIA GLOBAL VECTOR INDEX
+            // =========================================================================
+            BString serverNameToken = "";
+            
+            // Look up the name safely by checking your global profile arrays using known variables
+            if (fIsCustom) {
+                if (fServerIdx < cfg.customServers.size()) {
+                    serverNameToken = cfg.customServers[fServerIdx].name.c_str();
+                }
+            } else {
+                if (fServerIdx < cfg.servers.size()) {
+                    serverNameToken = cfg.servers[fServerIdx].name.c_str();
+                }
+            }
+            
+            // Final safety fallback: use the window title frame if arrays skip it
+            if (serverNameToken.Length() == 0 && this->Title() != nullptr) {
+                serverNameToken = this->Title();
+                serverNameToken.ReplaceAll("Configure", "");
+                serverNameToken.ReplaceAll("Settings", "");
+                serverNameToken.ReplaceAll("Server", "");
+                serverNameToken.ReplaceAll("Properties", "");
+                serverNameToken.ReplaceAll("-", "");
+                serverNameToken.ReplaceAll(":", "");
+            }
+            
+            serverNameToken.Trim();
+            serverNameToken.ReplaceAll(" ", "_"); // Strip spaces out of file handles
+            serverNameToken.ReplaceAll("/", "-"); // Strip filesystem path breaking markers
+            
+            if (serverNameToken.Length() == 0) {
+                serverNameToken = "generic_irc_network";
+            }
+            serverNameToken.ToLower();
+
+            // Fetch active nickname string to embed inside the certificate subject metadata
             BString activeNickToken = fNickInput->Text();
             activeNickToken.Trim();
             if (activeNickToken.Length() == 0 || activeNickToken == "HaikuIRCUser") {
                 activeNickToken = "cricket_user";
             }
-            activeNickToken.ToLower();
 
-            // 2. Extrapolate standard target file directories profile structures
+            // =========================================================================
+            // 2. EXTRAPOLATE STANDARD TARGET FILE DIRECTORIES PROFILE STRUCTURES
+            // =========================================================================
             BPath certDirectoryPath;
             if (find_directory(B_USER_SETTINGS_DIRECTORY, &certDirectoryPath) == B_OK) {
                 certDirectoryPath.Append("cricket/certs");
                 create_directory(certDirectoryPath.Path(), 0755); // Safeguard creation pass
 
-                BString pemFilename = BString(activeNickToken) << ".pem"; // NEW: Unified SASL container name
-                BString crtFilename = BString(activeNickToken) << ".crt";
-                BString keyFilename = BString(activeNickToken) << ".key";
+                BString pemFilename = BString("cert_") << serverNameToken << ".pem"; 
+                BString crtFilename = BString("cert_") << serverNameToken << ".crt";
+                BString keyFilename = BString("cert_") << serverNameToken << ".key";
 
-                BString fullPemPath = BString(certDirectoryPath.Path()) << "/" << pemFilename; // NEW: Path target
+                BString fullPemPath = BString(certDirectoryPath.Path()) << "/" << pemFilename; 
                 BString fullCrtPath = BString(certDirectoryPath.Path()) << "/" << crtFilename;
                 BString fullKeyPath = BString(certDirectoryPath.Path()) << "/" << keyFilename;
 
                 // 3. Assemble the unified native command parameter execution string block
-                // Generates an unencrypted 2048-bit RSA key first, then chains a self-signed cert 
-                // valid for 3650 days (10 years) with basic placeholder subject metadata signatures.
                 BString openSslCmdString;
                 openSslCmdString.SetToFormat(
                     "openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 "
-                    "-subj \"/CN=%s/O=CricketClient/OU=IRC/\" "
+                    "-subj \"/CN=%s/O=CricketClient/OU=IRC_Network_%s/\" "
                     "-keyout \"%s\" -out \"%s\" > /dev/null 2>&1",
-                    activeNickToken.String(), fullKeyPath.String(), fullCrtPath.String()
+                    activeNickToken.String(), serverNameToken.String(), fullKeyPath.String(), fullCrtPath.String()
                 );
 
-                if (cfg.debugEnable) printf("[DEBUG_CERT] Executing background system cryptographic generation tool pass...\n");
+                if (cfg.debugEnable) printf("[DEBUG_CERT] Executing network-isolated system cryptographic generation tool pass...\n");
                 
-                // Invoke standard shell execution
                 int systemResultCode = system(openSslCmdString.String());
 
                 if (systemResultCode == 0) {
-                    // 1. Bundle the crt and key together into the .pem file for backwards compatibility
-                    BString pemFilename = BString(activeNickToken) << ".pem";
-                    BString fullPemPath = BString(certDirectoryPath.Path()) << "/" << pemFilename;
-                    
+                    // Bundle the crt and key together into the .pem file for backwards compatibility
                     BString bundleCmdString;
                     bundleCmdString.SetToFormat("cat \"%s\" \"%s\" > \"%s\"", 
                         fullCrtPath.String(), fullKeyPath.String(), fullPemPath.String());
@@ -3857,7 +4033,6 @@ public:
                     // =========================================================================
                     //  AUTOMATED SHA-1 FINGERPRINT EXTRACTION ENGINE
                     // =========================================================================
-                    // Executes the precise pipeline to capture the clean lowercase 40-character string
                     BString fingerprintCmd;
                     fingerprintCmd.SetToFormat(
                         "openssl x509 -noout -fingerprint -sha1 -in \"%s\" | "
@@ -3877,7 +4052,7 @@ public:
                             cleanFingerprint.Trim();
                         }
                         fclose(hashFile);
-                        remove(tmpFilePath.String()); // Delete temporary file instantly
+                        remove(tmpFilePath.String()); 
                     }
                     // =========================================================================
                     
@@ -3886,25 +4061,24 @@ public:
                     fCertFileInput->SetText(crtFilename.String());
                     fKeyFileInput->SetText(keyFilename.String());
                     
-                    // 3.
+                    // 3. Dispatch auto-registration package downstream
                     if (this->fTarget != nullptr && cleanFingerprint.Length() == 40) {
                         BMessage* regMessage = new BMessage(MSG_AUTO_REGISTER_FINGERPRINT);
                         regMessage->AddString("fingerprint", cleanFingerprint);
                         this->fTarget->PostMessage(regMessage);
                     }
-
-
                     
-                    // 4. Inform the user with an explicit alert to restart the client
+                    // Pre-calculate BString body completely to match constructor requirements
+                    BString alertText;
+                    alertText << "Success! Generated your secure 2048-bit CertFP keypair profile for [" << serverNameToken << "].\n\n"
+                              << "Clean Fingerprint: " << cleanFingerprint << "\n\n"
+                              << "🚀 Cricket has automatically dispatched the 'CERT ADD' registration command to NickServ!\n\n"
+                              << "Please click 'Save' and restart Cricket IRC for your secure certificate passport to apply completely.";
+
                     BAlert* successNotification = new BAlert("CertFP Security Setup",
-                        BString("Success! Generated your secure 2048-bit CertFP keypair profile.\n\n"
-                                "Clean Fingerprint: ") << cleanFingerprint << "\n\n"
-                                "🚀 Cricket has automatically dispatched the 'CERT ADD' registration command to NickServ!\n\n"
-                                "Please click 'Save' and restart Cricket IRC for your secure certificate passport to apply completely.",
-                        "Excellent", nullptr, nullptr, B_WIDTH_AS_USUAL, B_INFO_ALERT);
+                        alertText.String(), "Excellent", nullptr, nullptr, B_WIDTH_AS_USUAL, B_INFO_ALERT);
                     successNotification->Go();
                 } else {
-
                     if (cfg.debugEnable) printf("[DEBUG_CERT] CRITICAL FAIL: OpenSSL generation process returned error status code: %d\n", systemResultCode);
                     BAlert* errorNotification = new BAlert("CertFP Security Error",
                         "Failed to generate certificates. Please ensure the 'openssl' command-line packages "
@@ -3915,6 +4089,8 @@ public:
             }
             break;
         }
+
+
 
 
 
@@ -3949,11 +4125,32 @@ public:
                         
                         // 3. Force the native BColorControl sliders to update their visual states instantly
                         fColorPicker->SetValue(savedColor);
+
+                        // =========================================================================
+                        // INTEGRATED PREVIEW SWATCH REPAINT ENGINE
+                        // =========================================================================
+                        if (fColorPreviewBox != nullptr) {
+                            // Extract the raw 32-bit color integer value from the newly updated widget
+                            int32 colorVal = fColorPicker->Value();
+                            
+                            // Manually unpack the 8-bit channels using standard bitwise operators
+                            rgb_color currentColor;
+                            currentColor.red   = (colorVal >> 24) & 0xFF;
+                            currentColor.green = (colorVal >> 16) & 0xFF;
+                            currentColor.blue  = (colorVal >> 8)  & 0xFF;
+                            currentColor.alpha = colorVal & 0xFF;
+                            
+                            // Assign the background color to the swatch preview box and refresh it
+                            fColorPreviewBox->SetViewColor(currentColor);
+                            fColorPreviewBox->Invalidate();
+                        }
+                        // =========================================================================
                     }
                 }
             }
             break;
         }
+
 
  
   
@@ -4315,8 +4512,10 @@ public:
                 
                 srv.backgroundImagePath = fBgPathInput->Text();
                 srv.backgroundOpacity = fBgOpacitySlider->Value(); 
-                srv.searchEngine = fLocalSearchEngineChoice.String();
                 
+
+                cfg.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
+                cfg.searchEngine = fLocalSearchEngineChoice.String();                
                 cfg.awayMessage = fAwayInput->Text();
                 cfg.quitMessage = fQuitInput->Text();
                 
@@ -4331,8 +4530,7 @@ public:
 
                 srv.autoConnect = (fAutoConnectCheck->Value() == B_CONTROL_ON);
                 srv.autoReconnect = (fAutoReconnectCheck->Value() == B_CONTROL_ON);
-                srv.hideStatusMessages = (fHideStatusCheck->Value() == B_CONTROL_ON);
-                srv.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
+                srv.hideStatusMessages = (fHideStatusCheck->Value() == B_CONTROL_ON);         
                 srv.enableEmoticons = (fEnableEmoticonsCheck->Value() == B_CONTROL_ON);
                 srv.useCustomDrawFunction = (fUseCustomDrawCheck->Value() == B_CONTROL_ON);
                 srv.enableColorCodes = (fEnableColorCodesCheck->Value() == B_CONTROL_ON);
@@ -7221,29 +7419,35 @@ private:
                     bouncedChannel.Truncate(commentIdx);
                 }
 
-                // Resolve the associated network secure writing socket
-                BSecureSocket* activeSocket = nullptr;
-                auto it = fServerSockets.find(contextServer);
-                if (it != fServerSockets.end()) {
-                    activeSocket = it->second;
+                // =========================================================================
+                // OPENSSL MAPPING UPDATE: Lookup secure pipe handle via tracking maps
+                // =========================================================================
+                // Verify that this server pointer currently possesses a live, active secure handle
+                bool serverStillConnected = false;
+                Lock();
+                if (gServerSslHandles.find(static_cast<void*>(contextServer)) != gServerSslHandles.end()) {
+                    serverStillConnected = true;
                 }
+                Unlock();
 
-                if (activeSocket != nullptr && bouncedChannel.Length() > 0) {
+                if (serverStillConnected && bouncedChannel.Length() > 0) {
                     // Log notice to the current active chat buffer buffer
                     BString notice;
                     notice.SetToFormat("(!) Network Alert: '%s' is Invite-Only. Prompting for option...\n", bouncedChannel.String());
                     LogToItemBuffer(fActiveBufferItem, notice);
 
                     // Launch the custom modal notification framework asynchronously
-                    ChannelInviteOnlyWindow* inviteWin = new ChannelInviteOnlyWindow(this, activeSocket, bouncedChannel);
+                    // NEW SIGNATURE: Hand over the contextServer pointer token instead of raw activeSocket reference
+                    ChannelInviteOnlyWindow* inviteWin = new ChannelInviteOnlyWindow(this, contextServer, bouncedChannel);
                     inviteWin->Show();
                 }
             }
+           
         }
 
     
     
-    
+    /* // @delete
         // =========================================================================
         // HANDLER FOR NUMERIC 475: ERR_BADCHANNELKEY
         // =========================================================================
@@ -7286,94 +7490,56 @@ private:
         }
 
     
-    
-	/* @delete
-        // =========================================================================
-        // UNIFIED COMPREHENSIVE NUMERIC 005: RPL_ISUPPORT CORE ENGINE
-        // =========================================================================
-        if (command == "005") { // RPL_ISUPPORT Capabilities Broadcast
-            if (contextServer == nullptr) return;
-
-            BString featuresPayload = line;
-            featuresPayload.Trim();
-
-            BString featuresOnly = "";
-            int32 spaceIdx = featuresPayload.FindFirst(" ");
-            if (spaceIdx != B_ERROR) {
-                featuresPayload.CopyInto(featuresOnly, spaceIdx + 1, featuresPayload.Length() - (spaceIdx + 1));
-                featuresOnly.Trim();
-            }
-
-            if (featuresOnly.Length() == 0) {
-                featuresOnly = "Default capabilities";
-            }
-
-            // 1. EXTRACT AND PARSE DYNAMIC CHANMODES FOR THE USER LIST ENGINE
-            int32 modePos = featuresOnly.FindFirst("CHANMODES=");
-            if (modePos != B_ERROR) {
-                BString modeString;
-                featuresOnly.CopyInto(modeString, modePos + 10, featuresOnly.Length() - (modePos + 10));
-                
-                int32 endSpace = modeString.FindFirst(" ");
-                if (endSpace != B_ERROR) {
-                    modeString.Truncate(endSpace);
-                }
-                
-                int32 firstComma  = modeString.FindFirst(",");
-                int32 secondComma = modeString.FindFirst(",", firstComma + 1);
-                int32 thirdComma  = modeString.FindFirst(",", secondComma + 1);
-                
-                if (firstComma != B_ERROR && secondComma != B_ERROR && thirdComma != B_ERROR) {
-                    modeString.CopyInto(contextServer->fTypeAModes, 0, firstComma);
-                    modeString.CopyInto(contextServer->fTypeBModes, firstComma + 1, secondComma - (firstComma + 1));
-                    modeString.CopyInto(contextServer->fTypeCModes, secondComma + 1, thirdComma - (secondComma + 1));
-                    modeString.CopyInto(contextServer->fTypeDModes, thirdComma + 1, modeString.Length() - (thirdComma + 1));
-                    
-                    if (cfg.debugEnable) {
-                        printf("[DEBUG] Dynamic CHANMODES parsed for %s -> A:%s | B:%s | C:%s | D:%s\n",
-                            contextServer->Text(), contextServer->fTypeAModes.String(), 
-                            contextServer->fTypeBModes.String(), contextServer->fTypeCModes.String(), 
-                            contextServer->fTypeDModes.String());
-                    }
-                }
-            }
-
-            // 2. HAIKU BSTRINGLIST TOKENIZER FOR MISC VALUES (NICKLEN, ETC)
-            BStringList tokens;
-            if (featuresOnly.Split(" ", true, tokens)) {
-                int32 tokenCount = tokens.CountStrings();
-                for (int32 i = 0; i < tokenCount; ++i) {
-                    BString singleToken = tokens.StringAt(i);
-                    int32 eqIdx = singleToken.FindFirst("=");
-                    if (eqIdx != B_ERROR) {
-                        BString key, value;
-                        singleToken.CopyInto(key, 0, eqIdx);
-                        singleToken.CopyInto(value, eqIdx + 1, singleToken.Length() - (eqIdx + 1));
-                        
-                        if (key == "NICKLEN") {
-                            // contextServer->fMaxNickLength = atoi(value.String());
-                        }
-                    }
-                }
-            }
-
-            // 3. RECONSTRUCT AND ROUTE FORMATTED NOTICE TO THE SERVER LOGS WINDOWS
-            BString supportNotice;
-            supportNotice.SetToFormat("--> Server Features: %s (%s)\n", featuresOnly.String(), trailing.String());
-
-            BStringItem* serverLogNode = FindServerLogNode(contextServer);
-            if (serverLogNode != nullptr) {
-                LogToItemBuffer(serverLogNode, supportNotice);
-            } else {
-                LogToItemBuffer(fActiveBufferItem, supportNotice);
-            }
-            return;
-        }
 	*/
+	        // =========================================================================
+        // HANDLER FOR NUMERIC 475: ERR_BADCHANNELKEY
+        // =========================================================================
+        if (command == "475") {
+            // Numeric 475 structure looks like: :server 475 yournick #channel :Cannot join channel (+k)
+            // 'line' holds the parameters following the code: "yournick #channel"
+            BString payload = line;
+            payload.Trim();
+
+            int32 spaceIdx = payload.FindFirst(" ");
+            if (spaceIdx != B_ERROR) {
+                BString badChannel = "";
+                payload.CopyInto(badChannel, spaceIdx + 1, payload.Length() - (spaceIdx + 1));
+                badChannel.Trim();
+
+                // Strip out trailing server comment fragments if present
+                int32 commentIdx = badChannel.FindFirst(" ");
+                if (commentIdx != B_ERROR) {
+                    badChannel.Truncate(commentIdx);
+                }
+
+                // =========================================================================
+                // OPENSSL MAPPING UPDATE: Lookup secure pipe handle via tracking maps
+                // =========================================================================
+                // Verify that this server pointer currently possesses a live, active secure handle
+                bool serverStillConnected = false;
+                Lock();
+                if (gServerSslHandles.find(static_cast<void*>(contextServer)) != gServerSslHandles.end()) {
+                    serverStillConnected = true;
+                }
+                Unlock();
+
+                if (serverStillConnected && badChannel.Length() > 0) {
+                    // Inform the local room log buffer cleanly
+                    BString notice;
+                    notice.SetToFormat("(!) Network Alert: '%s' requires an access key. Prompting for password...\n", badChannel.String());
+                    LogToItemBuffer(fActiveBufferItem, notice);
+
+                    // Launch the modal password collection dialog framework asynchronously
+                    // FIXED: Hand over contextServer and pass the correct 'badChannel' local variable string
+                    ChannelKeyPromptWindow* promptWin = new ChannelKeyPromptWindow(this, contextServer, badChannel);
+                    promptWin->Show();
+                }
+            }
+           
+        }
 
 
-
-
+		// @needsupdating
         // ERR_ERRONEUSNICKNAME (432): Triggered if an automated nickname assignment is blocked or illegal
         if (command == "432") {
             if (contextServer == nullptr) return;
@@ -7670,7 +7836,6 @@ private:
             }
             return;
         }
-
 
 
 
@@ -8758,7 +8923,72 @@ private:
             return;
         }
 
+        // =========================================================================
+        // RPL_ENDOFNAMES: Completion marker for the channel names list burst
+        // =========================================================================
+        if (command == "366") {
+            if (contextServer == nullptr) return;
 
+            // Raw line pattern typically matches: "<YourNick> <#Channel>"
+            BString targetChannel = "";
+            int32 lastSpace = line.FindLast(" ");
+            if (lastSpace != B_ERROR) {
+                line.CopyInto(targetChannel, lastSpace + 1, line.Length() - (lastSpace + 1));
+            } else {
+                targetChannel = line;
+            }
+            targetChannel.Trim();
+            targetChannel.ReplaceAll(" ", "");
+
+            if (targetChannel.Length() == 0) return;
+
+            ChannelTreeItem* chanNode = FindChannelNode(contextServer, targetChannel);
+            if (chanNode != nullptr) {
+                // AUTOMATION HOOK: If this is the active channel tab, force the user pane 
+                // list view widget to immediately repaint and sort its newly parsed items.
+                if (fActiveBufferItem == chanNode) {
+                    if (fUserList != nullptr) {
+                        fUserList->Invalidate();
+                    }
+                }
+            }
+            
+            // SILENT RETURN: Intercepts packet payload to stop it from falling down 
+            // into the global catch-all logging mechanism.
+            return;
+        }
+
+        // =========================================================================
+        // RPL_ENDOFMOTD / ERR_NOMOTD: Connection synchronization complete marker
+        // =========================================================================
+        if (command == "376" || command == "422") {
+            if (contextServer == nullptr) return;
+
+            // Log a clean, user-friendly notice indicating network connection is stabilized
+            BString syncNotice = "--- Server connection initialization and handshake complete.\n";
+            LogToItemBuffer(FindServerLogNode(contextServer), syncNotice);
+
+            // AUTOMATION HOOK: This is the absolute best tactical home to trigger 
+            // automated channel joins after network identification finishes!
+            
+            // SILENT BREAKOUT: Intercepts raw protocol strings from hitting server windows
+            return;
+        }
+
+
+        // =========================================================================
+        // RPL_LISTEND: Completion marker for the global server channel search list
+        // =========================================================================
+        if (command == "323") {
+            if (contextServer == nullptr) return;
+
+            // Log a clean user-friendly closure status to the main server window instead 
+            BString cleanNotice = "--- Channel directory search completed successfully.\n";
+            LogToItemBuffer(FindServerLogNode(contextServer), cleanNotice);
+            
+            // SILENT BREAKOUT: Discards the raw "End of /LIST" payload string
+            return;
+        }
 
 
 
@@ -8949,6 +9179,7 @@ private:
 
 
         // =========================================================================
+      // =========================================================================
         // FRESH MULTI-SERVER CHAT & NOTICE ROUTING ENGINE (OPENSSL INTEGRATED)
         // =========================================================================
         if (command == "PRIVMSG" || command == "NOTICE") {
@@ -9039,9 +9270,10 @@ private:
 
             // Establish destination nodes supporting Channels AND Private Message Queries
             BStringItem* targetNode = nullptr;
-            if (targetRoom.StartsWith("#") || targetRoom.StartsWith("&") || targetRoom.StartsWith("!")) {
+            if (targetRoom.StartsWith("#")) {
                 targetNode = FindChannelNode(contextServer, targetRoom);
             } else {
+                // Look for an existing one-on-one query tab under this explicit server
                 targetNode = FindChannelNode(contextServer, senderNick);
                 
                 // === AUTOMATION HOOK: Auto-create tab if someone pings us first ===
@@ -9056,8 +9288,12 @@ private:
                     fChannelTree->AddUnder(newQueryNode, contextServer);
                     fChannelTree->Expand(contextServer);
                     
+                    // Allocate an empty list container for their user panel cache matrix
                     fChannelUsers[newQueryNode] = new BObjectList<UserListItem, true>(20);
+                    
+                    // Log the opening initialization notice header
                     LogToItemBuffer(newQueryNode, BString("--- Incoming Private Conversation started with ") << senderNick << "\n");
+                    
                     targetNode = newQueryNode;
                 }
             }
@@ -9065,13 +9301,36 @@ private:
             if (targetNode == nullptr) {
                 targetNode = FindServerLogNode(contextServer);
             }
-            if (targetNode == nullptr) {
-                targetNode = static_cast<BStringItem*>(contextServer);
-            }
 
-            // Thread-Safe Timing Calculation Engine
+            // =========================================================================
+            // UNREAD NOTIFICATION NOTIFIER & UI REFRESH (INTEGRATED)
+            // =========================================================================
+            ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(targetNode);
+            if (chanNode != nullptr) {
+                // Handle away state reset if the message came from us
+                BString localNickToCheck = (resolvedProfile != nullptr) 
+                    ? BString(resolvedProfile->nick.c_str()) 
+                    : BString(fMyNick);
+                    
+                if (senderNick == localNickToCheck) {
+                    UpdateUserAwayState(chanNode, senderNick.String(), false);
+                }
+                
+                // Highlight the row if the user is not actively viewing this channel/query
+                if (!chanNode->IsSelected()) {
+                    chanNode->SetUnread(true);
+                    int32 itemIdx = fChannelTree->IndexOf(chanNode);
+                    if (itemIdx >= 0) {
+                        fChannelTree->InvalidateItem(itemIdx);
+                    }
+                }
+            }
+            // =========================================================================
+
+            // 2. Thread-Safe Timing Calculation Engine
             BString timestampPrefix = "";
-            bigtime_t currentTime = real_time_clock_usecs(); // Native Haiku system clock            
+            bigtime_t currentTime = real_time_clock_usecs(); // Native Haiku system clock   
+       
             
             if (targetNode != nullptr) {
                 int32 intervalMinutes = 30; // Foolproof fallback baseline standard
@@ -9214,300 +9473,6 @@ private:
 
 
 
-
-
-
-
-      // PRIVMSG & NOTICE Message Routing Engine
-        if (command == "PRIVMSGxxx" || command == "NOTICExxx") {
-            if (contextServer == nullptr) return;
-
-            BString senderNick = prefix;
-            int32 exclamIdx = senderNick.FindFirst("!");
-            if (exclamIdx != B_ERROR) senderNick.Truncate(exclamIdx);            
-            
-            // --- UPDATED: WILDCARD PRIVMSG / NOTICE FILTER ENGINE ---
-            if (senderNick.Length() > 0 && !contextServer->fRuntimeIgnoreList.empty()) {
-                bool shouldDrop = false;
-                for (const auto& ignoredNick : contextServer->fRuntimeIgnoreList) {
-                    
-                    // Call our wildcard matcher cleanly using the incoming nickname 
-                    if (MatchWildcard(senderNick.String(), ignoredNick.c_str())) {
-                        shouldDrop = true;
-                        break;
-                    }
-                }
-                if (shouldDrop) {
-                    return; // SILENTLY DROP PACKET PAYLOAD MESSAGES
-                }
-            }
-
-            int32 msgTargetSpace = line.FindFirst(" ");
-            BString targetRoom = line;
-            if (msgTargetSpace != B_ERROR) targetRoom.Truncate(msgTargetSpace);
-            targetRoom.ReplaceAll(" ", "");
-
-            // Handle Automated CTCP Version Queries
-            if (command == "PRIVMSG" && (trailing.StartsWith("\x01VERSION\x01") || trailing.StartsWith("\1VERSION\1"))) {
-                BSecureSocket* activeSocket = nullptr;
-                if (fServerSockets.count(contextServer) > 0) {
-                    activeSocket = fServerSockets[contextServer];
-                } else if (contextServer == fOftcNode) {
-                    activeSocket = fOftcSocket;
-                } else if (contextServer == fLiberaNode) {
-                    activeSocket = fLiberaSocket;
-                }
-
-                if (activeSocket != nullptr) {
-                    BString versionReply;
-                    versionReply << "NOTICE " << senderNick << " :\x01VERSION " << AppInfo::VERSION_STRING << "\x01\r\n";                    
-                    activeSocket->Write(versionReply.String(), versionReply.Length());
-                    
-                    BString logNotice;
-                    logNotice << "--- [CTCP] Version query from " << senderNick << " answered automatically.\n";
-                    LogToItemBuffer(FindServerLogNode(contextServer), logNotice);
-                }
-                return;
-            }
-
-            // --- FIX 3: Map visual ServerTreeItem node down to its backend Config indices safely ---
-            std::string targetServerName = contextServer->Text();
-            bool foundProfile = false;
-            size_t resolvedIndex = 0;
-            bool resolvedIsCustom = false;
-
-            for (size_t i = 0; i < cfg.servers.size(); i++) {
-                if (cfg.servers[i].name == targetServerName) {
-                    resolvedIndex = i;
-                    resolvedIsCustom = false;
-                    foundProfile = true;
-                    break;
-                }
-            }
-            if (!foundProfile) {
-                for (size_t i = 0; i < cfg.customServers.size(); i++) {
-                    if (cfg.customServers[i].name == targetServerName) {
-                        resolvedIndex = i;
-                        resolvedIsCustom = true;
-                        foundProfile = true;
-                        break;
-                    }
-                }
-            }
-
-        // =========================================================================
-        // FIXED PRIVATE MESSAGE INTAKE ROUTER (NETWORK ISOLATION FIX)
-        // =========================================================================
-
-        // 1. Establish destination nodes supporting Channels AND Private Message Queries
-        BStringItem* targetNode = nullptr;
-        if (targetRoom.StartsWith("#")) {
-            targetNode = FindChannelNode(contextServer, targetRoom);
-        } else {
-            // Look for an existing one-on-one query tab under this explicit server
-            targetNode = FindChannelNode(contextServer, senderNick);
-            
-            // === AUTOMATION HOOK: Auto-create tab if someone pings us first ===
-            if (targetNode == nullptr && contextServer != nullptr) {
-                
-                // FIXED VALUE MAP ROUTING: Derive the index parameters explicitly 
-                // from the active contextServer object to prevent Libera Chat hijack cross-talk!
-                size_t activeServerIdx = contextServer->GetIndex();
-                bool activeServerIsCustom = contextServer->IsCustom();
-
-                ChannelTreeItem* newQueryNode = new ChannelTreeItem(senderNick.String(), 
-                                                                    activeServerIdx, 
-                                                                    activeServerIsCustom);
-                
-                fChannelTree->AddUnder(newQueryNode, contextServer);
-                fChannelTree->Expand(contextServer);
-                
-                // Allocate an empty list container for their user panel cache matrix
-                fChannelUsers[newQueryNode] = new BObjectList<UserListItem, true>(20);
-                
-                // Log the opening initialization notice header
-                LogToItemBuffer(newQueryNode, BString("--- Incoming Private Conversation started with ") << senderNick << "\n");
-                
-                targetNode = newQueryNode;
-            }
-        }
-
-        if (targetNode == nullptr) {
-            targetNode = FindServerLogNode(contextServer);
-        }
-        // =========================================================================
-
-
-            // 2. Thread-Safe Timing Calculation Engine
-            BString timestampPrefix = "";
-            bigtime_t currentTime = real_time_clock_usecs(); // Native Haiku system clock            
-            
-            if (targetNode != nullptr) {
-                // 1. FETCH DYNAMIC CONFIGURATION INTERVAL
-                int32 intervalMinutes = 30; // Foolproof fallback baseline standard
-                int32 activeSrvIdx = GetServerIndexFromNode(targetNode); // Query server index matrix
-                
-                if (activeSrvIdx >= 0) {
-                    if (activeSrvIdx < (int32)cfg.servers.size()) {
-                        intervalMinutes = cfg.servers[activeSrvIdx].timestampInterval;
-                    } else {
-                        int32 cIdx = activeSrvIdx - (int32)cfg.servers.size();
-                        if (cIdx >= 0 && cIdx < (int32)cfg.customServers.size()) {
-                            intervalMinutes = cfg.customServers[cIdx].timestampInterval;
-                        }
-                    }
-                }
-
-                // 2. Mathematically compute intervals dynamically
-                bigtime_t dynamicIntervalInUsecs = (bigtime_t)intervalMinutes * 60 * 1000000;
-
-                bool needsTimestamp = false;
-                if (fLastTimestampTime.count(targetNode) == 0) {
-                    needsTimestamp = true;
-                } else {
-                    bigtime_t lastTime = fLastTimestampTime.find(targetNode)->second;
-                    //  Checks against dynamic duration choice instead of hardcoded 30 minutes!
-                    if ((currentTime - lastTime) >= dynamicIntervalInUsecs) {
-                        needsTimestamp = true;
-                    }
-                }
-
-                if (needsTimestamp) {                    
-                    fLastTimestampTime[targetNode] = currentTime;
-                    time_t rawTime = (time_t)(currentTime / 1000000);
-                    struct tm* timeInfo = localtime(&rawTime);                    
-                    if (timeInfo != nullptr) {
-                        char timeBuffer[32];
-                        strftime(timeBuffer, sizeof(timeBuffer), "[%H:%M] ", timeInfo);
-                        timestampPrefix = timeBuffer;
-                    }
-                }
-            }
-
-            // 3. Parse and Format Message Strings
-            BString formattedMsg;
-            formattedMsg << timestampPrefix;
-            
-            if (command == "PRIVMSG" && (trailing.StartsWith("\x01" "ACTION ") || trailing.StartsWith("\1ACTION "))) {                        
-                trailing.Remove(0, 8);                
-                if (trailing.EndsWith("\x01") || trailing.EndsWith("\1")) {
-                    trailing.Truncate(trailing.Length() - 1);
-                }                
-                formattedMsg << "* " << senderNick << " " << trailing << "\n";
-            } else {
-                formattedMsg << "<" << senderNick << "> " << trailing << "\n";
-            }
-
-            // ---  Safely reuse un-typed variables, and declare resolvedProfile inside this block scope ---
-            targetServerName = contextServer->Text();
-            foundProfile = false;
-            ServerConfig* resolvedProfile = nullptr; // Explicitly declared here so the rest of the function can see it!
-
-            for (auto& srv : cfg.servers) {
-                if (srv.name == targetServerName) {
-                    resolvedProfile = &srv;
-                    foundProfile = true;
-                    break;
-                }
-            }
-            if (!foundProfile) {
-                for (auto& srv : cfg.customServers) {
-                    if (srv.name == targetServerName) {
-                        resolvedProfile = &srv;
-                        foundProfile = true;
-                        break;
-                    }
-                }
-            }
-            
-            // =========================================================================
-            // DYNAMIC ANTI-FLOOD GATEWAY: CHANNELS SERVICES AUTHENTICATION HANDLER
-            // =========================================================================   
-            if (senderNick.StartsWith("NickServ") && trailing.IFindFirst("identify") != B_ERROR && contextServer != nullptr && !contextServer->fSASLSuccess) {                
-                BSecureSocket* activeSocket = nullptr;
-                if (fServerSockets.count(contextServer) > 0) {
-                    activeSocket = fServerSockets[contextServer];
-                } else if (contextServer == fOftcNode) {
-                    activeSocket = fOftcSocket;
-                } else if (contextServer == fLiberaNode) {
-                    activeSocket = fLiberaSocket;
-                }
-                if (activeSocket != nullptr) {
-                    if (contextServer->fHasIdentifiedThisSession) {
-                        return;
-                    }
-
-                    const ServerConfig* activeProfile = nullptr;                    
-                    for (const auto& srv : cfg.servers) {
-                        if (BString(srv.host.c_str()).ICompare(contextServer->GetHost()) == 0) {
-                            activeProfile = &srv;
-                            break;
-                        }
-                    }                    
-                    if (activeProfile == nullptr) {
-                        for (const auto& srv : cfg.customServers) {
-                            if (BString(srv.host.c_str()).ICompare(contextServer->GetHost()) == 0) {
-                                activeProfile = &srv;
-                                break;
-                            }
-                        }
-                    }
-                    if (activeProfile != nullptr && activeProfile->pass.length() > 0) {
-                        BString currentActiveNick = contextServer->GetNick();                        
-                        BString primaryConfigNick(activeProfile->nick.c_str());
-                        BString altConfigNick(activeProfile->altNick.c_str());
-                        BString altConfigNick2(activeProfile->altNick2.c_str());
-                        
-                        if (currentActiveNick.ICompare(primaryConfigNick) == 0) {
-                            
-                            BString autoIdentify;
-                            autoIdentify << "PRIVMSG NickServ :IDENTIFY " << activeProfile->pass.c_str() << "\r\n";
-                            activeSocket->Write(autoIdentify.String(), autoIdentify.Length());
-                            contextServer->fHasIdentifiedThisSession = true;                            
-                            BString logNotice = "--- [Auto-Services] Identification credentials automatically sent to NickServ.\n";
-                            LogToItemBuffer(FindServerLogNode(contextServer), logNotice);
-                            
-                        } else {
-                            contextServer->fHasIdentifiedThisSession = true;
-                            if (cfg.debugEnable) printf("[ANTI-FLOOD] Aborted automated authentication: Active handle '%s' is an alternate nickname variant.\n",
-                                   currentActiveNick.String());
-                        }
-                    }
-                }
-            }
-            // ANTI-FLOOD HOOK 2: Catch explicit failure notices instantly
-
-            if (senderNick.StartsWith("NickServ") && (trailing.IFindFirst("Identify failed") != B_ERROR || trailing.IFindFirst("incorrect password") != B_ERROR)) {
-                if (contextServer != nullptr) {
-                    contextServer->fHasIdentifiedThisSession = true; // Turn off the machine!
-                    if (cfg.debugEnable) printf("[ANTI-FLOOD] NickServ failure warning detected. Identity authentication loop halted completely.\n");
-                }
-            }
-            // 5. Route structured messages to their designated text buffers
-            if (targetRoom.StartsWith("#")) {
-                ChannelTreeItem* chanNode = dynamic_cast<ChannelTreeItem*>(targetNode);
-                if (chanNode) {                    
-                    BString localNickToCheck = (resolvedProfile != nullptr) 
-                        ? BString(resolvedProfile->nick.c_str()) 
-                        : BString(fMyNick);
-                        
-                    if (senderNick == localNickToCheck) {
-                        UpdateUserAwayState(chanNode, senderNick.String(), false);
-                    }
-                    if (fActiveBufferItem != chanNode) {
-                        chanNode->SetUnread(true);
-                        fChannelTree->InvalidateItem(fChannelTree->IndexOf(chanNode)); 
-                    }
-                    LogToItemBuffer(chanNode, formattedMsg);
-                } else {
-                    LogToItemBuffer(FindServerLogNode(contextServer), formattedMsg);
-                }
-            } else {
-                LogToItemBuffer(targetNode, formattedMsg);
-            }
-            return;
-
-        }       
         // Bracket-Sanitized Global Server Protocol Fallback Route
         if (trailing.Length() > 0) {
             if (contextServer == nullptr) {
@@ -9515,7 +9480,7 @@ private:
             }
             
         // =========================================================================
-        // UNIVERSAL SERVICES INBOUND SCANNER (TAB-MISMATCH RESILIENT)
+        // ASYNCHRONOUS NETWORK AUTHENTICATION ROUTER
         // =========================================================================
         BString lowerLine = line; lowerLine.ToLower();
         BString lowerPrefix = prefix; lowerPrefix.ToLower();
@@ -9986,15 +9951,7 @@ public:
                 selectedText.ReplaceAll("/", "%2F"); 
                 
                 BString translateUrl = "https://duckduckgo.com"; 
-                if (fIsCustom) {
-                    if (fServerIdx < cfg.customServers.size()) {
-                        translateUrl = cfg.customServers[fServerIdx].searchEngine.c_str();
-                    }
-                } else {
-                    if (fServerIdx < cfg.servers.size()) {
-                        translateUrl = cfg.servers[fServerIdx].searchEngine.c_str();
-                    }
-                }
+				translateUrl = cfg.searchEngine.c_str();
                 translateUrl << "/search?q=translate+" << selectedText << "+in+" << targetLanguage;
                 // =========================================================================
 
@@ -10025,7 +9982,56 @@ public:
             }
             break;
         }
+        
+        // =========================================================================
+        // HANDLER FOR CONTEXT ACTION: CHOOSE HIGHLIGHTED TEXT 
+        // =========================================================================
 
+        case MSG_CONTEXT_ADD_COLOR_FROM_TEXT: {
+            BString targetNick;
+            int64 unpackedServerIdx = 0;
+            bool isCustom = false;
+            
+            // 1. Extract parameters safely via structural indices
+            if (message->FindString("target_nick", &targetNick) == B_OK &&
+                message->FindInt64("server_index", &unpackedServerIdx) == B_OK &&
+                message->FindBool("is_custom_server", &isCustom) == B_OK) {
+                
+                size_t targetIndex = static_cast<size_t>(unpackedServerIdx);
+                ServerTreeItem* serverItem = nullptr;
+
+                // 2. Resolve the index keys back into the live visual ServerTreeItem* node pointer
+                if (fChannelTree != nullptr) {
+                    for (int32 i = 0; i < fChannelTree->CountItems(); i++) {
+                        ServerTreeItem* srvNode = dynamic_cast<ServerTreeItem*>(fChannelTree->ItemAt(i));
+                        if (srvNode != nullptr && 
+                            srvNode->GetIndex() == targetIndex && 
+                            srvNode->IsCustom() == isCustom) {
+                            
+                            serverItem = srvNode;
+                            break;
+                        }
+                    }
+                }
+
+                // 3. Fallback: Fall back to the active global tracker handle if the tree loop skips it
+                if (serverItem == nullptr) {
+                    serverItem = fCurrentServerNode;
+                }
+
+                // 4. Safely spin up the configuration layout window
+                if (serverItem != nullptr && targetNick.Length() > 0) {
+                    ServerConfigWindow* configWin = new ServerConfigWindow(this, serverItem, serverItem->GetIndex(), serverItem->IsCustom());
+                    configWin->Show();
+
+                    // Pre-fill the nickname text entry box natively
+                    BMessage fillMsg('fllc'); 
+                    fillMsg.AddString("nick", targetNick);
+                    configWin->PostMessage(&fillMsg);
+                }
+            }
+            break;
+        }
 
 
         // =========================================================================
@@ -11583,7 +11589,7 @@ public:
 
 
 
-
+		//@needsupdating
         case 'dlcs': { // Delete Custom Server Message
             ServerTreeItem* srvItem = nullptr;
             if (message->FindPointer("server_item", (void**)&srvItem) != B_OK || srvItem == nullptr) {
