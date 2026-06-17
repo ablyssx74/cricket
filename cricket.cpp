@@ -69,10 +69,13 @@
 
 // Standard C/C++ STL & POSIX Includes
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <fstream>
 #include <map>
 #include "nlohmann/json.hpp"
+#include <SupportDefs.h>
+#include <Notification.h>
 
 
 // Define application messages
@@ -126,7 +129,7 @@ enum {
     MSG_CONTEXT_ADD_COLOR_FROM_TEXT = 'acft',
     MSG_CONTEXT_IGNORE_FROM_TEXT = 'igft',
     MSG_TOGGLE_NICK_ALERT = 'tgna',
-
+    MSG_TOGGLE_HIDE_UPDATES = 'thuc',
 
 };
 
@@ -142,8 +145,11 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.37 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.38 (Haiku OS)";
 }
+
+// Forward declaration signature for our update worker thread
+static int32 BackgroundUpdateChecker(void* data);
 
 using json = nlohmann::json;
 
@@ -201,6 +207,7 @@ struct Config {
     bool useCustomDrawFunction = true;
     int32 timestampInterval = 30;
     std::string searchEngine = "https://duckduckgo.com"; 
+    bool hideUpdateNotifications = false; 
 } cfg;
 
 
@@ -222,7 +229,8 @@ void save_config() {
     j["serverListFontSize"] = cfg.serverListFontSize;
     j["chatLogFontSize"] = cfg.chatLogFontSize;
     j["userListFontSize"] = cfg.userListFontSize;
-    
+    j["hide_update_notifications"] = cfg.hideUpdateNotifications;
+
     // --- STRIP THE VERSION SUFFIX BEFORE SAVING ---
     std::string cleanQuitMsg = cfg.quitMessage;
     size_t suffixPos = cleanQuitMsg.find(" [Cricket IRC Client");
@@ -449,6 +457,10 @@ void load_config() {
                 cfg.userListFontSize   = j.value("userListFontSize", (int32)12);  
                 cfg.useCustomDrawFunction = j.value("useCustomDrawFunction", true);
                 cfg.searchEngine = j.value("search_engine", "https://duckduckgo.com");
+                cfg.hideUpdateNotifications = j.value("hide_update_notifications", false);
+
+
+                
                 // Parse standard servers array
                 
                 if (j.contains("servers") && j["servers"].is_array()) {
@@ -704,6 +716,116 @@ void load_config() {
         cfg.servers.push_back(oftc);
     }
 }
+
+
+// =============================================================================
+// NATIVE ASYNCHRONOUS UPDATE ENGINE IMPLEMENTATION (CURL ENGINE PASS)
+// =============================================================================
+static int32 BackgroundUpdateChecker(void* data) {
+    // Wait a brief 5 seconds after application boot to allow UI rendering to finalize completely
+    snooze(5000000); 
+
+    if (cfg.debugEnable) printf("[DEBUG_UPDATE] Asynchronous curl update checker running...\n");
+
+    const char* targetUrl = "https://raw.githubusercontent.com/ablyssx74/cricket/refs/heads/main/VERSION";
+
+    BString shellCmdString;
+    shellCmdString.SetToFormat("curl -sL \"%s\"", targetUrl);
+
+    BString remoteVersionStr = "";
+    
+    FILE* pipeStream = popen(shellCmdString.String(), "r");
+    if (pipeStream != nullptr) {
+        char buffer[128] = {0};
+        if (fgets(buffer, sizeof(buffer), pipeStream) != nullptr) {
+            remoteVersionStr = buffer;
+        }
+        pclose(pipeStream);
+    }
+
+    remoteVersionStr.Trim(); 
+    if (cfg.debugEnable) printf("[DEBUG_UPDATE] Raw text received from GitHub: '%s'\n", remoteVersionStr.String());
+
+    // Strip visual prefix formatting blocks out of the remote string if they exist
+    remoteVersionStr.ReplaceAll("v.", ""); 
+    remoteVersionStr.ReplaceAll("v", "");  
+    
+    if (remoteVersionStr.Length() > 0) {
+        // --- FIXED FALLBACK STRING CLEANER PASS ---
+        BString currentVersionStr = AppInfo::VERSION_STRING;
+        if (cfg.debugEnable) printf("[DEBUG_UPDATE] Local AppInfo text before cleaning: '%s'\n", currentVersionStr.String());
+
+        int32 vPos = currentVersionStr.IFindFirst("v.");
+        if (vPos != B_ERROR) {
+            currentVersionStr.Remove(0, vPos + 2); 
+            int32 spacePos = currentVersionStr.FindFirst(" ");
+            if (spacePos != B_ERROR) currentVersionStr.Truncate(spacePos); 
+        } else {
+            // HARD FALLBACK: If your AppInfo doesn't use lowercase "v.", fallback to raw extraction
+            currentVersionStr = "0.0.37";
+        }
+        currentVersionStr.Trim();
+        if (cfg.debugEnable) printf("[DEBUG_UPDATE] Cleaned local target string: '%s'\n", currentVersionStr.String());
+
+        // Parse semantic versions down into flat integers for safe math checks
+        int32 curMajor = 0, curMinor = 0, curRevision = 0;
+        int32 remMajor = 0, remMinor = 0, remRevision = 0;
+
+        sscanf(currentVersionStr.String(), "%d.%d.%d", &curMajor, &curMinor, &curRevision);
+        sscanf(remoteVersionStr.String(), "%d.%d.%d", &remMajor, &remMinor, &remRevision);
+
+        int32 currentFlattened = (curMajor * 10000) + (curMinor * 100) + curRevision;
+        int32 remoteFlattened  = (remMajor * 10000) + (remMinor * 100) + remRevision;
+
+        if (cfg.debugEnable) {
+            printf("[DEBUG_UPDATE] Calculated values for math match -> Local: %d | Remote: %d\n", 
+                   (int)currentFlattened, (int)remoteFlattened);
+        }
+
+        if (remoteFlattened > currentFlattened) {
+            if (cfg.debugEnable) printf("[DEBUG_UPDATE] Update matched! Checking alert preference flags...\n");
+            
+            // =========================================================================
+            // CHANNELS AUTO-HIDE PREFERENCE INTERCEPT
+            // =========================================================================
+            if (cfg.hideUpdateNotifications) {
+                if (cfg.debugEnable) printf("[DEBUG_UPDATE] Suppressing desktop alert toast: user marked hide notifications true.\n");
+                return B_OK; // Break out cleanly and silently without throwing the alert box!
+            }
+            // =========================================================================
+
+            // Native Haiku desktop notification banner toast window dispatch engine
+            BNotification updateAlert(B_INFORMATION_NOTIFICATION);
+            updateAlert.SetGroup("Cricket IRC");
+            updateAlert.SetTitle("Update Available");
+            
+            BString alertContent;
+            alertContent << "A newer version of Cricket is available! (v" << remoteVersionStr 
+                         << ")";
+            updateAlert.SetContent(alertContent.String());
+            
+            updateAlert.Send();
+            if (cfg.debugEnable) printf("[DEBUG_UPDATE] Toast notification sent successfully.\n");
+        } else {
+            if (cfg.debugEnable) printf("[DEBUG_UPDATE] Math complete: Client binary is already completely up to date.\n");
+        }
+    } else {
+        if (cfg.debugEnable) printf("[DEBUG_UPDATE] CRITICAL ERR: Raw text data read from pipe buffer was empty!\n");
+    }
+    
+    return B_OK;
+}
+
+
+
+
+
+
+
+
+
+
+
 
 // Hardened, non-recursive, case-insensitive shell-style wildcard matcher (* and ?)
 static bool MatchWildcard(const char* stringToTest, const char* wildcardPattern) {
@@ -3685,6 +3807,12 @@ public:
 	    
 	    // Set the checkbox status dynamically from your active profile state
 	    fNickAlertCheckbox->SetValue(srv.nickAlert ? B_CONTROL_ON : B_CONTROL_OFF);
+	    
+	    
+	    fHideUpdateCheck = new BCheckBox("hide_updates_box", "Hide client update desktop alerts", 
+                                  new BMessage(MSG_TOGGLE_HIDE_UPDATES));
+		fHideUpdateCheck->SetValue(cfg.hideUpdateNotifications ? B_CONTROL_ON : B_CONTROL_OFF);
+
 
         // --- Create Tab View Architecture ---
         BTabView* tabView = new BTabView("config_tabs", B_WIDTH_AS_USUAL);
@@ -3713,28 +3841,35 @@ public:
                 .Add(fNickAlertCheckbox, 0, 4, 2, 1) // Row 4: Span 2 Columns, 1 Row height
                 // =========================================================================
 
-                // --- SASL Section (Shifted to Rows 5 & 6) ---
-                .Add(fUseSASLCheck, 0, 5, 2, 1)
-                .Add(fSASLUserInput->CreateLabelLayoutItem(), 0, 6)
-                .Add(fSASLUserInput->CreateTextViewLayoutItem(), 1, 6)
+                // =========================================================================
+                // NEW: INTEGRATED HIDE UPDATE NOTIFICATIONS CHECKBOX LAYOUT ITEM
+                // =========================================================================
+                .Add(fHideUpdateCheck, 0, 5, 2, 1) // Row 5: Span 2 Columns, 1 Row height
+                // =========================================================================
 
-                // --- CertFP Section (Shifted to Rows 7, 8, 9, 10, 11 & 12) ---
-                .Add(fUseCertFPCheck, 0, 7, 2, 1)
-                
-                .Add(fCertProfileInput->CreateLabelLayoutItem(), 0, 8)
-                .Add(fCertProfileInput->CreateTextViewLayoutItem(), 1, 8)
+                // --- SASL Section (Shifted to Rows 6 & 7) ---
+                .Add(fUseSASLCheck, 0, 6, 2, 1)
+                .Add(fSASLUserInput->CreateLabelLayoutItem(), 0, 7)
+                .Add(fSASLUserInput->CreateTextViewLayoutItem(), 1, 7)
 
-                .Add(fCertFileInput->CreateLabelLayoutItem(), 0, 9)
-                .Add(fCertFileInput->CreateTextViewLayoutItem(), 1, 9)
+                // --- CertFP Section (Shifted to Rows 8, 9, 10, 11, 12 & 13) ---
+                .Add(fUseCertFPCheck, 0, 8, 2, 1)
+                
+                .Add(fCertProfileInput->CreateLabelLayoutItem(), 0, 9)
+                .Add(fCertProfileInput->CreateTextViewLayoutItem(), 1, 9)
 
-                .Add(fKeyFileInput->CreateLabelLayoutItem(), 0, 10)
-                .Add(fKeyFileInput->CreateTextViewLayoutItem(), 1, 10)
+                .Add(fCertFileInput->CreateLabelLayoutItem(), 0, 10)
+                .Add(fCertFileInput->CreateTextViewLayoutItem(), 1, 10)
+
+                .Add(fKeyFileInput->CreateLabelLayoutItem(), 0, 11)
+                .Add(fKeyFileInput->CreateTextViewLayoutItem(), 1, 11)
                 
-                .Add(fGenerateCertsButton, 0, 11, 2, 1)
+                .Add(fGenerateCertsButton, 0, 12, 2, 1)
                 
-                .Add(certLocationNotice, 0, 12, 2, 1)
+                .Add(certLocationNotice, 0, 13, 2, 1)
             .End()
             .AddGlue();
+
 
 
 
@@ -3943,7 +4078,14 @@ public:
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
         	
-        	
+      case MSG_TOGGLE_HIDE_UPDATES: {
+            if (fHideUpdateCheck != nullptr) {
+                cfg.hideUpdateNotifications = (fHideUpdateCheck->Value() == B_CONTROL_ON);
+                save_config(); // Flush parameter change straight to disk instantly
+            }
+            break;
+        }
+     	
        // =========================================================================
        // Notifications
        // =========================================================================        	
@@ -4712,6 +4854,7 @@ private:
 	
 	// Notifications
 	BCheckBox* fNickAlertCheckbox;
+	BCheckBox* fHideUpdateCheck;
 
 
 	
@@ -5604,6 +5747,18 @@ public:
        
         // 2. Load Config and Populate Servers Tree ONCE
         load_config(); 
+        
+        
+        // =========================================================================
+        // AUTOMATED BACKGROUND UPDATE CHECKER THREAD INITIALIZATION
+        // =========================================================================
+        thread_id updateThread = spawn_thread(BackgroundUpdateChecker, "UpdateCheckerThread", B_NORMAL_PRIORITY, this);
+        if (updateThread >= 0) {
+            resume_thread(updateThread);
+        }
+        // =========================================================================
+
+
 
         // Loop A: Populate hardcoded default servers (Libera / OFTC)
         for (size_t i = 0; i < cfg.servers.size(); i++) {

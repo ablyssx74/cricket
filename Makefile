@@ -2,7 +2,7 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.37
+VERSION = 0.0.38
 
 # Target Arch
 UNAME_M := $(shell uname -p)
@@ -11,13 +11,13 @@ CXX = g++-x86
 CC = gcc-x86
 MAKE := setarch x86 $(MAKE)
 ARCH = x86_gcc2
-CXXFLAGS := -O2
+CXXFLAGS := -O2 
 INCLUDE = -L/boot/system/lib/x86 
 else ifeq ($(UNAME_M), x86_64)
 CXX = g++
 CC = gcc
 ARCH = x86_64
-CXXFLAGS := -O3
+CXXFLAGS := -O3 
 INCLUDE = -L/boot/system/lib
 endif
 
