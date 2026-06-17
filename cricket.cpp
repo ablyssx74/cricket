@@ -145,7 +145,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.40 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.41 (Haiku OS)";
 }
 
 // Forward declaration signature for our update worker thread
