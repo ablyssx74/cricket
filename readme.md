@@ -15,5 +15,9 @@ make release
 ```
 
 ### Screenshots
-<img align="left" width="512" height="270" alt="Image" src="https://github.com/user-attachments/assets/4cb2498a-9ea1-4d8f-955f-5a01bc8bbb86" />
+<img align="left" width="661" height="582" alt="Image" src="https://github.com/user-attachments/assets/0c6f7b28-61fc-4704-a632-4c3b87734990" />
+<img align="left" width="657" height="577" alt="Image" src="https://github.com/user-attachments/assets/8b797bec-a866-4378-9b96-51a4b5ed12fc" />
+<img align="left" width="663" height="582" alt="Image" src="https://github.com/user-attachments/assets/670f8952-2f8e-493e-8dad-c75b67de0a6c" />
+<img align="left" width="656" height="580" alt="Image" src="https://github.com/user-attachments/assets/bd318baf-32d8-4a78-9841-9c8273da885d" />
+<img align="left" width="600" height="300" alt="Image" src="https://github.com/user-attachments/assets/d4c47f8c-17c5-455f-8a46-cb59d696a829" />
 
