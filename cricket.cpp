@@ -129,7 +129,7 @@ enum {
     MSG_CONTEXT_ADD_COLOR_FROM_TEXT = 'acft',
     MSG_CONTEXT_IGNORE_FROM_TEXT = 'igft',
     MSG_TOGGLE_NICK_ALERT = 'tgna',
-    MSG_TOGGLE_HIDE_UPDATES = 'thuc',
+    MSG_TOGGLE_SHOW_UPDATES = 'thuc',
 
 };
 
@@ -145,7 +145,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.38 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.39 (Haiku OS)";
 }
 
 // Forward declaration signature for our update worker thread
@@ -207,7 +207,7 @@ struct Config {
     bool useCustomDrawFunction = true;
     int32 timestampInterval = 30;
     std::string searchEngine = "https://duckduckgo.com"; 
-    bool hideUpdateNotifications = false; 
+    bool showUpdateNotifications = true; 
 } cfg;
 
 
@@ -229,7 +229,7 @@ void save_config() {
     j["serverListFontSize"] = cfg.serverListFontSize;
     j["chatLogFontSize"] = cfg.chatLogFontSize;
     j["userListFontSize"] = cfg.userListFontSize;
-    j["hide_update_notifications"] = cfg.hideUpdateNotifications;
+    j["show_update_notifications"] = cfg.showUpdateNotifications;
 
     // --- STRIP THE VERSION SUFFIX BEFORE SAVING ---
     std::string cleanQuitMsg = cfg.quitMessage;
@@ -457,7 +457,7 @@ void load_config() {
                 cfg.userListFontSize   = j.value("userListFontSize", (int32)12);  
                 cfg.useCustomDrawFunction = j.value("useCustomDrawFunction", true);
                 cfg.searchEngine = j.value("search_engine", "https://duckduckgo.com");
-                cfg.hideUpdateNotifications = j.value("hide_update_notifications", false);
+                cfg.showUpdateNotifications = j.value("show_update_notifications", true);
 
 
                 
@@ -788,8 +788,8 @@ static int32 BackgroundUpdateChecker(void* data) {
             // =========================================================================
             // CHANNELS AUTO-HIDE PREFERENCE INTERCEPT
             // =========================================================================
-            if (cfg.hideUpdateNotifications) {
-                if (cfg.debugEnable) printf("[DEBUG_UPDATE] Suppressing desktop alert toast: user marked hide notifications true.\n");
+            if (cfg.showUpdateNotifications) {
+                if (cfg.debugEnable) printf("[DEBUG_UPDATE] Suppressing desktop alert toast\n");
                 return B_OK; // Break out cleanly and silently without throwing the alert box!
             }
             // =========================================================================
@@ -3809,9 +3809,9 @@ public:
 	    fNickAlertCheckbox->SetValue(srv.nickAlert ? B_CONTROL_ON : B_CONTROL_OFF);
 	    
 	    
-	    fHideUpdateCheck = new BCheckBox("hide_updates_box", "Hide client update desktop alerts", 
-                                  new BMessage(MSG_TOGGLE_HIDE_UPDATES));
-		fHideUpdateCheck->SetValue(cfg.hideUpdateNotifications ? B_CONTROL_ON : B_CONTROL_OFF);
+	    fShowUpdateCheck = new BCheckBox("show_updates_box", "Enable Updates Available Desktop Alerts", 
+                                  new BMessage(MSG_TOGGLE_SHOW_UPDATES));
+		fShowUpdateCheck->SetValue(cfg.showUpdateNotifications ? B_CONTROL_ON : B_CONTROL_OFF);
 
 
         // --- Create Tab View Architecture ---
@@ -3834,26 +3834,14 @@ public:
                 
                 .Add(fPassInput->CreateLabelLayoutItem(), 0, 3)     
                 .Add(fPassInput->CreateTextViewLayoutItem(), 1, 3)
+     
+                .Add(fNickAlertCheckbox, 0, 4, 2, 1)  
 
-                // =========================================================================
-                // INTEGRATED DESKTOP NOTIFICATIONS CHECKBOX LAYOUT ITEM
-                // =========================================================================
-                .Add(fNickAlertCheckbox, 0, 4, 2, 1) // Row 4: Span 2 Columns, 1 Row height
-                // =========================================================================
-
-                // =========================================================================
-                // NEW: INTEGRATED HIDE UPDATE NOTIFICATIONS CHECKBOX LAYOUT ITEM
-                // =========================================================================
-                .Add(fHideUpdateCheck, 0, 5, 2, 1) // Row 5: Span 2 Columns, 1 Row height
-                // =========================================================================
-
-                // --- SASL Section (Shifted to Rows 6 & 7) ---
-                .Add(fUseSASLCheck, 0, 6, 2, 1)
+                .Add(fUseSASLCheck, 0, 5, 2, 1)
                 .Add(fSASLUserInput->CreateLabelLayoutItem(), 0, 7)
                 .Add(fSASLUserInput->CreateTextViewLayoutItem(), 1, 7)
 
-                // --- CertFP Section (Shifted to Rows 8, 9, 10, 11, 12 & 13) ---
-                .Add(fUseCertFPCheck, 0, 8, 2, 1)
+                .Add(fUseCertFPCheck, 0, 6, 2, 1)
                 
                 .Add(fCertProfileInput->CreateLabelLayoutItem(), 0, 9)
                 .Add(fCertProfileInput->CreateTextViewLayoutItem(), 1, 9)
@@ -3886,6 +3874,7 @@ public:
             .Add(fUseCustomDrawCheck)
             .Add(fLogChatsToFileCheck)
             .Add(fEnableColorCodesCheck)
+            .Add(fShowUpdateCheck)
             .Add(fDebugEnableCheck);
 
         // --- INSTANTIATE THE TIMESTAMP INTERVAL POPUP MENU ---
@@ -4078,9 +4067,9 @@ public:
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
         	
-      case MSG_TOGGLE_HIDE_UPDATES: {
-            if (fHideUpdateCheck != nullptr) {
-                cfg.hideUpdateNotifications = (fHideUpdateCheck->Value() == B_CONTROL_ON);
+      case MSG_TOGGLE_SHOW_UPDATES: {
+            if (fShowUpdateCheck != nullptr) {
+                cfg.showUpdateNotifications = (fShowUpdateCheck->Value() == B_CONTROL_ON);
                 save_config(); // Flush parameter change straight to disk instantly
             }
             break;
@@ -4854,7 +4843,7 @@ private:
 	
 	// Notifications
 	BCheckBox* fNickAlertCheckbox;
-	BCheckBox* fHideUpdateCheck;
+	BCheckBox* fShowUpdateCheck;
 
 
 	
