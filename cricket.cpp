@@ -145,7 +145,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.39 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.40 (Haiku OS)";
 }
 
 // Forward declaration signature for our update worker thread
@@ -4037,23 +4037,51 @@ public:
         tabView->AddTab(autojoinTab);
         tabView->AddTab(filtersTab); 
 
-        // --- Master Window Root Layout ---
-        BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
-            .SetInsets(12)
-            .Add(titleHeader, 0.0) 
-            .Add(tabView, 1.0)     
-            
-            .AddGrid(5.0f, 5.0f)
-                .Add(fAwayInput->CreateLabelLayoutItem(), 0, 0)
-                .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 0, 2, 1) 
-                .Add(fQuitInput->CreateLabelLayoutItem(), 3, 0)
-                .Add(fQuitInput->CreateTextViewLayoutItem(), 4, 0, 2, 1) 
-                
-                .Add(cancelBtn, 4, 1)
-                .Add(saveBtn, 5, 1)
-            .End();
+// 1. Create the BBox container and its internal grid layout
+BBox* messageBox = new BBox(B_PLAIN_BORDER, NULL);
+messageBox->SetLabel("Global Messages");
 
-        ResizeTo(560, 440);    
+BGridLayout* boxGrid = new BGridLayout(5.0f, 5.0f);
+messageBox->SetLayout(boxGrid);
+
+// Populate the grid layout inside the box
+BLayoutBuilder::Grid<>(boxGrid)
+    .SetInsets(12, 24, 12, 12)
+    // Row 0: Away Message
+    .Add(fAwayInput->CreateLabelLayoutItem(), 0, 0)
+    .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 0, 1, 1) 
+    
+    // Row 1: Quit Message
+    .Add(fQuitInput->CreateLabelLayoutItem(), 0, 1)
+    .Add(fQuitInput->CreateTextViewLayoutItem(), 1, 1, 1, 1)
+    
+    // Column 2: Explicit glue item acting as a structural spacer to the right
+    .Add(BSpaceLayoutItem::CreateGlue(), 2, 0, 1, 2)
+    
+    // Distribute weights evenly between the text fields (Col 1) and the empty space (Col 2)
+    .SetColumnWeight(1, 1.0f)
+    .SetColumnWeight(2, 1.0f);
+
+// 2. Build the Master Window layout
+BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
+    .SetInsets(12)
+    .Add(titleHeader, 0.0) 
+    .Add(tabView, 1.0)     
+    
+    // Add the fully-configured BBox
+    .Add(messageBox, 0.0)
+    
+    // Keep action buttons grouped together at the bottom right
+    .AddGroup(B_HORIZONTAL, 5)
+        .AddGlue() 
+        .Add(cancelBtn)
+        .Add(saveBtn)
+    .End();
+
+ResizeTo(560, 520);
+
+
+  
 
             
         if (parent) {
