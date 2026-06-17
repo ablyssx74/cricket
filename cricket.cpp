@@ -19,6 +19,7 @@
 #include <StringView.h>
 #include <SeparatorView.h>
 #include <ColorControl.h>
+#include <Notification.h>
 
 // Storage, Path Finder & System File Kits
 #include <Directory.h>
@@ -124,6 +125,8 @@ enum {
     MSG_AUTO_REGISTER_FINGERPRINT = 'argf',
     MSG_CONTEXT_ADD_COLOR_FROM_TEXT = 'acft',
     MSG_CONTEXT_IGNORE_FROM_TEXT = 'igft',
+    MSG_TOGGLE_NICK_ALERT = 'tgna',
+
 
 };
 
@@ -139,7 +142,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.36 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.37 (Haiku OS)";
 }
 
 using json = nlohmann::json;
@@ -168,7 +171,7 @@ struct ServerConfig {
     int32 chatLogFontSize = 12;
     int32 userListFontSize = 12;
     bool useCustomDrawFunction = true; 
-
+    bool nickAlert = true; 
 
     // Per-server Chat Logging Option (Defaults to false)
     bool logChatsToFile = false; 
@@ -245,6 +248,8 @@ void save_config() {
         s["autoReconnect"] = srv.autoReconnect;
         s["hideStatusMessages"] = srv.hideStatusMessages; 
         s["timestampInterval"] = srv.timestampInterval;
+        s["nick_alert"] = srv.nickAlert;
+
 
         s["use_sasl"] = srv.useSASL;
         s["sasl_user"] = srv.saslUser;
@@ -317,7 +322,9 @@ void save_config() {
         s["autoConnect"] = srv.autoConnect; 
         s["autoReconnect"] = srv.autoReconnect;
         s["hideStatusMessages"] = srv.hideStatusMessages; 
-         
+        s["timestampInterval"] = srv.timestampInterval;
+        s["nick_alert"] = srv.nickAlert;
+
         s["use_sasl"] = srv.useSASL;
         s["sasl_user"] = srv.saslUser;
         s["use_certfp"] = srv.useCertFP;
@@ -458,6 +465,8 @@ void load_config() {
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
                         srv.timestampInterval = s.value("timestampInterval", cfg.timestampInterval);
+                        srv.nickAlert = s.value("nick_alert", true);
+
 						srv.backgroundImagePath = s.value("background_image", ""); 
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
@@ -532,6 +541,9 @@ void load_config() {
                         srv.autoReconnect = s.value("autoReconnect", false); 
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
+                        srv.timestampInterval = s.value("timestampInterval", cfg.timestampInterval);
+                        srv.nickAlert = s.value("nick_alert", true);
+
 						srv.backgroundImagePath = s.value("background_image", ""); 
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
@@ -672,7 +684,7 @@ void load_config() {
         oftc.certFileName = "";                    
         oftc.keyFileName = "";          
         
-        oftc.autojoin = {""};
+        oftc.autojoin = {"#haiku"};
         oftc.autocmdlist = {""};
         oftc.ignoredNicks = {};
         oftc.nickColors = {};       
@@ -3560,8 +3572,6 @@ public:
         fEnableColorCodesCheck->SetValue(srv.enableColorCodes ? B_CONTROL_ON : B_CONTROL_OFF);
         fEnableColorCodesCheck->SetToolTip("Parses legacy mIRC rich color code tags into colored block backgrounds inside the window.");
 
-
-
         // --- NEW: AUTOJOIN CHANNELS INTERFACE COMPONENTS ---
         fAutojoinListView = new BListView("autojoin_list");
         BScrollView* autojoinScroll = new BScrollView("autojoin_scroll", fAutojoinListView, 0, false, true);
@@ -3634,7 +3644,7 @@ public:
         fColorListView = new BListView("color_nicks_list");
         BScrollView* colorScroll = new BScrollView("color_scroll", fColorListView, 0, false, true);
         colorScroll->SetExplicitMinSize(BSize(150, 60));
-       fColorListView->SetSelectionMessage(new BMessage(0xCC005544));
+        fColorListView->SetSelectionMessage(new BMessage(0xCC005544));
 
         // Populate color entries from configuration data arrays
         // (Assumes srv.nickColors and srv.nickColorValues vectors exist in ServerConfig structure)
@@ -3667,6 +3677,14 @@ public:
 
         fAddColorBtn = new BButton("add_color", "Assign Color", new BMessage('clad'));
         fRemoveColorBtn = new BButton("rem_color", "Remove Color", new BMessage('clrm'));
+        
+        
+	    // Instantiate the toggle checkbox, loading the current configuration state
+	    fNickAlertCheckbox = new BCheckBox("nick_alert_box", "Enable Desktop Notifications on Mention", 
+	                                       new BMessage(MSG_TOGGLE_NICK_ALERT));
+	    
+	    // Set the checkbox status dynamically from your active profile state
+	    fNickAlertCheckbox->SetValue(srv.nickAlert ? B_CONTROL_ON : B_CONTROL_OFF);
 
         // --- Create Tab View Architecture ---
         BTabView* tabView = new BTabView("config_tabs", B_WIDTH_AS_USUAL);
@@ -3689,28 +3707,35 @@ public:
                 .Add(fPassInput->CreateLabelLayoutItem(), 0, 3)     
                 .Add(fPassInput->CreateTextViewLayoutItem(), 1, 3)
 
-                // --- SASL Section (Rows 4 & 5) ---
-                .Add(fUseSASLCheck, 0, 4, 2, 1)
-                .Add(fSASLUserInput->CreateLabelLayoutItem(), 0, 5)
-                .Add(fSASLUserInput->CreateTextViewLayoutItem(), 1, 5)
+                // =========================================================================
+                // INTEGRATED DESKTOP NOTIFICATIONS CHECKBOX LAYOUT ITEM
+                // =========================================================================
+                .Add(fNickAlertCheckbox, 0, 4, 2, 1) // Row 4: Span 2 Columns, 1 Row height
+                // =========================================================================
 
-                // --- CertFP Section (Rows 6, 7, 8, 9, 10 & 11) ---
-                .Add(fUseCertFPCheck, 0, 6, 2, 1)
-                
-                .Add(fCertProfileInput->CreateLabelLayoutItem(), 0, 7)
-                .Add(fCertProfileInput->CreateTextViewLayoutItem(), 1, 7)
+                // --- SASL Section (Shifted to Rows 5 & 6) ---
+                .Add(fUseSASLCheck, 0, 5, 2, 1)
+                .Add(fSASLUserInput->CreateLabelLayoutItem(), 0, 6)
+                .Add(fSASLUserInput->CreateTextViewLayoutItem(), 1, 6)
 
-                .Add(fCertFileInput->CreateLabelLayoutItem(), 0, 8)
-                .Add(fCertFileInput->CreateTextViewLayoutItem(), 1, 8)
+                // --- CertFP Section (Shifted to Rows 7, 8, 9, 10, 11 & 12) ---
+                .Add(fUseCertFPCheck, 0, 7, 2, 1)
+                
+                .Add(fCertProfileInput->CreateLabelLayoutItem(), 0, 8)
+                .Add(fCertProfileInput->CreateTextViewLayoutItem(), 1, 8)
 
-                .Add(fKeyFileInput->CreateLabelLayoutItem(), 0, 9)
-                .Add(fKeyFileInput->CreateTextViewLayoutItem(), 1, 9)
+                .Add(fCertFileInput->CreateLabelLayoutItem(), 0, 9)
+                .Add(fCertFileInput->CreateTextViewLayoutItem(), 1, 9)
+
+                .Add(fKeyFileInput->CreateLabelLayoutItem(), 0, 10)
+                .Add(fKeyFileInput->CreateTextViewLayoutItem(), 1, 10)
                 
-                .Add(fGenerateCertsButton, 0, 10, 2, 1)
+                .Add(fGenerateCertsButton, 0, 11, 2, 1)
                 
-                .Add(certLocationNotice, 0, 11, 2, 1)
+                .Add(certLocationNotice, 0, 12, 2, 1)
             .End()
             .AddGlue();
+
 
 
         // --- TAB 2: PREFERENCES & THEMING (COMPACT LAYOUT WITH TIMESTAMP OPTION) ---
@@ -3917,6 +3942,30 @@ public:
 
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
+        	
+        	
+       // =========================================================================
+       // Notifications
+       // =========================================================================        	
+        case MSG_TOGGLE_NICK_ALERT: {
+            if (fNickAlertCheckbox != nullptr) {
+                bool isChecked = (fNickAlertCheckbox->Value() == B_CONTROL_ON);
+                
+                // RESOLVED: Query global vectors safely using your verified scope tokens
+                if (fIsCustom) {
+                    if (fServerIdx < cfg.customServers.size()) {
+                        cfg.customServers[fServerIdx].nickAlert = isChecked;
+                    }
+                } else {
+                    if (fServerIdx < cfg.servers.size()) {
+                        cfg.servers[fServerIdx].nickAlert = isChecked;
+                    }
+                }
+            }
+            break;
+        }
+
+        	
         	
         case 'clpv': {
             if (fColorPicker != nullptr && fColorPreviewBox != nullptr) {
@@ -4660,6 +4709,10 @@ private:
 	BButton*					fAddIgnoreBtn;
 	BButton*					fRemoveIgnoreBtn;
 	std::vector<std::string>	fLocalIgnoreList;
+	
+	// Notifications
+	BCheckBox* fNickAlertCheckbox;
+
 
 	
     //  Safe helper function to fetch correct active reference target safely
@@ -9239,8 +9292,14 @@ private:
         }
 
 
+
+
+
+
+
+
+      
         // =========================================================================
-      // =========================================================================
         // FRESH MULTI-SERVER CHAT & NOTICE ROUTING ENGINE (OPENSSL INTEGRATED)
         // =========================================================================
         if (command == "PRIVMSG" || command == "NOTICE") {
@@ -9296,7 +9355,6 @@ private:
                     if (ctcpResponse.Length() > 0) {
                         SSL_write(activeSslHandle, ctcpResponse.String(), ctcpResponse.Length());
                         LogToItemBuffer(FindServerLogNode(contextServer), logText);
-                        //break; // Secure breakout pass
                     }
                 }
             }
@@ -9329,7 +9387,36 @@ private:
                 }
             }
 
+            // =========================================================================
+            // NATIVE HAIKU DESKTOP NOTIFICATION ENGINE (NESTED SECURELY IN SCOPE)
+            // =========================================================================
+            if (command == "PRIVMSG" && contextServer != nullptr && resolvedProfile != nullptr) {
+                if (resolvedProfile->nickAlert) {
+                    BString currentNick = contextServer->GetNick();
+                    BString lowerMsg = trailing; 
+                    lowerMsg.ToLower();
+                    currentNick.ToLower();
+
+                    // Only send toast notifications if your active handle is mentioned and didn't come from you
+                    if (senderNick.ICompare(contextServer->GetNick()) != 0 && 
+                        lowerMsg.FindFirst(currentNick) != B_ERROR) {
+                        
+                        BNotification highlightAlert(B_INFORMATION_NOTIFICATION);
+                        highlightAlert.SetGroup("Cricket IRC");
+                        
+                        BString alertTitle;
+                        alertTitle << "[" << contextServer->Text() << "] " << targetRoom << " - " << senderNick;
+                        highlightAlert.SetTitle(alertTitle.String());
+                        highlightAlert.SetContent(trailing.String());
+                        
+                        highlightAlert.Send(); 
+                    }
+                }
+            }
+            // =========================================================================
+
             // Establish destination nodes supporting Channels AND Private Message Queries
+
             BStringItem* targetNode = nullptr;
             if (targetRoom.StartsWith("#")) {
                 targetNode = FindChannelNode(contextServer, targetRoom);
@@ -9560,6 +9647,16 @@ private:
             }            
              return; 
         }   
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -9954,6 +10051,10 @@ public:
 	//@messagereceived
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
+        	
+
+
+        	
 
         // =========================================================================
         // GOOGLE TRANSLATE SELECTION EXTENSION (MAIN WINDOW IMPLEMENTATION)
