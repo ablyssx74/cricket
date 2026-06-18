@@ -145,7 +145,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.42 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.43 (Haiku OS)";
 }
 
 // Forward declaration signature for update worker thread
@@ -801,7 +801,7 @@ static int32 BackgroundUpdateChecker(void* data) {
             updateAlert.SetTitle("Update Available");
             
             BString alertContent;
-            alertContent << "A newer version of Cricket is available! (v" << remoteVersionStr 
+            alertContent << "A newer version of Cricket is available! (" << remoteVersionStr 
                          << ")";
             updateAlert.SetContent(alertContent.String());
             
