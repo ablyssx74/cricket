@@ -144,7 +144,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.44 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.45 (Haiku OS)";
 }
 
 // Forward declaration signature for update worker thread
@@ -3771,7 +3771,7 @@ public:
             }
         }
 
-        fColorNickInput = new BTextControl("color_nick_input", "Target Nickname:", "", nullptr);
+        fColorNickInput = new BTextControl("color_nick_input", "Target:", "", nullptr);
         // Instantiates a layout-compact 32-cell native Haiku block palette picker
         fColorPicker = new BColorControl(BPoint(0, 0), B_CELLS_32x8, 1.0f, "color_picker");
          fColorPicker->SetMessage(new BMessage('clpv')); 
@@ -3802,7 +3802,7 @@ public:
 	    fNickAlertCheckbox->SetValue(srv.nickAlert ? B_CONTROL_ON : B_CONTROL_OFF);
 	    
 	    
-	    fShowUpdateCheck = new BCheckBox("show_updates_box", "Enable Updates Available Desktop Alerts", 
+	    fShowUpdateCheck = new BCheckBox("show_updates_box", "Enable Updates Available Notifications", 
                                   new BMessage(MSG_TOGGLE_SHOW_UPDATES));
 		fShowUpdateCheck->SetValue(cfg.showUpdateNotifications ? B_CONTROL_ON : B_CONTROL_OFF);
 
@@ -3986,7 +3986,7 @@ public:
         
         // A. Top Box Section: Color Setup Matrix
         BBox* colorBox = new BBox(B_FANCY_BORDER);
-        colorBox->SetLabel("Color Filter Nicknames / Text");
+        colorBox->SetLabel("Colored Nicknames / Text Filter");
         BLayoutBuilder::Group<>(colorBox, B_HORIZONTAL, 10)
             .SetInsets(10, 20, 10, 10)
             .Add(colorScroll, 1.0)
@@ -4003,7 +4003,7 @@ public:
 
         // B. Bottom Box Section: Spam / Wildcard Ignorers
         BBox* filtersBox = new BBox(B_FANCY_BORDER);
-        filtersBox->SetLabel("Ignored Nicknames / Text");
+        filtersBox->SetLabel("Ignored Nicknames / Text Filter");
         BLayoutBuilder::Group<>(filtersBox, B_VERTICAL, 5)
             .SetInsets(10, 20, 10, 10) 
             .Add(ignoreScroll, 1.0)
@@ -4015,7 +4015,7 @@ public:
 
         // Unified layout notice string positioned as a clean master header element
         BStringView* wildcardNotice = new BStringView("wildcard_notice", 
-            "💡 Both filters support wildcards: use * for multiple characters and ? for a single character.");
+            "💡 Filters support wildcards: use * for multiple characters and ? for a single character.");
 
         // Combine all layout blocks vertically from top to bottom
         BLayoutBuilder::Group<>(filtersTab, B_VERTICAL, 8)
@@ -6279,62 +6279,103 @@ public:
 	        runArray->runs[runCount].color = textColor;
 	        runCount++;
 	
-	        // NICKNAME BOLDING (<Nick>)
-	        if (openingBracketIdx != B_ERROR && closingBracketIdx != B_ERROR && openingBracketIdx < closingBracketIdx) {
-	            if (openingBracketIdx > 0) {
-	                runArray->runs[runCount].offset = openingBracketIdx;
-	                runArray->runs[runCount].font = boldChatFont;
-	                runArray->runs[runCount].color = textColor;
-	                runCount++;
-	            } else {
-	                runArray->runs[0].font = boldChatFont;
-	            }
+	        // =========================================================================
+	        // FIXED UNIFIED ENGINE: CHRONOLOGICAL LEFT-TO-RIGHT PARSING STATE ENGINE
+	        // =========================================================================
+	        int32 currentResetOffset = -1;
 	
-	            // Reset to Regular text right after the closing bracket "> "
-	            runArray->runs[runCount].offset = closingBracketIdx + 2;
+            // 1. NICKNAME BOLDING BLOCK (<Nick>)
+            if (openingBracketIdx != B_ERROR && closingBracketIdx != B_ERROR && openingBracketIdx < closingBracketIdx) {
+                if (openingBracketIdx > 0 && runCount < maxRuns) {
+                    runArray->runs[runCount].offset = openingBracketIdx;
+                    runArray->runs[runCount].font = boldChatFont;
+                    runArray->runs[runCount].color = textColor;
+                    runCount++;
+                } else if (openingBracketIdx == 0) {
+                    runArray->runs[0].font = boldChatFont;
+                }
+
+                // Schedule a reset to regular text right after the closing bracket "> "
+                currentResetOffset = closingBracketIdx + 2;
+            } else {
+                // FIXED: Fallback initialization for lines without nicknames (like topics/server logs!)
+                // This ensures the plain text prefix from character 0 up to the URL is cleanly mapped.
+                currentResetOffset = 0;
+            }
+
+	
+	        // =========================================================================
+            // 2. FIXED: MULTI-LINK CHRONOLOGICAL URL LOOP INJECTION ENGINE
+            // =========================================================================
+            int32 currentSearchPos = 0;
+
+            while (runCount < maxRuns) {
+                // Find the next available URL on this line starting from our current index position
+                int32 nextUrlStart = text.IFindFirst("http://", currentSearchPos);
+                int32 nextHttpsStart = text.IFindFirst("https://", currentSearchPos);
+
+                // Determine which protocol string appeared first chronologically
+                int32 activeUrlStart = B_ERROR;
+                if (nextUrlStart != B_ERROR && nextHttpsStart != B_ERROR) {
+                    activeUrlStart = (nextUrlStart < nextHttpsStart) ? nextUrlStart : nextHttpsStart;
+                } else if (nextUrlStart != B_ERROR) {
+                    activeUrlStart = nextUrlStart;
+                } else {
+                    activeUrlStart = nextHttpsStart;
+                }
+
+                // If no more URLs exist on the rest of this text line, break out of the loop safely
+                if (activeUrlStart == B_ERROR) break;
+
+                // A. If regular text separate previous segments and this link, inject the scheduled reset first
+                if (currentResetOffset != -1 && activeUrlStart > currentResetOffset && runCount < maxRuns) {
+                    runArray->runs[runCount].offset = currentResetOffset;
+                    runArray->runs[runCount].font = regularChatFont;
+                    runArray->runs[runCount].color = textColor;
+                    runCount++;
+                    currentResetOffset = -1;
+                }
+
+                // B. Apply URL styling directly at its starting boundary
+                if (runCount < maxRuns) {
+                    runArray->runs[runCount].offset = activeUrlStart;
+                    runArray->runs[runCount].font = urlLinkFont;
+                    runArray->runs[runCount].color = hyperlinkColor;
+                    runCount++;
+                    currentResetOffset = -1;
+                }
+
+                // C. Find where this specific URL terminates (space, newline, or string terminal)
+                int32 urlEndIdx = text.FindFirst(" ", activeUrlStart);
+                if (urlEndIdx == B_ERROR) urlEndIdx = text.FindFirst("\n", activeUrlStart);
+                if (urlEndIdx == B_ERROR) urlEndIdx = text.Length();
+                
+                // Schedule a regular text reset to follow immediately after this link
+                if (urlEndIdx <= text.Length()) {
+                    currentResetOffset = urlEndIdx;
+                }
+
+                // Advance the loop forward so the next search pass runs right after this link's boundary
+                currentSearchPos = urlEndIdx;
+            }
+            // =========================================================================
+
+	
+	        // 3. FINAL RESIDUAL TEXT STYLE RESET APPLICATION
+	        if (currentResetOffset != -1 && currentResetOffset <= text.Length() && runCount < maxRuns) {
+	            runArray->runs[runCount].offset = currentResetOffset;
 	            runArray->runs[runCount].font = regularChatFont;
 	            runArray->runs[runCount].color = textColor;
 	            runCount++;
 	        }
 	
-	        // URL COLORING (http...)
-	        if (urlStartIdx != B_ERROR) {
-	            bool inserted = false;
-	            for (int32 i = 0; i < runCount; i++) {
-	                if (runArray->runs[i].offset == urlStartIdx) {
-	                    runArray->runs[i].font = urlLinkFont;
-	                    runArray->runs[i].color = hyperlinkColor;
-	                    inserted = true;
-	                    break;
-	                }
-	            }
-	
-	            if (!inserted && (runCount == 0 || urlStartIdx > runArray->runs[runCount - 1].offset)) {
-	                runArray->runs[runCount].offset = urlStartIdx;
-	                runArray->runs[runCount].font = urlLinkFont;
-	                runArray->runs[runCount].color = hyperlinkColor;
-	                runCount++;
-	            }
-	
-	            // Reset back to Regular text after the URL
-	            int32 urlEndIdx = text.FindFirst(" ", urlStartIdx);
-	            if (urlEndIdx == B_ERROR) urlEndIdx = text.FindFirst("\n", urlStartIdx);
-	            if (urlEndIdx == B_ERROR) urlEndIdx = text.Length();
-	            
-	            // Enforce structural style reset at the link terminal layout boundary 
-	            if (urlEndIdx <= text.Length() && runCount < maxRuns) {
-	                runArray->runs[runCount].offset = urlEndIdx;
-	                runArray->runs[runCount].font = regularChatFont;
-	                runArray->runs[runCount].color = textColor;
-	                runCount++;
-	            }
-	        }
-	
+	        // Assign count cleanly without manual sorting loops
 	        runArray->count = runCount;
+	        // =========================================================================
 	
 	        // --- Route to the active view layer constraints ---
 	        bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
-			if (drawEngineActive) { 
+	        if (drawEngineActive) { 
 	            // Pass incoming itemNode directly to preserve multi-room isolation routes
 	            fCustomChatLog->AddStyledLine(itemNode, text, runArray);
 	        } else {
@@ -6347,8 +6388,7 @@ public:
 	    } else {
 	        // Fallback insertion route if system out of memory
 	        bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
-			if (drawEngineActive) { 
-	            // Pass incoming itemNode directly here as well
+	        if (drawEngineActive) { 
 	            fCustomChatLog->AddStyledLine(itemNode, text, nullptr);
 	        } else {
 	            int32 textLength = fChatLog->TextLength();
@@ -6357,6 +6397,8 @@ public:
 	        }
 	    }
 	}
+
+
 
 private:
 
@@ -6679,7 +6721,7 @@ private:
 	        int32 urlStartIdx = text.IFindFirst("http://");
 	        if (urlStartIdx == B_ERROR) urlStartIdx = text.IFindFirst("https://");
 	
-	        //  Expanded safety bounds count to 8 to prevent thread array overflows
+	        // Expanded safety bounds count to 8 to prevent thread array overflows
 	        int32 maxRuns = 8;
 	        size_t arraySize = sizeof(text_run_array) + (sizeof(text_run) * (maxRuns - 1));
 	        text_run_array* runArray = (text_run_array*)malloc(arraySize);
@@ -6693,7 +6735,12 @@ private:
 	            runArray->runs[runCount].color = textColor;
 	            runCount++;
 	
-	            // NICKNAME BOLDING (<Nick>)
+	            // =========================================================================
+	            // FIXED: CHRONOLOGICAL LEFT-TO-RIGHT PARSING STATE ENGINE
+	            // =========================================================================
+	            int32 currentResetOffset = -1;
+	
+	            // 1. NICKNAME BOLDING BLOCK (<Nick>)
 	            if (openingBracketIdx != B_ERROR && closingBracketIdx != B_ERROR && openingBracketIdx < closingBracketIdx) {
 	                if (openingBracketIdx > 0 && runCount < maxRuns) {
 	                    runArray->runs[runCount].offset = openingBracketIdx;
@@ -6704,59 +6751,82 @@ private:
 	                    runArray->runs[0].font = boldChatFont;
 	                }
 	
-	                // Reset to Regular text right after the closing bracket "> "
-	                if (closingBracketIdx + 2 < text.Length() && runCount < maxRuns) {
-	                    runArray->runs[runCount].offset = closingBracketIdx + 2;
+	                // Schedule a reset to regular text right after the closing bracket "> "
+	                currentResetOffset = closingBracketIdx + 2;
+	            } else {
+	                // FIXED: Fallback initialization for lines without nicknames (like topics/server logs!)
+	                // This ensures the plain text prefix from character 0 up to the URL is cleanly mapped.
+	                currentResetOffset = 0;
+	            }
+
+	
+	            // =========================================================================
+	            // 2. FIXED: MULTI-LINK CHRONOLOGICAL URL LOOP INJECTION ENGINE
+	            // =========================================================================
+	            int32 currentSearchPos = 0;
+	
+	            while (runCount < maxRuns) {
+	                // Find the next available URL on this line starting from our current index position
+	                int32 nextUrlStart = text.IFindFirst("http://", currentSearchPos);
+	                int32 nextHttpsStart = text.IFindFirst("https://", currentSearchPos);
+	
+	                // Determine which protocol string appeared first chronologically
+	                int32 activeUrlStart = B_ERROR;
+	                if (nextUrlStart != B_ERROR && nextHttpsStart != B_ERROR) {
+	                    activeUrlStart = (nextUrlStart < nextHttpsStart) ? nextUrlStart : nextHttpsStart;
+	                } else if (nextUrlStart != B_ERROR) {
+	                    activeUrlStart = nextUrlStart;
+	                } else {
+	                    activeUrlStart = nextHttpsStart;
+	                }
+	
+	                // If no more URLs exist on the rest of this text line, break out of the loop safely
+	                if (activeUrlStart == B_ERROR) break;
+	
+	                // A. If regular text separate previous segments and this link, inject the scheduled reset first
+	                if (currentResetOffset != -1 && activeUrlStart > currentResetOffset && runCount < maxRuns) {
+	                    runArray->runs[runCount].offset = currentResetOffset;
 	                    runArray->runs[runCount].font = regularChatFont;
 	                    runArray->runs[runCount].color = textColor;
 	                    runCount++;
+	                    currentResetOffset = -1;
 	                }
-	            }
 	
-	            // URL COLORING (http...)
-	            if (urlStartIdx != B_ERROR && runCount < maxRuns) {
-	                runArray->runs[runCount].offset = urlStartIdx;
-	                runArray->runs[runCount].font = urlLinkFont;
-	                runArray->runs[runCount].color = hyperlinkColor;
-	                runCount++;
+	                // B. Apply URL styling directly at its starting boundary
+	                if (runCount < maxRuns) {
+	                    runArray->runs[runCount].offset = activeUrlStart;
+	                    runArray->runs[runCount].font = urlLinkFont;
+	                    runArray->runs[runCount].color = hyperlinkColor;
+	                    runCount++;
+	                    currentResetOffset = -1;
+	                }
 	
-	                // Reset back to Regular text after the URL
-	                int32 urlEndIdx = text.FindFirst(" ", urlStartIdx);
-	                if (urlEndIdx == B_ERROR) urlEndIdx = text.FindFirst("\n", urlStartIdx);
+	                // C. Find where this specific URL terminates (space, newline, or string terminal)
+	                int32 urlEndIdx = text.FindFirst(" ", activeUrlStart);
+	                if (urlEndIdx == B_ERROR) urlEndIdx = text.FindFirst("\n", activeUrlStart);
 	                if (urlEndIdx == B_ERROR) urlEndIdx = text.Length();
 	                
-	                if (urlEndIdx < text.Length() && runCount < maxRuns) {
-	                    runArray->runs[runCount].offset = urlEndIdx;
-	                    runArray->runs[runCount].font = regularChatFont;
-	                    runArray->runs[runCount].color = textColor;
-	                    runCount++;
+	                // Schedule a regular text reset to follow immediately after this link
+	                if (urlEndIdx <= text.Length()) {
+	                    currentResetOffset = urlEndIdx;
 	                }
+	
+	                // Advance the loop forward so the next search pass runs right after this link's boundary
+	                currentSearchPos = urlEndIdx;
+	            }
+	            // =========================================================================
+
+	
+	            // 3. FINAL RESIDUAL TEXT STYLE RESET APPLICATION
+	            if (currentResetOffset != -1 && currentResetOffset <= text.Length() && runCount < maxRuns) {
+	                runArray->runs[runCount].offset = currentResetOffset;
+	                runArray->runs[runCount].font = regularChatFont;
+	                runArray->runs[runCount].color = textColor;
+	                runCount++;
 	            }
 	
-	            // =========================================================================
-	            // FIXED MONOTONIC RUN-ARRAY SORTING ENGINE
-	            // =========================================================================
-	            for (int32 i = 0; i < runCount - 1; i++) {
-	                for (int32 j = 0; j < runCount - i - 1; j++) {
-	                    if (runArray->runs[j].offset > runArray->runs[j + 1].offset) {
-	                        text_run temp = runArray->runs[j];
-	                        runArray->runs[j] = runArray->runs[j + 1];
-	                        runArray->runs[j + 1] = temp;
-	                    }
-	                }
-	            }
-	
-	            // De-duplicate any identical offsets generated by formatting intersections
-	            int32 uniqueCount = 0;
-	            for (int32 i = 0; i < runCount; i++) {
-	                if (uniqueCount == 0 || runArray->runs[i].offset > runArray->runs[uniqueCount - 1].offset) {
-	                    if (i != uniqueCount) {
-	                        runArray->runs[uniqueCount] = runArray->runs[i];
-	                    }
-	                    uniqueCount++;
-	                }
-	            }
-	            runArray->count = uniqueCount;
+	            // Assign count cleanly without manual sorting loops
+	            runArray->count = runCount;
 	            // =========================================================================
 	
 	            // --- Direct View Data Routing (No View Swapping Overhead inside Data Loops!) ---
@@ -6930,11 +7000,10 @@ private:
 	}
 
 
-	void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {   	
+  void ParseAndDisplayIRC(BString line, ServerTreeItem* contextServer) {   	
 	
 	    // 1. Absolute Null Check
-	    if (contextServer == nullptr) return;
-	    
+	    if (contextServer == nullptr) return;	    
 	    
     // =========================================================================
     // BRICK-WALL INTERCEPT ENGINE (ZERO-PARSING DEPENDENCY)
@@ -6990,11 +7059,7 @@ private:
             }
         }
     }
-    // =========================================================================
-
-
-
-	    
+    // ========================================================================= 
 	
 	    // Multi-Server Pointer Validation Check
 	    // Scan the tree layout container to confirm this pointer address still actually exists
@@ -13372,6 +13437,10 @@ public:
                 }
              break;
         }
+        
+        
+        
+        
 
             default:
                 BWindow::MessageReceived(message);
