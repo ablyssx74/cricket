@@ -126,7 +126,6 @@ enum {
     MSG_CONTEXT_SHOW_MODES = 'mCSM',
     MSG_GENERATE_CERTFP_KEYPAIR = 'gcfp',
     MSG_AUTO_REGISTER_FINGERPRINT = 'argf',
-    MSG_CONTEXT_ADD_COLOR_FROM_TEXT = 'acft',
     MSG_CONTEXT_IGNORE_FROM_TEXT = 'igft',
     MSG_TOGGLE_NICK_ALERT = 'tgna',
     MSG_TOGGLE_SHOW_UPDATES = 'thuc',
@@ -145,7 +144,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.43 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.44 (Haiku OS)";
 }
 
 // Forward declaration signature for update worker thread
@@ -202,7 +201,7 @@ struct Config {
     int32 serverListFontSize = 12;
     int32 chatLogFontSize = 12;
     int32 userListFontSize = 12;
-    std::string quitMessage = "App Quit: " + std::string(AppInfo::VERSION_STRING); 
+    std::string quitMessage = "Quit: " + std::string(AppInfo::VERSION_STRING); 
     std::string awayMessage = "I am away from my computer right now."; 
     bool useCustomDrawFunction = true;
     int32 timestampInterval = 30;
@@ -2383,51 +2382,44 @@ void CustomChatView::MouseDown(BPoint point) {
 
 
             //  Search Option choice row
-            BString srcLabel = "Search \"";
+            BString srcLabel = "Search: \"";
             srcLabel << labelText;
             contextMenu->AddItem(new BMenuItem(srcLabel.String(), new BMessage('gsh')));
 
             // =========================================================================
-            // INTEGRATED TEXT-SELECTION NICKNAME COLOR ASSIGNMENT
+            // INTEGRATED TEXT-SELECTION NICKNAME COLOR ASSIGNMENT (WITH DEBUGGING)
             // =========================================================================
             BString cleanNick = selectedText;
             cleanNick.Trim();
             cleanNick.ReplaceAll("\r", "");
             cleanNick.ReplaceAll("\n", "");
             
-            // --- NEW: STRIP ANGLE BRACKETS FROM NICKNAME ONLY FOR COLOR SELECTION ---
+            // --- STRIP ANGLE BRACKETS FROM NICKNAME ONLY FOR COLOR SELECTION ---
             if (cleanNick.StartsWith("<") && cleanNick.EndsWith(">")) {
                 cleanNick.Remove(0, 1);                  // Remove leading '<'
                 cleanNick.Truncate(cleanNick.Length() - 1);  // Remove trailing '>'
                 cleanNick.Trim();                        // Final clean pass
             }
-            // -----------------------------------------------------------------------
             
             // Only show the color option if they highlighted an actual single word/nickname
             if (cleanNick.Length() > 0 && cleanNick.FindFirst(" ") == B_ERROR) {
                 BString colorLabel;
-                // Safely wraps the cleaned username text inside double quotes
-                colorLabel << "Add Color to \"" << cleanNick << "\"";
-                
-                // Use our new isolated message constant
-                BMessage* colorMsg = new BMessage(MSG_CONTEXT_ADD_COLOR_FROM_TEXT);
+                colorLabel << "Add Color: \"" << cleanNick << "\"";
+                BMessage* colorMsg = new BMessage(MSG_CONTEXT_ADD_COLOR);
                 colorMsg->AddString("target_nick", cleanNick);
-                
-                // Pack our class instance variables directly into the message data matrix
-                colorMsg->AddInt64("server_index", static_cast<int64>(fServerIdx));
+                colorMsg->AddInt64("server_network_id", static_cast<int64>(fServerIdx));
                 colorMsg->AddBool("is_custom_server", fIsCustom);
                 
                 contextMenu->AddItem(new BMenuItem(colorLabel.String(), colorMsg));
             }
             // =========================================================================
 
-
             
             // =========================================================================
             // DYNAMIC TRANSLATION SUBMENU WITH EMBEDDED TITLE LAYOUT
             // =========================================================================
             // 1. Build a clean, safely truncated label for the main sub-menu header row
-            BString subMenuHeaderLabel = "Translate \"";
+            BString subMenuHeaderLabel = "Translate: \"";
             BString truncatedLabelText = selectedText;
             truncatedLabelText.Trim();
             truncatedLabelText.ReplaceAll("\r", "");
@@ -10299,75 +10291,53 @@ public:
             break;
         }
         
-        // =========================================================================
-        // HANDLER FOR CONTEXT ACTION: CHOOSE HIGHLIGHTED TEXT 
-        // =========================================================================
-
-        case MSG_CONTEXT_ADD_COLOR_FROM_TEXT: {
-            BString targetNick;
-            int64 unpackedServerIdx = 0;
-            bool isCustom = false;
-            
-            // 1. Extract parameters safely via structural indices
-            if (message->FindString("target_nick", &targetNick) == B_OK &&
-                message->FindInt64("server_index", &unpackedServerIdx) == B_OK &&
-                message->FindBool("is_custom_server", &isCustom) == B_OK) {
-                
-                size_t targetIndex = static_cast<size_t>(unpackedServerIdx);
-                ServerTreeItem* serverItem = nullptr;
-
-                // 2. Resolve the index keys back into the live visual ServerTreeItem* node pointer
-                if (fChannelTree != nullptr) {
-                    for (int32 i = 0; i < fChannelTree->CountItems(); i++) {
-                        ServerTreeItem* srvNode = dynamic_cast<ServerTreeItem*>(fChannelTree->ItemAt(i));
-                        if (srvNode != nullptr && 
-                            srvNode->GetIndex() == targetIndex && 
-                            srvNode->IsCustom() == isCustom) {
-                            
-                            serverItem = srvNode;
-                            break;
-                        }
-                    }
-                }
-
-                // 3. Fallback: Fall back to the active global tracker handle if the tree loop skips it
-                if (serverItem == nullptr) {
-                    serverItem = fCurrentServerNode;
-                }
-
-                // 4. Safely spin up the configuration layout window
-                if (serverItem != nullptr && targetNick.Length() > 0) {
-                    ServerConfigWindow* configWin = new ServerConfigWindow(this, serverItem, serverItem->GetIndex(), serverItem->IsCustom());
-                    configWin->Show();
-
-                    // Pre-fill the nickname text entry box natively
-                    BMessage fillMsg('fllc'); 
-                    fillMsg.AddString("nick", targetNick);
-                    configWin->PostMessage(&fillMsg);
-                }
-            }
-            break;
-        }
-
+  
 
         // =========================================================================
-        // HANDLER FOR CONTEXT ACTION: CHOOSE USER NICKNAME COLOR ('cxcl')
+        // UNIFIED HANDLER FOR CONTEXT ACTION: CHOOSE USER NICKNAME COLOR ('cxcl')
         // =========================================================================
         case MSG_CONTEXT_ADD_COLOR: {
             BString targetNick;
             void* serverPtr = nullptr;
             
-            if (message->FindString("target_nick", &targetNick) == B_OK &&
-                message->FindPointer("context_server", &serverPtr) == B_OK) {
+            if (message->FindString("target_nick", &targetNick) == B_OK) {
                 
+                // Method A: Grab direct pointer (used by userlist / direct nick clicks)
+                if (message->FindPointer("context_server", &serverPtr) != B_OK) {
+                    
+                    // Method B: Resolve text selection via currently active sidebar selection
+                    if (fChannelTree != nullptr) {
+                        int32 selectedRow = fChannelTree->CurrentSelection();
+
+                        if (selectedRow >= 0) {
+                            BListItem* activeItem = fChannelTree->ItemAt(selectedRow);
+                            
+                            ChannelTreeItem* activeChan = dynamic_cast<ChannelTreeItem*>(activeItem);
+                            if (activeChan != nullptr) {
+                                BListItem* parentItem = fChannelTree->Superitem(activeChan);
+                                if (parentItem != nullptr) {
+                                    serverPtr = static_cast<void*>(dynamic_cast<ServerTreeItem*>(parentItem));
+                                }
+                            } else {
+                                ServerTreeItem* activeSrv = dynamic_cast<ServerTreeItem*>(activeItem);
+                                if (activeSrv != nullptr) {
+                                    serverPtr = static_cast<void*>(activeSrv);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Method C: Final fallback if no selection matches
+                if (serverPtr == nullptr) {
+                    serverPtr = static_cast<void*>(fCurrentServerNode);
+                }
+
                 ServerTreeItem* serverItem = static_cast<ServerTreeItem*>(serverPtr);
                 if (serverItem != nullptr && targetNick.Length() > 0) {
-                    
-                    //  Allocate as a clean local ServerConfigWindow instead of breaking types
                     ServerConfigWindow* configWin = new ServerConfigWindow(this, serverItem, serverItem->GetIndex(), serverItem->IsCustom());
                     configWin->Show();
 
-                    // Pass an explicit data messenger payload to pre-fill the nickname text entry box
                     BMessage fillMsg('fllc'); 
                     fillMsg.AddString("nick", targetNick);
                     configWin->PostMessage(&fillMsg);
@@ -10376,42 +10346,6 @@ public:
             break;
         }
 
-
-
-        case MSG_AUTO_REGISTER_FINGERPRINT: {
-            BString extractedHash;
-            if (message->FindString("fingerprint", &extractedHash) == B_OK && extractedHash.Length() == 40) {
-                
-                // Ensure we use the current active server node context safely
-                if (fCurrentServerNode != nullptr) {
-                    SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(fCurrentServerNode)];
-                    int activeFd = gServerRawSockets[static_cast<void*>(fCurrentServerNode)];
-
-                    BString registerCommand;
-                    registerCommand << "PRIVMSG NickServ :CERT ADD " << extractedHash << "\r\n";
-
-                    if (activeSslHandle != nullptr && activeFd >= 0) {
-                        // Transmit completely encrypted down the active thread's session
-                        SSL_write(activeSslHandle, registerCommand.String(), registerCommand.Length());
-                        
-                        if (cfg.debugEnable) {
-                            printf("[DEBUG_CERT] Dispatched automated NickServ CERT ADD registration command string down SSL.\n");
-                        }
-                    } else {
-                        // Legacy socket path fallback
-                        BSecureSocket* activeSocket = GetActiveSocket(fCurrentServerNode);
-                        if (activeSocket != nullptr) {
-                            activeSocket->Write(registerCommand.String(), registerCommand.Length());
-                        }
-                    }
-
-                    BString localLogNotice;
-                    localLogNotice << "--- [Auto-CertFP] Automated registration command transmitted: CERT ADD " << extractedHash << "\n";
-                    LogToItemBuffer(FindServerLogNode(fCurrentServerNode), localLogNotice);
-                }
-            }
-            break;
-        }
 
 
 

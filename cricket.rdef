@@ -3,11 +3,11 @@ resource app_signature "application/x-vnd.cricket";
 resource app_version {
     major  = 0,   
     middle = 0,   
-    minor  = 43, 
+    minor  = 44, 
     variety = B_APPV_DEVELOPMENT, 
     internal = 0,
-    short_info = "cricket v0.0.43",
-    long_info = "cricket v0.0.43 - A lightweight, multi-server IRC client for Haiku OS."
+    short_info = "cricket v0.0.44",
+    long_info = "cricket v0.0.44 - A lightweight, multi-server IRC client for Haiku OS."
 };
 //resource app_flags B_SINGLE_LAUNCH;
 
