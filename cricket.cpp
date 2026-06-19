@@ -74,7 +74,7 @@
 #include <fstream>
 #include <map>
 #include "nlohmann/json.hpp"
-#include <SupportDefs.h>
+// #include <SupportDefs.h>
 #include <Notification.h>
 
 
@@ -144,7 +144,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.45 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.46 (Haiku OS)";
 }
 
 // Forward declaration signature for update worker thread
@@ -6265,25 +6265,30 @@ public:
 	    int32 urlStartIdx = text.IFindFirst("http://");
 	    if (urlStartIdx == B_ERROR) urlStartIdx = text.IFindFirst("https://");
 	
-	    // 1. Allocate the run array layout cleanly before routing
-	    int32 maxRuns = 6;
-	    size_t arraySize = sizeof(text_run_array) + (sizeof(text_run) * (maxRuns - 1));
-	    text_run_array* runArray = (text_run_array*)malloc(arraySize);
-	    
-	    if (runArray != nullptr) {
-	        int32 runCount = 0;
-	
-	        // RULE 0: Start of line is always Regular
-	        runArray->runs[runCount].offset = 0;
-	        runArray->runs[runCount].font = regularChatFont;
-	        runArray->runs[runCount].color = textColor;
-	        runCount++;
-	
-	        // =========================================================================
-	        // FIXED UNIFIED ENGINE: CHRONOLOGICAL LEFT-TO-RIGHT PARSING STATE ENGINE
-	        // =========================================================================
-	        int32 currentResetOffset = -1;
-	
+        // =========================================================================
+        // PROACTIVE STRUCTURAL FIX: EXPANDED MEMORY LAYOUT ALLOCATION
+        // =========================================================================
+        // Boost bounds to 32 to handle heavy multi-link traffic rows easily
+        int32 maxRuns = 32;
+        size_t arraySize = sizeof(text_run_array) + (sizeof(text_run) * (maxRuns - 1));
+        
+        // Use calloc instead of malloc to guarantee all fields are cleanly zeroed out 
+        text_run_array* runArray = (text_run_array*)calloc(1, arraySize);
+        
+        if (runArray != nullptr) {
+            int32 runCount = 0;
+
+            // RULE 0: Start of line is always Regular
+            runArray->runs[runCount].offset = 0;
+            runArray->runs[runCount].font = regularChatFont;
+            runArray->runs[runCount].color = textColor;
+            runCount++;
+
+            // =========================================================================
+            // CHRONOLOGICAL LEFT-TO-RIGHT PARSING STATE ENGINE
+            // =========================================================================
+            int32 currentResetOffset = -1;
+
             // 1. NICKNAME BOLDING BLOCK (<Nick>)
             if (openingBracketIdx != B_ERROR && closingBracketIdx != B_ERROR && openingBracketIdx < closingBracketIdx) {
                 if (openingBracketIdx > 0 && runCount < maxRuns) {
@@ -6292,29 +6297,27 @@ public:
                     runArray->runs[runCount].color = textColor;
                     runCount++;
                 } else if (openingBracketIdx == 0) {
+                    // FIXED: Explicitly configure every attribute of slot 0 to avoid garbage values
+                    runArray->runs[0].offset = 0;
                     runArray->runs[0].font = boldChatFont;
+                    runArray->runs[0].color = textColor;
                 }
 
                 // Schedule a reset to regular text right after the closing bracket "> "
                 currentResetOffset = closingBracketIdx + 2;
             } else {
-                // FIXED: Fallback initialization for lines without nicknames (like topics/server logs!)
-                // This ensures the plain text prefix from character 0 up to the URL is cleanly mapped.
                 currentResetOffset = 0;
             }
 
-	
-	        // =========================================================================
-            // 2. FIXED: MULTI-LINK CHRONOLOGICAL URL LOOP INJECTION ENGINE
+            // =========================================================================
+            // 2. MULTI-LINK CHRONOLOGICAL URL LOOP INJECTION ENGINE
             // =========================================================================
             int32 currentSearchPos = 0;
 
             while (runCount < maxRuns) {
-                // Find the next available URL on this line starting from our current index position
                 int32 nextUrlStart = text.IFindFirst("http://", currentSearchPos);
                 int32 nextHttpsStart = text.IFindFirst("https://", currentSearchPos);
 
-                // Determine which protocol string appeared first chronologically
                 int32 activeUrlStart = B_ERROR;
                 if (nextUrlStart != B_ERROR && nextHttpsStart != B_ERROR) {
                     activeUrlStart = (nextUrlStart < nextHttpsStart) ? nextUrlStart : nextHttpsStart;
@@ -6324,10 +6327,9 @@ public:
                     activeUrlStart = nextHttpsStart;
                 }
 
-                // If no more URLs exist on the rest of this text line, break out of the loop safely
                 if (activeUrlStart == B_ERROR) break;
 
-                // A. If regular text separate previous segments and this link, inject the scheduled reset first
+                // A. Apply scheduled text reset before the link
                 if (currentResetOffset != -1 && activeUrlStart > currentResetOffset && runCount < maxRuns) {
                     runArray->runs[runCount].offset = currentResetOffset;
                     runArray->runs[runCount].font = regularChatFont;
@@ -6345,33 +6347,29 @@ public:
                     currentResetOffset = -1;
                 }
 
-                // C. Find where this specific URL terminates (space, newline, or string terminal)
+                // C. Find link termination boundary
                 int32 urlEndIdx = text.FindFirst(" ", activeUrlStart);
                 if (urlEndIdx == B_ERROR) urlEndIdx = text.FindFirst("\n", activeUrlStart);
                 if (urlEndIdx == B_ERROR) urlEndIdx = text.Length();
                 
-                // Schedule a regular text reset to follow immediately after this link
                 if (urlEndIdx <= text.Length()) {
                     currentResetOffset = urlEndIdx;
                 }
 
-                // Advance the loop forward so the next search pass runs right after this link's boundary
                 currentSearchPos = urlEndIdx;
             }
+
+            // 3. FINAL RESIDUAL TEXT STYLE RESET APPLICATION
+            if (currentResetOffset != -1 && currentResetOffset <= text.Length() && runCount < maxRuns) {
+                runArray->runs[runCount].offset = currentResetOffset;
+                runArray->runs[runCount].font = regularChatFont;
+                runArray->runs[runCount].color = textColor;
+                runCount++;
+            }
+
+            runArray->count = runCount;
             // =========================================================================
 
-	
-	        // 3. FINAL RESIDUAL TEXT STYLE RESET APPLICATION
-	        if (currentResetOffset != -1 && currentResetOffset <= text.Length() && runCount < maxRuns) {
-	            runArray->runs[runCount].offset = currentResetOffset;
-	            runArray->runs[runCount].font = regularChatFont;
-	            runArray->runs[runCount].color = textColor;
-	            runCount++;
-	        }
-	
-	        // Assign count cleanly without manual sorting loops
-	        runArray->count = runCount;
-	        // =========================================================================
 	
 	        // --- Route to the active view layer constraints ---
 	        bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
@@ -6721,10 +6719,15 @@ private:
 	        int32 urlStartIdx = text.IFindFirst("http://");
 	        if (urlStartIdx == B_ERROR) urlStartIdx = text.IFindFirst("https://");
 	
-	        // Expanded safety bounds count to 8 to prevent thread array overflows
-	        int32 maxRuns = 8;
+	        // =========================================================================
+	        // PROACTIVE STRUCTURAL FIX: EXPANDED MEMORY LAYOUT ALLOCATION
+	        // =========================================================================
+	        // Boost bounds to 32 to handle heavy multi-link traffic rows easily
+	        int32 maxRuns = 32;
 	        size_t arraySize = sizeof(text_run_array) + (sizeof(text_run) * (maxRuns - 1));
-	        text_run_array* runArray = (text_run_array*)malloc(arraySize);
+	        
+	        // Use calloc instead of malloc to guarantee all fields are cleanly zeroed out 
+	        text_run_array* runArray = (text_run_array*)calloc(1, arraySize);
 	        
 	        if (runArray != nullptr) {
 	            int32 runCount = 0;
@@ -6736,7 +6739,7 @@ private:
 	            runCount++;
 	
 	            // =========================================================================
-	            // FIXED: CHRONOLOGICAL LEFT-TO-RIGHT PARSING STATE ENGINE
+	            // CHRONOLOGICAL LEFT-TO-RIGHT PARSING STATE ENGINE
 	            // =========================================================================
 	            int32 currentResetOffset = -1;
 	
@@ -6748,29 +6751,27 @@ private:
 	                    runArray->runs[runCount].color = textColor;
 	                    runCount++;
 	                } else if (openingBracketIdx == 0) {
+	                    // FIXED: Explicitly configure every attribute of slot 0 to avoid garbage values
+	                    runArray->runs[0].offset = 0;
 	                    runArray->runs[0].font = boldChatFont;
+	                    runArray->runs[0].color = textColor;
 	                }
 	
 	                // Schedule a reset to regular text right after the closing bracket "> "
 	                currentResetOffset = closingBracketIdx + 2;
 	            } else {
-	                // FIXED: Fallback initialization for lines without nicknames (like topics/server logs!)
-	                // This ensures the plain text prefix from character 0 up to the URL is cleanly mapped.
 	                currentResetOffset = 0;
 	            }
-
 	
 	            // =========================================================================
-	            // 2. FIXED: MULTI-LINK CHRONOLOGICAL URL LOOP INJECTION ENGINE
+	            // 2. MULTI-LINK CHRONOLOGICAL URL LOOP INJECTION ENGINE
 	            // =========================================================================
 	            int32 currentSearchPos = 0;
 	
 	            while (runCount < maxRuns) {
-	                // Find the next available URL on this line starting from our current index position
 	                int32 nextUrlStart = text.IFindFirst("http://", currentSearchPos);
 	                int32 nextHttpsStart = text.IFindFirst("https://", currentSearchPos);
 	
-	                // Determine which protocol string appeared first chronologically
 	                int32 activeUrlStart = B_ERROR;
 	                if (nextUrlStart != B_ERROR && nextHttpsStart != B_ERROR) {
 	                    activeUrlStart = (nextUrlStart < nextHttpsStart) ? nextUrlStart : nextHttpsStart;
@@ -6780,10 +6781,9 @@ private:
 	                    activeUrlStart = nextHttpsStart;
 	                }
 	
-	                // If no more URLs exist on the rest of this text line, break out of the loop safely
 	                if (activeUrlStart == B_ERROR) break;
 	
-	                // A. If regular text separate previous segments and this link, inject the scheduled reset first
+	                // A. Apply scheduled text reset before the link
 	                if (currentResetOffset != -1 && activeUrlStart > currentResetOffset && runCount < maxRuns) {
 	                    runArray->runs[runCount].offset = currentResetOffset;
 	                    runArray->runs[runCount].font = regularChatFont;
@@ -6801,21 +6801,17 @@ private:
 	                    currentResetOffset = -1;
 	                }
 	
-	                // C. Find where this specific URL terminates (space, newline, or string terminal)
+	                // C. Find link termination boundary
 	                int32 urlEndIdx = text.FindFirst(" ", activeUrlStart);
 	                if (urlEndIdx == B_ERROR) urlEndIdx = text.FindFirst("\n", activeUrlStart);
 	                if (urlEndIdx == B_ERROR) urlEndIdx = text.Length();
 	                
-	                // Schedule a regular text reset to follow immediately after this link
 	                if (urlEndIdx <= text.Length()) {
 	                    currentResetOffset = urlEndIdx;
 	                }
 	
-	                // Advance the loop forward so the next search pass runs right after this link's boundary
 	                currentSearchPos = urlEndIdx;
 	            }
-	            // =========================================================================
-
 	
 	            // 3. FINAL RESIDUAL TEXT STYLE RESET APPLICATION
 	            if (currentResetOffset != -1 && currentResetOffset <= text.Length() && runCount < maxRuns) {
@@ -6825,9 +6821,9 @@ private:
 	                runCount++;
 	            }
 	
-	            // Assign count cleanly without manual sorting loops
 	            runArray->count = runCount;
 	            // =========================================================================
+
 	
 	            // --- Direct View Data Routing (No View Swapping Overhead inside Data Loops!) ---
 	            bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;

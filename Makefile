@@ -2,7 +2,7 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.45
+VERSION = 0.0.46
 
 # Target Arch
 UNAME_M := $(shell uname -p)
