@@ -144,7 +144,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.46 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.47 (Haiku OS)";
 }
 
 // Forward declaration signature for update worker thread
@@ -1012,7 +1012,12 @@ struct StyledLine {
             size_t size = sizeof(text_run_array) + (sizeof(text_run) * (r->count - 1));
             runs = (text_run_array*)malloc(size);
             if (runs != nullptr) {
-                memcpy(runs, r, size);
+                // FIXED: Replace raw memcpy byte overwrite with standard-compliant member-wise 
+                // assignment loops to satisfy strict modern C++ compiler initialization parameters
+                runs->count = r->count;
+                for (int32 k = 0; k < r->count; k++) {
+                    runs->runs[k] = r->runs[k];
+                }
             }
         } else {
             runs = nullptr;
@@ -1024,7 +1029,6 @@ struct StyledLine {
         wrappedRows.MakeEmpty();
     }
 };
-
 
 // 3. Clean Interface Declaration Block (Contains NO method bodies)
 class CustomChatView : public BView {
@@ -3586,7 +3590,7 @@ public:
         fIsCustom = isCustom; 
         AddToSubset(parent);
         ServerConfig& srv = GetActiveConfig();
-        bool useSASL = false;
+        // @delete bool useSASL = false;
         std::string saslUser;
 	    fLocalSearchEngineChoice = cfg.searchEngine.c_str();
 

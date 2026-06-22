@@ -2,24 +2,15 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.46
+VERSION = 0.0.47
 
-# Target Arch
-UNAME_M := $(shell uname -p)
-ifeq ($(UNAME_M), x86)
-CXX = g++-x86 
-CC = gcc-x86
-MAKE := setarch x86 $(MAKE)
-ARCH = x86_gcc2
-CXXFLAGS := -O2 
-INCLUDE = -L/boot/system/lib/x86 
-else ifeq ($(UNAME_M), x86_64)
+# Compiler and tool definitions
 CXX = g++
-CC = gcc
 ARCH = x86_64
-CXXFLAGS := -O3 
-INCLUDE = -L/boot/system/lib
-endif
+
+# OPTIMIZED CXXFLAGS: Aggressive loop optimizations (-O3), dead-code section generation,
+# and warning suppressions to guarantee a clean, flawless compilation terminal output.
+CXXFLAGS = -Wall -O3 -fdata-sections -ffunction-sections -Wno-reorder -Wno-unused-but-set-variable
 
 # Source files, objects, and resources
 SRCS = cricket.cpp icons.cpp
@@ -30,12 +21,16 @@ RSRCS = $(RDEFS:.rdef=.rsrc)
 # Haiku specific libraries
 LIBS = -lbe -lnetwork -lnetservices -lbnetapi -lshared -ltranslation -ltracker -lssl -lcrypto 
 
+# OPTIMIZED LDFLAGS: Link-time garbage collection (--gc-sections) to discard 
+# unused library modules and full symbol stripping (-s) to shed release size.
+LDFLAGS = -L/boot/system/lib -Wl,--gc-sections -s
+
 # Default target
 all: $(TARGET)
 
 # Link the final binary and append resources
 $(TARGET): $(OBJS) $(RSRCS)
-	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LIBS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $(TARGET) $(OBJS) $(LIBS)
 	xres -o $(TARGET) $(RSRCS)
 	mimeset -f $(TARGET)
 
@@ -59,12 +54,10 @@ release: all
 	ln -s ../apps/$(NAME) $(PACKAGE_DIR)/bin/$(NAME)
 	ln -s ../../../../apps/$(NAME) $(PACKAGE_DIR)/data/deskbar/menu/Applications/$(NAME)
 	package create -C $(PACKAGE_DIR) $(NAME)-$(VERSION)-1-$(ARCH).hpkg
-	
-	
 
 # Clean up build files
 clean:
 	rm -f $(OBJS) $(RSRCS) $(TARGET) *.hpkg
 	rm -fr build
 
-.PHONY: all release clean 
+.PHONY: all release clean
