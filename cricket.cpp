@@ -144,7 +144,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.47 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.48 (Haiku OS)";
 }
 
 // Forward declaration signature for update worker thread
@@ -1046,19 +1046,19 @@ public:
 
 	virtual void KeyDown(const char* bytes, int32 numBytes) override;
 	BString GetSelectedText(); 
-    virtual void MessageReceived(BMessage* message); 
+    virtual void MessageReceived(BMessage* message) override; 
     virtual void MouseMoved(BPoint point, uint32 transit, const BMessage* dragMessage) override;
 	virtual void MouseUp(BPoint point) override;
-	virtual void MouseDown(BPoint point);
-	virtual void Draw(BRect updateRect);
-    virtual void FrameResized(float newWidth, float newHeight);
+	virtual void MouseDown(BPoint point) override;
+	virtual void Draw(BRect updateRect) override;
+    virtual void FrameResized(float newWidth, float newHeight) override;
     int32 CountTotalLines() const;
     BString GetLineTextAt(int32 index) const;
 
 private:
     void ParseTextAndIcons(const BString& text, const text_run_array* runs, BObjectList<StyledRunFragment, true>* rawFragments);
     void ComputeWrapForLine(StyledLine* line, float maxWidth, BObjectList<StyledRunFragment, true>* rawFragments);
-    virtual void ScrollTo(BPoint point);
+    virtual void ScrollTo(BPoint point) override;
 	void UpdateScrollRange(bool scrollToBottom = false);
     BObjectList<StyledLine, true> fLines; 
     BStringItem*                  fActiveChannelNode;
@@ -2328,7 +2328,7 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
 // Scoped layout mouse click tracker logic implementation with Channel Filtering Isolation and Text Selection
 void CustomChatView::MouseDown(BPoint point) {
     if (Window() == nullptr) return;
-	 MakeFocus(true);
+	// MakeFocus(true);
     // =========================================================================
     // NEW: INITIAL APP BOOT HOVER CLICK TARGET CHECK
     // =========================================================================
@@ -2659,7 +2659,7 @@ void CustomChatView::MouseDown(BPoint point) {
     fSelectionStart = point;
     fSelectionEnd = point;
     
-    SetMouseEventMask(B_POINTER_EVENTS, B_LOCK_WINDOW_FOCUS);
+    SetMouseEventMask(B_POINTER_EVENTS, 0);
     Invalidate();
 
     float currentY = 10.0f;
@@ -3590,7 +3590,7 @@ public:
         fIsCustom = isCustom; 
         AddToSubset(parent);
         ServerConfig& srv = GetActiveConfig();
-        // @delete bool useSASL = false;
+
         std::string saslUser;
 	    fLocalSearchEngineChoice = cfg.searchEngine.c_str();
 
@@ -5466,9 +5466,34 @@ public:
             }
         }
 
+        // --- DOWN ARROW KEY DETECTED (Haiku Raw Key: 0x62) ---
+        else if (key == 0x62) {
+            if (totalItems > 0 && *fHistoryIndex < totalItems) {
+                // ... (Keep your down arrow loop exactly as it is)
+                return B_SKIP_MESSAGE;
+            }
+        }
         
+        // =========================================================================
+        // ADDED: EXPLICIT ENTER/RETURN KEY CHECK
+        // =========================================================================
+        int32 rawChar = 0;
+        if (message->FindInt32("raw_char", &rawChar) == B_OK && rawChar == '\n') {
+            // Build a manual messenger bundle containing our strict authorization flag
+            BMessage sendMsg(MSG_SEND_MESSAGE);
+            sendMsg.AddBool("explicit_enter_keypress", true);
+            
+            // Post it straight to the parent window's message queue
+            if (fInputControl->Window() != nullptr) {
+                fInputControl->Window()->PostMessage(&sendMsg);
+            }
+            
+            return B_SKIP_MESSAGE; // Swallow event so Haiku doesn't duplicate the text
+        }
+
         return B_DISPATCH_MESSAGE;
     }
+
 
 
 
@@ -5818,16 +5843,15 @@ public:
         fChatLog->MakeEditable(false);
         fChatLog->SetStylable(true);
 
-        BScrollView* chatScroll = new BScrollView("scroll_chat", fChatLog, 0, false, true);
-
+		new BScrollView("scroll_chat", fChatLog, 0, false, true);
+		
         // --- NEW: Custom Draw Engine View Canvas Instantiation ---
         //  Added B_NAVIGABLE so this layout surface can accept keyboard events!
         fCustomChatLog = new CustomChatView(BRect(), "custom_draw_view", B_FOLLOW_ALL, B_WILL_DRAW | B_NAVIGABLE);
         
         // Note: Wrapping a direct BView inside a scrollview requires explicit scroll implementation.
         // For simple presentation management, we swap whole container view hierarchies.
-        BScrollView* customScroll = new BScrollView("scroll_custom", fCustomChatLog, 0, false, true);
-
+		new BScrollView("scroll_custom", fCustomChatLog, 0, false, true);
         
         
 
@@ -5848,13 +5872,16 @@ public:
         
         
         
-        fInputControl = new BTextControl("input", "", "", new BMessage(MSG_SEND_MESSAGE));
+        // FIX: Replaced new BMessage(MSG_SEND_MESSAGE) with nullptr.
+        // This stops Haiku from auto-transmitting text whenever focus is lost.
+        fInputControl = new BTextControl("input", "", "", nullptr);
 
         BTextView* inputTextView = fInputControl->TextView();
         if (inputTextView != nullptr) {
             // Pass the pointers to the collection list and index counters
             inputTextView->AddFilter(new InputFieldKeyFilter(fInputControl, &fHistoryList, &fHistoryIndex, fUserList));
         }
+
 
         // Ensure we have at least one server available to read initial sizes from safely
         int32 initialServerListSize = cfg.serverListFontSize;
@@ -7790,52 +7817,7 @@ private:
         }
 
     
-    
-    /* // @delete
         // =========================================================================
-        // HANDLER FOR NUMERIC 475: ERR_BADCHANNELKEY
-        // =========================================================================
-        if (command == "475") {
-            // Numeric 475 structure looks like: :server 475 yournick #channel :Cannot join channel (+k)
-            // 'line' holds the parameters following the code: "yournick #channel"
-            BString payload = line;
-            payload.Trim();
-
-            int32 spaceIdx = payload.FindFirst(" ");
-            if (spaceIdx != B_ERROR) {
-                BString badChannel = "";
-                payload.CopyInto(badChannel, spaceIdx + 1, payload.Length() - (spaceIdx + 1));
-                badChannel.Trim();
-
-                // Strip out trailing server comment fragments if present
-                int32 commentIdx = badChannel.FindFirst(" ");
-                if (commentIdx != B_ERROR) {
-                    badChannel.Truncate(commentIdx);
-                }
-
-                // Safely resolve the associated network secure writing socket
-                BSecureSocket* activeSocket = nullptr;
-                auto it = fServerSockets.find(contextServer);
-                if (it != fServerSockets.end()) {
-                    activeSocket = it->second;
-                }
-
-                if (activeSocket != nullptr && badChannel.Length() > 0) {
-                    // Inform the local room log buffer cleanly
-                    BString notice;
-                    notice.SetToFormat("(!) Network Alert: '%s' requires an access key. Prompting for password...\n", badChannel.String());
-                    LogToItemBuffer(fActiveBufferItem, notice);
-
-                    // Launch the modal password collection dialog framework asynchronously
-                    ChannelKeyPromptWindow* promptWin = new ChannelKeyPromptWindow(this, activeSocket, badChannel);
-                    promptWin->Show();
-                }
-            }
-        }
-
-    
-	*/
-	        // =========================================================================
         // HANDLER FOR NUMERIC 475: ERR_BADCHANNELKEY
         // =========================================================================
         if (command == "475") {
@@ -12089,19 +12071,6 @@ public:
                     activeSocket->Write(partCmd.String(), partCmd.Length());
                 }
             }
-            /* @Delete
-            // 2. Remove from autojoin configuration
-            size_t serverIdx = parentServer->GetIndex();
-            auto& srvRef = parentServer->IsCustom() ? cfg.customServers[serverIdx] : cfg.servers[serverIdx];
-            
-            for (auto it = srvRef.autojoin.begin(); it != srvRef.autojoin.end(); ) {
-                if (targetChanName.ICompare(it->c_str()) == 0) {
-                    it = srvRef.autojoin.erase(it);
-                } else {
-                    ++it;
-                }
-            } 
-            */
         }
 			
 			
@@ -12973,6 +12942,17 @@ public:
                 break;
 
     case MSG_SEND_MESSAGE: {
+    	
+            int32 reason = 0;
+            // Haiku natively injects "be:reason" when a BTextControl auto-invokes.
+            // B_REASON_LOST_FOCUS (typically value 2) indicates a focus-loss drop.
+            if (message->FindInt32("be:reason", &reason) == B_OK) {
+                // If the message was fired strictly because focus was lost, discard it!
+                if (reason == 2 /* B_REASON_LOST_FOCUS */) {
+                    break;
+                }
+            }
+            
             BString text = fInputControl->Text();
             if (text.Length() > 0) {
                 
