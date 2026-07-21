@@ -144,7 +144,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.49 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.50 (Haiku OS)";
 }
 
 // Forward declaration signature for update worker thread
@@ -6976,12 +6976,9 @@ private:
 	void RefreshUserListUI() {
 	    if (fActiveBufferItem != nullptr && BString(fActiveBufferItem->Text()).StartsWith("#")) {
 	        
-			int32 userCount = fUserList->CountItems();
-			for (int32 i = 0; i < userCount; i++) {
-			    delete fUserList->ItemAt(i); // Free the individual UserListItem pointers
-			}
-			fUserList->MakeEmpty(); // Drops internal allocations instantly at O(1)
-
+	        while (fUserList->CountItems() > 0) {
+	            delete fUserList->RemoveItem((int32)0);
+	        }
 	
 	        if (fChannelUsers.find(fActiveBufferItem) != fChannelUsers.end()) {
 	            BObjectList<UserListItem, true>* users = fChannelUsers[fActiveBufferItem];
@@ -12884,13 +12881,21 @@ public:
                     BLayout* containerLayout = fChatContainer->GetLayout();
 
                     if (containerLayout != nullptr && standardChatScroll != nullptr && customChatScroll != nullptr) {
-						if (currentDrawState) {
-						    if (!standardChatScroll->IsHidden()) standardChatScroll->Hide();
-						    if (customChatScroll->IsHidden()) customChatScroll->Show();
-						} else {
-						    if (!customChatScroll->IsHidden()) customChatScroll->Hide();
-						    if (standardChatScroll->IsHidden()) standardChatScroll->Show();
-						}
+                        if (currentDrawState) {
+                            if (standardChatScroll->Parent() == fChatContainer) {
+                                containerLayout->RemoveView(standardChatScroll);
+                            }
+                            if (customChatScroll->Parent() != fChatContainer) {
+                                containerLayout->AddView(customChatScroll);
+                            }
+                        } else {
+                            if (customChatScroll->Parent() == fChatContainer) {
+                                containerLayout->RemoveView(customChatScroll);
+                            }
+                            if (standardChatScroll->Parent() != fChatContainer) {
+                                containerLayout->AddView(standardChatScroll);
+                            }
+                        }
                         fChatContainer->InvalidateLayout(true);
                     }
                     // =========================================================================
