@@ -2683,25 +2683,53 @@ void CustomChatView::MouseDown(BPoint point) {
                         if (point.x >= currentX && point.x <= (currentX + segmentWidth)) {
                             fIsSelecting = false;
                             
-                            // --- ALTERNATIVE: LIVE URL RECONSTRUCTION ---
+                            // --- LOCAL LINK RECONSTRUCTION ONLY ---
                             BString reconstructedUrl = "";
                             
-                            // Step 1: Scan all rows in this line to stitch consecutive underlined fragments
-                            for (int32 rIdx = 0; rIdx < line->wrappedRows.CountItems(); rIdx++) {
-                                BObjectList<StyledRunFragment, true>* checkRow = line->wrappedRows.ItemAt(rIdx);
+                            // Track exact location indexes where the mouse pointer clicked
+                            int32 clickedRowIdx = rowIdx;
+                            int32 clickedFragIdx = fragIdx;
+                            
+                            // 1. Gather all consecutive links moving FORWARD from our click
+                            bool continuous = true;
+                            for (int32 r = clickedRowIdx; r < line->wrappedRows.CountItems() && continuous; r++) {
+                                BObjectList<StyledRunFragment, true>* checkRow = line->wrappedRows.ItemAt(r);
                                 if (!checkRow) continue;
                                 
-                                for (int32 fIdx = 0; fIdx < checkRow->CountItems(); fIdx++) {
-                                    StyledRunFragment* checkFrag = checkRow->ItemAt(fIdx);
-                                    if (!checkFrag) continue;
-                                    
-                                    // If it's part of the continuous link block, stitch it!
-                                    if (checkFrag->font.Face() & B_UNDERSCORE_FACE) {
-                                        reconstructedUrl << checkFrag->subText;
+                                int32 startF = (r == clickedRowIdx) ? clickedFragIdx : 0;
+                                for (int32 f = startF; f < checkRow->CountItems(); f++) {
+                                    StyledRunFragment* cf = checkRow->ItemAt(f);
+                                    if (cf && (cf->font.Face() & B_UNDERSCORE_FACE)) {
+                                        reconstructedUrl << cf->subText;
+                                    } else {
+                                        continuous = false; // Met plain text or an icon; stop merging!
+                                        break;
                                     }
                                 }
                             }
                             
+                            // 2. Gather all consecutive links moving BACKWARD from our click
+                            BString prependPart = "";
+                            continuous = true;
+                            for (int32 r = clickedRowIdx; r >= 0 && continuous; r--) {
+                                BObjectList<StyledRunFragment, true>* checkRow = line->wrappedRows.ItemAt(r);
+                                if (!checkRow) continue;
+                                
+                                int32 startF = (r == clickedRowIdx) ? clickedFragIdx - 1 : checkRow->CountItems() - 1;
+                                for (int32 f = startF; f >= 0; f--) {
+                                    StyledRunFragment* cf = checkRow->ItemAt(f);
+                                    if (cf && (cf->font.Face() & B_UNDERSCORE_FACE)) {
+                                        // Put these at the beginning of a separate string buffer
+                                        prependPart.Prepend(cf->subText);
+                                    } else {
+                                        continuous = false; // Met plain text or an icon; stop merging!
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Combine the left and right pieces cleanly
+                            reconstructedUrl.Prepend(prependPart);
                             reconstructedUrl.Trim();
                             
                             if (reconstructedUrl.Length() > 0) {
@@ -2712,6 +2740,7 @@ void CustomChatView::MouseDown(BPoint point) {
                         }
                     }
                     currentX += segmentWidth;
+
 
                 }
                 return;
