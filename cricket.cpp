@@ -137,18 +137,17 @@ enum {
 // Forward Declarations 
 class CricketWindow; 
 class ServerTreeItem; 
-#include <map>
+
 static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.50 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.51 (Haiku OS)";
 }
 
-// Forward declaration signature for update worker thread
-static int32 BackgroundUpdateChecker(void* data);
+
 
 using json = nlohmann::json;
 
@@ -975,7 +974,7 @@ enum FragmentType {
     FRAG_ICON
 };
 
-// 1. Holds individual text slices after word-wrapping processing
+// 1. Holds individual text slices after word-wrapping processingZ
 struct StyledRunFragment {
     FragmentType type;
     BString      subText;   
@@ -2684,22 +2683,44 @@ void CustomChatView::MouseDown(BPoint point) {
                         if (point.x >= currentX && point.x <= (currentX + segmentWidth)) {
                             fIsSelecting = false;
                             
-                            BString url = frag->subText;
-                            url.Trim();
-                            char* args = (char*)url.String();
-                            be_roster->Launch("text/html", 1, &args);
+                            // --- ALTERNATIVE: LIVE URL RECONSTRUCTION ---
+                            BString reconstructedUrl = "";
+                            
+                            // Step 1: Scan all rows in this line to stitch consecutive underlined fragments
+                            for (int32 rIdx = 0; rIdx < line->wrappedRows.CountItems(); rIdx++) {
+                                BObjectList<StyledRunFragment, true>* checkRow = line->wrappedRows.ItemAt(rIdx);
+                                if (!checkRow) continue;
+                                
+                                for (int32 fIdx = 0; fIdx < checkRow->CountItems(); fIdx++) {
+                                    StyledRunFragment* checkFrag = checkRow->ItemAt(fIdx);
+                                    if (!checkFrag) continue;
+                                    
+                                    // If it's part of the continuous link block, stitch it!
+                                    if (checkFrag->font.Face() & B_UNDERSCORE_FACE) {
+                                        reconstructedUrl << checkFrag->subText;
+                                    }
+                                }
+                            }
+                            
+                            reconstructedUrl.Trim();
+                            
+                            if (reconstructedUrl.Length() > 0) {
+                                char* args[] = { const_cast<char*>(reconstructedUrl.String()), nullptr };
+                                be_roster->Launch("text/html", 1, args);
+                            }
                             return;
                         }
                     }
                     currentX += segmentWidth;
+
                 }
                 return;
             }
             currentY += fLineHeight;
         }
     }
-
 }
+
 
 
 
