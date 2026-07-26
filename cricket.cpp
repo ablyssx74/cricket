@@ -144,7 +144,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.51 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.52 (Haiku OS)";
 }
 
 
@@ -11551,11 +11551,31 @@ public:
             BString cleanNick = GetCleanNickname(clickedItem->Text());
             BPopUpMenu* contextMenu = new BPopUpMenu("UserContext", false, false);
 
-            // CONDITION A: You right-clicked OWN nickname handle
-            if (cleanNick == fMyNick) {
-                const char* statusText = clickedItem->IsAway() ? "Set Status: Back" : "Set Status: Away";
-                contextMenu->AddItem(new BMenuItem(statusText, new BMessage(MSG_CONTEXT_SET_AWAY)));
-            } 
+			// CONDITION A: You right-clicked OWN nickname handle
+			if (cleanNick == fMyNick) {
+			    const char* statusText = clickedItem->IsAway() ? "Set Status: Back" : "Set Status: Away";
+			    
+			    // Create the message
+			    BMessage* awayMsg = new BMessage(MSG_CONTEXT_SET_AWAY);
+			    
+			    // --- ROBUST INJECTION: Find and attach the exact server context ---
+			    ServerTreeItem* parentServer = nullptr;
+			    ChannelTreeItem* activeChan = dynamic_cast<ChannelTreeItem*>(fActiveBufferItem);
+			    
+			    if (activeChan != nullptr && fChannelTree != nullptr) {
+			        BListItem* parentItem = fChannelTree->Superitem(activeChan);
+			        parentServer = dynamic_cast<ServerTreeItem*>(parentItem);
+			    }
+			    if (parentServer == nullptr) {
+			        parentServer = fCurrentServerNode; // Fallback to current if not a channel
+			    }
+			    
+			    // Attach the server pointer directly to the menu action item
+			    awayMsg->AddPointer("context_server", parentServer);
+			    
+			    contextMenu->AddItem(new BMenuItem(statusText, awayMsg));
+			} 
+
             // CONDITION B: You right-clicked SOMEONE ELSE's nickname handle
             else {
                 BString menuLabel;
@@ -11670,61 +11690,85 @@ public:
             break;
         }
 
+		
+		
+		case MSG_CONTEXT_SET_AWAY: {
+		    if (fActiveBufferItem != nullptr) {
+		        void* serverPtr = nullptr;
+		        ServerTreeItem* targetedServer = nullptr;
+		
+		        // Step A: Grab the direct pointer attached during right-click execution
+		        if (message->FindPointer("context_server", &serverPtr) == B_OK) {
+		            targetedServer = dynamic_cast<ServerTreeItem*>(static_cast<BListItem*>(serverPtr));
+		        }
+		
+		        // Step B: Fallback chain mirroring your robust color selection code
+		        if (targetedServer == nullptr) {
+		            if (fChannelTree != nullptr) {
+		                int32 selectedRow = fChannelTree->CurrentSelection();
+		                if (selectedRow >= 0) {
+		                    BListItem* activeItem = fChannelTree->ItemAt(selectedRow);
+		                    ChannelTreeItem* activeChan = dynamic_cast<ChannelTreeItem*>(activeItem);
+		                    if (activeChan != nullptr) {
+		                        BListItem* parentItem = fChannelTree->Superitem(activeChan);
+		                        targetedServer = dynamic_cast<ServerTreeItem*>(parentItem);
+		                    } else {
+		                        targetedServer = dynamic_cast<ServerTreeItem*>(activeItem);
+		                    }
+		                }
+		            }
+		        }
+		
+		        // Step C: Absolute final safety fallbacks
+		        if (targetedServer == nullptr) {
+		            targetedServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+		        }
+		
+		        // Double check we have a valid server context before executing network actions
+		        if (targetedServer == nullptr) break;
+		
+		        // Extract your true runtime server name dynamically from the tab text
+		        BString activeMyNick = targetedServer->Text();
+		        int32 spacePos = activeMyNick.FindFirst(" ");
+		        if (spacePos != B_ERROR) activeMyNick.Truncate(spacePos);
+		        activeMyNick.Trim();
+		
+		        // Lookup secure pipe handle via tracking maps
+		        SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(targetedServer)];
+		
+				if (activeSslHandle != nullptr) {
+				    BString outgoingPayload;
+				    bool currentlyAway = false;
+				
+				    // Use LockLooper to protect thread-safety while iterating a live BListView
+				    if (LockLooper()) {
+				        for (int32 i = 0; i < fUserList->CountItems(); i++) {
+				            UserListItem* uiUser = dynamic_cast<UserListItem*>(fUserList->ItemAt(i));
+				            if (uiUser != nullptr) {
+				                // Look for your own username using your established clean nick string
+				                if (uiUser->GetCleanNick() == fMyNick) {
+				                    currentlyAway = uiUser->IsAway();
+				                    break;
+				                }
+				            }
+				        }
+				        UnlockLooper();
+				    }
+				
+				    // Toggle execution logic
+				    if (currentlyAway) {
+				        outgoingPayload << "AWAY\r\n"; // Sends the /back command
+				    } else {
+				        outgoingPayload << "AWAY :" << cfg.awayMessage.c_str() << "\r\n"; // Sends the /away command
+				    }
+				    
+				    SSL_write(activeSslHandle, outgoingPayload.String(), outgoingPayload.Length());
+				}
 
+		    }
+		    break;
+		}
 
-
-
-
-
-
-
-         // 2. EXECUTE SERVER TRANSMISSION: Dispatches the corresponding raw /AWAY parameters
-        case MSG_CONTEXT_SET_AWAY: {
-            if (fActiveBufferItem != nullptr) {
-                // Determine active server context safely
-                ServerTreeItem* targetedServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
-                if (targetedServer == nullptr) break;
-
-                // =========================================================================
-                // DYNAMIC NICKNAME RESOLUTION FIX
-                // =========================================================================
-                // Extract your true runtime server name dynamically from the tab text
-                BString activeMyNick = targetedServer->Text();
-                int32 spacePos = activeMyNick.FindFirst(" ");
-                if (spacePos != B_ERROR) activeMyNick.Truncate(spacePos);
-                activeMyNick.Trim();
-
-                // Lookup secure pipe handle via tracking maps
-                SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(targetedServer)];
-
-                if (activeSslHandle != nullptr) {
-                    BString outgoingPayload;
-                    bool currentlyAway = false;
-
-                    // Scan user items using the dynamic runtime nickname
-                    for (int32 i = 0; i < fUserList->CountItems(); i++) {
-                        UserListItem* uiUser = dynamic_cast<UserListItem*>(fUserList->ItemAt(i));
-                        if (uiUser != nullptr) {
-                            // FIXED: Now uses activeMyNick instead of the static fMyNick
-                            if (uiUser->GetCleanNick() == activeMyNick) {
-                                currentlyAway = uiUser->IsAway();
-                                break;
-                            }
-                        }
-                    }
-
-                    if (currentlyAway) {
-                        outgoingPayload << "AWAY\r\n";
-                    } else {
-                        outgoingPayload << "AWAY :" << cfg.awayMessage.c_str() << "\r\n";
-                    }
-                    
-                    // Secure OpenSSL transmission
-                    SSL_write(activeSslHandle, outgoingPayload.String(), outgoingPayload.Length());
-                }
-            }
-            break;
-        }
 
 
 
