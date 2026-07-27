@@ -82,6 +82,7 @@
 enum {
 	MSG_CONTEXT_ADD_COLOR = 'cccl',
 	MSG_TRIGGER_REPLIES_SEARCH = 'trrs',
+	MSG_CONTEXT_TIMED_UNBAN_TRIGGER = 'ctut',
     MSG_START_SIRC       = 'strt',
     MSG_SEND_MESSAGE     = 'send',
     MSG_IRC_RECEIVED     = 'recv',
@@ -144,7 +145,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.53 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.54 (Haiku OS)";
 }
 
 
@@ -8736,7 +8737,7 @@ private:
         }
 
 
-           // =========================================================================
+        // =========================================================================
         // FULLY UN-CUT INSTRUMENTED CAP HANDLER ENGINE
         // =========================================================================
         if (command == "CAP") {
@@ -11000,6 +11001,30 @@ public:
         }
 
 
+        case MSG_CONTEXT_TIMED_UNBAN_TRIGGER: {
+            BString targetChannel;
+            BString banMask;
+            ServerTreeItem* serverCtx = nullptr;
+
+            if (message->FindString("target_channel", &targetChannel) == B_OK &&
+                message->FindString("ban_mask", &banMask) == B_OK &&
+                message->FindPointer("server_node", (void**)&serverCtx) == B_OK && serverCtx != nullptr) {
+                
+                SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(serverCtx)];
+                if (activeSslHandle != nullptr) {
+                    BString clearBanPayload;
+                    clearBanPayload << "MODE " << targetChannel << " -b " << banMask << "\r\n";
+                    SSL_write(activeSslHandle, clearBanPayload.String(), clearBanPayload.Length());
+                    
+                    if (cfg.debugEnable) {
+                        printf("[DEBUG] Automated timed unban executed: %s on %s\n", banMask.String(), targetChannel.String());
+                    }
+                }
+            }
+            break;
+        }
+
+
 
 
 
@@ -11411,7 +11436,6 @@ public:
 
         // KICK & BAN TRANSMITTER: Dispatches eviction and ban parameters to the network
         case MSG_CONTEXT_KICK_SUBMIT: {
-            // DIAGNOSTIC MONITOR PASS: Log the initiation of the submit event handler loop
             if (cfg.debugEnable) {
                 printf("[DEBUG_KICK_SUBMIT] MSG_CONTEXT_KICK_SUBMIT triggered.\n");
             }
@@ -11420,6 +11444,7 @@ public:
             BString kickReason = "";
             bool shouldBan = false;
             BString banDuration = "Forever";
+            ChannelTreeItem* targetItem = nullptr; // Track specific context channel item
             
             if (message->FindString("target_nick", &targetNick) == B_OK) {
                 void* winPtr = nullptr;
@@ -11428,19 +11453,16 @@ public:
                     BWindow* modalWindow = static_cast<BWindow*>(winPtr);
                     
                     if (modalWindow->Lock()) {
-                        // 1. Extract the text reason string safely into local deep-copied memory
                         BTextControl* reasonField = dynamic_cast<BTextControl*>(modalWindow->FindView("reasonField"));
                         if (reasonField != nullptr) {
                             kickReason = reasonField->Text();
                         }
                         
-                        // 2. Extract the ban checkbox state
                         BCheckBox* banCheck = dynamic_cast<BCheckBox*>(modalWindow->FindView("banCheckbox"));
                         if (banCheck != nullptr) {
                             shouldBan = (banCheck->Value() == B_CONTROL_ON);
                         }
 
-                        // 3. Extract the active dropdown duration value
                         BMenuField* durationField = dynamic_cast<BMenuField*>(modalWindow->FindView("durationDropdown"));
                         if (durationField != nullptr && durationField->Menu() != nullptr) {
                             BMenuItem* markedItem = durationField->Menu()->FindMarked();
@@ -11460,21 +11482,25 @@ public:
                 }
 
                 // =========================================================================
-                // ANTI-RACE CONTEXT MATCHING LAYER: Extract verified parent pointers
+                // FIXED CONTEXT MATCHING LAYER: Pull accurate context items out of message
                 // =========================================================================
-                // Attempt to unpack a clean pointer attached dynamically by the opening trigger
+                if (message->FindPointer("channel_item", (void**)&targetItem) != B_OK || targetItem == nullptr) {
+                    targetItem = static_cast<ChannelTreeItem*>(fActiveBufferItem);
+                }
+                if (targetItem == nullptr) break;
+
                 ServerTreeItem* contextServer = nullptr;
                 if (message->FindPointer("server_context", (void**)&contextServer) != B_OK || contextServer == nullptr) {
-                    // Fallback to active tree node elements only if the message pack is missing it
-                    contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                    // Trace up using structural layout instead of assuming global fallback nodes
+                    if (fChannelTree != nullptr) {
+                        contextServer = static_cast<ServerTreeItem*>(fChannelTree->Superitem(targetItem));
+                    }
                 }
-                
                 if (contextServer == nullptr) break;
 
-                if (fActiveBufferItem == nullptr) break;
-                BString activeChannel = fActiveBufferItem->Text();
+                BString activeChannel(targetItem->Text());
 
-                // Clean tracking parameters and user counts off the channel target room string safely
+                // Clean tracking parameters off the channel target room string safely
                 int32 spaceIdx = activeChannel.FindLast(" ");
                 if (spaceIdx != B_ERROR) {
                     BString extractedChannel;
@@ -11488,17 +11514,18 @@ public:
 
                 if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&") && !activeChannel.StartsWith("!")) break;
 
-                // =========================================================================
-                // OPENSSL MAPPING UPDATE: Lookup secure pipe handle via tracking maps
-                // =========================================================================
                 SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(contextServer)];
                 
                 if (activeSslHandle != nullptr) {
                     BString outgoingPayload;
+                    BString banMask;
+                    banMask << targetNick << "!*@*";
+
+                    
 
                     // ==================== LIVE BAN PROCESSING ====================
                     if (shouldBan) {
-                        outgoingPayload << "MODE " << activeChannel << " +b " << targetNick << "!*@*\r\n";
+                        outgoingPayload << "MODE " << activeChannel << " +b " << banMask << "\r\n";
                         kickReason << " [Banned: " << banDuration << "]";
                     }
 
@@ -11509,16 +11536,41 @@ public:
                         printf("[DEBUG_KICK_SUBMIT] Writing out raw encrypted OpenSSL payload lines:\n%s", outgoingPayload.String());
                     }
 
-                    // Transmit cleanly over the wire using OpenSSL write instead of raw socket write
                     SSL_write(activeSslHandle, outgoingPayload.String(), outgoingPayload.Length());
+
+                    // ==================== AUTOMATED UNBAN TIMER ====================
+                    if (shouldBan && banDuration != "Forever") {
+                        bigtime_t delayMicroseconds = 0;
+                        if (banDuration == "5 Minutes") delayMicroseconds = 5LL * 60LL * 1000000LL;
+                        else if (banDuration == "1 Hour") delayMicroseconds = 60LL * 60LL * 1000000LL;
+                        else if (banDuration == "1 Day")  delayMicroseconds = 24LL * 60LL * 60LL * 1000000LL;
+
+                        if (delayMicroseconds > 0) {
+                            // Package an asynchronous message to undo this specific ban mask when time expires
+                            BMessage* unbanTrigger = new BMessage(MSG_CONTEXT_TIMED_UNBAN_TRIGGER);
+                            unbanTrigger->AddString("target_channel", activeChannel);
+                            unbanTrigger->AddString("ban_mask", banMask);
+                            unbanTrigger->AddPointer("server_node", contextServer);
+
+                            // Instantiate a self-destructing runner to safely deliver the timed unban callback
+                            new BMessageRunner(BMessenger(this), unbanTrigger, delayMicroseconds, 1);
+		                            
+		                    // Fix line 11556: Use %ld or B_PRId64 for bigtime_t types
+		                    if (cfg.debugEnable) {
+		                        printf("[DEBUG_KICK_SUBMIT] Scheduled automated unban in %ld µs\n", delayMicroseconds);
+		                    }
+
+                        }
+                    }
                 } else {
                     if (cfg.debugEnable) {
-                        printf("[DEBUG_KICK_SUBMIT] Error: Found null or dead activeSslHandle mapping context token.\n");
+                        printf("[DEBUG_KICK_SUBMIT] Error: Found null activeSslHandle context token.\n");
                     }
                 }
             }
             break;
         }
+
 
 
 
