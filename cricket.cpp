@@ -144,7 +144,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.52 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.53 (Haiku OS)";
 }
 
 
@@ -821,6 +821,15 @@ static int32 BackgroundUpdateChecker(void* data) {
 
 
 
+class PermanentOpRule {
+public:
+    PermanentOpRule(const char* channel, const char* nick, void* server)
+        : fChannel(channel), fNick(nick), fServer(server) {}
+
+    BString fChannel;
+    BString fNick;
+    void*   fServer;
+};
 
 
 
@@ -5377,10 +5386,22 @@ public:
         panel->AddChild(promptLabel);
 
         fTimeMenu = new BPopUpMenu("OpDurations");
-        fTimeMenu->AddItem(new BMenuItem("Permanently", nullptr));
+        
+        // 1. Add "No time set" at the top as the default choice
+        fTimeMenu->AddItem(new BMenuItem("No time set", nullptr));
+        
+        // 2. Add your standard timed intervals
         fTimeMenu->AddItem(new BMenuItem("5 Minutes", nullptr));
         fTimeMenu->AddItem(new BMenuItem("1 Hour", nullptr));
         fTimeMenu->AddItem(new BMenuItem("1 Day", nullptr));
+        
+        // 3. Add a separation bar for clean grouping
+        fTimeMenu->AddSeparatorItem();
+        
+        // 4. Add "Permanently" at the very bottom
+        fTimeMenu->AddItem(new BMenuItem("Permanently", nullptr));
+        
+        // 5. Default the checkmark to "No time set" (Index 0)
         fTimeMenu->ItemAt(0)->SetMarked(true);
 
         BMenuField* durationField = new BMenuField(BRect(15, 45, 385, 70), "opDurationDropdown", "Duration: ", fTimeMenu);
@@ -5399,35 +5420,35 @@ public:
         opBtn->MakeFocus(true);
     }
 
-    void MessageReceived(BMessage* message) override {
-        if (message->what == 'opsv') {
-            BString selectedDuration = "Permanently";
-            BMenuItem* markedItem = fTimeMenu->FindMarked();
-            if (markedItem != nullptr) {
-                selectedDuration = markedItem->Label();
-            }
+	void MessageReceived(BMessage* message) override {
+	    if (message->what == 'opsv') {
+	        // Change the default fallback to "No time set"
+	        BString selectedDuration = "No time set"; 
+	        BMenuItem* markedItem = fTimeMenu->FindMarked();
+	        if (markedItem != nullptr) {
+	            selectedDuration = markedItem->Label();
+	        }
+	
+	        BMessage finalPayload(MSG_CONTEXT_OP_SUBMIT);
+	        finalPayload.AddString("target_nick", fTargetNick);
+	        finalPayload.AddString("op_duration", selectedDuration);
+	        
+	        if (fContextItem != nullptr) {
+	            finalPayload.AddPointer("channel_item", fContextItem);
+	        }
+	        
+	        if (fContextServer != nullptr) {
+	            finalPayload.AddPointer("server_context", fContextServer);
+	        }
+	        
+	        fMainWindow->Looper()->PostMessage(&finalPayload, fMainWindow);
+	        BMessenger(this).SendMessage(B_QUIT_REQUESTED);
+	
+	    } else {
+	        BWindow::MessageReceived(message);
+	    }
+	}
 
-            BMessage finalPayload(MSG_CONTEXT_OP_SUBMIT);
-            finalPayload.AddString("target_nick", fTargetNick);
-            finalPayload.AddString("op_duration", selectedDuration);
-            
-            if (fContextItem != nullptr) {
-                finalPayload.AddPointer("channel_item", fContextItem);
-            }
-            
-            // NEW: Attach the unique server pointer tracking key to the output payload
-            if (fContextServer != nullptr) {
-                finalPayload.AddPointer("server_context", fContextServer);
-            }
-            
-            fMainWindow->Looper()->PostMessage(&finalPayload, fMainWindow);
-            
-            BMessenger(this).SendMessage(B_QUIT_REQUESTED);
-
-        } else {
-            BWindow::MessageReceived(message);
-        }
-    }
 
 private:
     BString           fTargetNick;
@@ -7466,11 +7487,31 @@ private:
 
                     // ==================== LIVE AUTO-OP INTERCEPTOR ====================
                     bool shouldAutoOp = false;
+
+                    // 1. Check existing temporary/timed auto-ops (match by nickname)
                     for (int32 i = 0; i < fAutoOpList.CountItems(); i++) {
                         BString* storedNick = fAutoOpList.ItemAt(i);
                         if (storedNick != nullptr && *storedNick == userWhoJoined) {
                             shouldAutoOp = true;
+                             if (cfg.debugEnable) printf("[Cricket Debug] Timed Auto-OP triggered for user: %s\n", userWhoJoined.String());
                             break;
+                        }
+                    }
+
+                    // 2. Check new dynamic permanent auto-ops (match by nick, channel, and server instance)
+                    if (!shouldAutoOp) {
+                        for (int32 i = 0; i < fPermanentOpList.CountItems(); i++) {
+                            PermanentOpRule* rule = fPermanentOpList.ItemAt(i);
+                            if (rule != nullptr && 
+                                rule->fNick == userWhoJoined && 
+                                rule->fChannel == channelJoined && 
+                                rule->fServer == contextServer) {
+                                
+                                shouldAutoOp = true;
+                                 if (cfg.debugEnable) printf("[Cricket Debug] Permanent Auto-OP triggered for user: %s on channel: %s\n", 
+                                       userWhoJoined.String(), channelJoined.String());
+                                break;
+                            }
                         }
                     }
 
@@ -7490,6 +7531,7 @@ private:
                         }
                     }
                     // ==================================================================
+
                 }
             }
         }
@@ -11132,82 +11174,85 @@ public:
 
 
 
-         case MSG_CONTEXT_OP_SUBMIT: {
-            BString targetNick;
-            BString opDuration = "Permanently";
-            
-            if (message->FindString("target_nick", &targetNick) == B_OK) {
-                message->FindString("op_duration", &opDuration);
+		case MSG_CONTEXT_OP_SUBMIT: {
+		    BString targetNick;
+		    BString opDuration = "No time set"; // Default to No Time Set
+		    
+		    if (message->FindString("target_nick", &targetNick) == B_OK) {
+		        message->FindString("op_duration", &opDuration);
+		
+		        ChannelTreeItem* targetItem = nullptr;
+		        if (message->FindPointer("channel_item", (void**)&targetItem) != B_OK || targetItem == nullptr) {
+		            targetItem = static_cast<ChannelTreeItem*>(fActiveBufferItem);
+		        }
+		
+		        if (targetItem == nullptr) break;
+		
+		        ServerTreeItem* contextServer = nullptr;
+		        if (message->FindPointer("server_context", (void**)&contextServer) != B_OK || contextServer == nullptr) {
+		            if (fChannelTree != nullptr) {
+		                contextServer = static_cast<ServerTreeItem*>(fChannelTree->Superitem(targetItem));
+		            }
+		        }
+		        
+		        if (contextServer == nullptr) break;
+		
+		        BString activeChannel(targetItem->Text());
+		        
+		        int32 spaceIdx = activeChannel.FindLast(" ");
+		        if (spaceIdx != B_ERROR) {
+		            BString extractedChannel;
+		            activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
+		            activeChannel = extractedChannel;
+		        }
+		        
+		        int32 tagPos = activeChannel.FindFirst(" [");
+		        if (tagPos != B_ERROR) {
+		            activeChannel.Truncate(tagPos);
+		        } // Fixed syntax typo here from original code
+		
+		        if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&") && !activeChannel.StartsWith("!")) {
+		            break;
+		        }
+		
+		        SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(contextServer)];
+		        
+		        if (activeSslHandle != nullptr) {
+		            // Initial OP command transmission
+		            BString outgoingPayload;
+		            outgoingPayload << "MODE " << activeChannel << " +o " << targetNick << "\r\n";
+		            SSL_write(activeSslHandle, outgoingPayload.String(), outgoingPayload.Length());
+		
+		            // Handle timed options
+		            bigtime_t delayMicroseconds = 0;
+		            if (opDuration == "5 Minutes") delayMicroseconds = 5LL * 60LL * 1000000LL;
+		            else if (opDuration == "1 Hour") delayMicroseconds = 60LL * 60LL * 1000000LL;
+		            else if (opDuration == "1 Day")  delayMicroseconds = 24LL * 60LL * 60LL * 1000000LL;
+		
+		            if (delayMicroseconds > 0) {
+		                BString* trackedNick = new BString(targetNick);
+		                fAutoOpList.AddItem(trackedNick);
+		
+		                BMessage* deopTrigger = new BMessage(MSG_CONTEXT_TIMED_DEOP_TRIGGER);
+		                deopTrigger->AddString("target_channel", activeChannel);
+		                deopTrigger->AddString("target_nick", targetNick);
+		                deopTrigger->AddPointer("server_node", contextServer);
+		
+		                new BMessageRunner(BMessenger(this), deopTrigger, delayMicroseconds, 1);
+		            }
+		            // Handle explicit "Permanently" selection
+		            else if (opDuration == "Permanently") {
+		                // Instantiates the rule and passes ownership to the list
+		                PermanentOpRule* rule = new PermanentOpRule(activeChannel.String(), targetNick.String(), contextServer);
+		                fPermanentOpList.AddItem(rule); 
+		            }
 
-                // DYNAMIC VERIFICATION: Pull the context item straight out of the message bundle.
-                ChannelTreeItem* targetItem = nullptr;
-                if (message->FindPointer("channel_item", (void**)&targetItem) != B_OK || targetItem == nullptr) {
-                    targetItem = static_cast<ChannelTreeItem*>(fActiveBufferItem);
-                }
+		            // "No time set" simply falls through here, executing the +o once without tracking.
+		        }
+		    }
+		    break;
+		}
 
-                if (targetItem == nullptr) break;
-
-                // Trace the true server instance using the packed payload pointer first, falling back to tree layout
-                ServerTreeItem* contextServer = nullptr;
-                if (message->FindPointer("server_context", (void**)&contextServer) != B_OK || contextServer == nullptr) {
-                    if (fChannelTree != nullptr) {
-                        contextServer = static_cast<ServerTreeItem*>(fChannelTree->Superitem(targetItem));
-                    }
-                }
-                
-                if (contextServer == nullptr) break;
-
-                // Extract the clean network channel room string
-                BString activeChannel(targetItem->Text());
-                
-                int32 spaceIdx = activeChannel.FindLast(" ");
-                if (spaceIdx != B_ERROR) {
-                    BString extractedChannel;
-                    activeChannel.CopyInto(extractedChannel, spaceIdx + 1, activeChannel.Length() - spaceIdx);
-                    activeChannel = extractedChannel;
-                }
-                
-                int32 tagPos = activeChannel.FindFirst(" [");
-                if (tagPos != B_ERROR) {
-                    activeChannel.Truncate(tagPos);
-                }
-
-                // Check prefixes
-                if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&") && !activeChannel.StartsWith("!")) {
-                    break;
-                }
-
-                // 1. Lookup our active secure handle using the context key
-                SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(contextServer)];
-                
-                // 2. Verify connection viability
-                if (activeSslHandle != nullptr) {
-                    BString outgoingPayload;
-                    outgoingPayload << "MODE " << activeChannel << " +o " << targetNick << "\r\n";
-                    
-                    // 3. Transmit using OpenSSL
-                    SSL_write(activeSslHandle, outgoingPayload.String(), outgoingPayload.Length());
-
-                    bigtime_t delayMicroseconds = 0;
-                    if (opDuration == "5 Minutes") delayMicroseconds = 5LL * 60LL * 1000000LL;
-                    else if (opDuration == "1 Hour") delayMicroseconds = 60LL * 60LL * 1000000LL;
-                    else if (opDuration == "1 Day")  delayMicroseconds = 24LL * 60LL * 60LL * 1000000LL;
-
-                    if (delayMicroseconds > 0) {
-                        BString* trackedNick = new BString(targetNick);
-                        fAutoOpList.AddItem(trackedNick);
-
-                        BMessage* deopTrigger = new BMessage(MSG_CONTEXT_TIMED_DEOP_TRIGGER);
-                        deopTrigger->AddString("target_channel", activeChannel);
-                        deopTrigger->AddString("target_nick", targetNick);
-                        deopTrigger->AddPointer("server_node", contextServer);
-
-                        new BMessageRunner(BMessenger(this), deopTrigger, delayMicroseconds, 1);
-                    }
-                }
-            }
-            break;
-        }
 
 
 
@@ -11312,7 +11357,7 @@ public:
                 enterPayload->AddString("target_nick", targetNick);
                 
                 BTextControl* reasonInput = new BTextControl(BRect(15, 45, 385, 70), "reasonField", 
-                                                            "Reason: ", "Requested via context menu", enterPayload);
+                                                            "Reason: ", "", enterPayload);
                 reasonInput->SetDivider(panel->StringWidth("Reason: ") + 5);
                 panel->AddChild(reasonInput);
 
@@ -11372,7 +11417,7 @@ public:
             }
 
             BString targetNick;
-            BString kickReason = "Requested via context menu";
+            BString kickReason = "";
             bool shouldBan = false;
             BString banDuration = "Forever";
             
@@ -13714,6 +13759,7 @@ private:
 	
 		BObjectList<BString, true> fAutoOpList;
 		BObjectList<BString, true> fCurrentBanHarvest;
+		BObjectList<PermanentOpRule, true> fPermanentOpList; 
 		
 	 	BGridView*    fEmoticonGrid;
 	    BButton*    fIconToggleButton;  
@@ -13729,6 +13775,8 @@ private:
 	    
 	    size_t                        fServerIdx;
    		bool                          fIsCustom;
+   		
+   		
 	
 }; 
 
