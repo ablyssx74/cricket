@@ -145,7 +145,7 @@ static std::map<void*, int>  gServerRawSockets;
 
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.54 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.55 (Haiku OS)";
 }
 
 
@@ -7367,6 +7367,22 @@ private:
         int32 exclamIdx = userWhoJoined.FindFirst("!");
         if (exclamIdx != B_ERROR) userWhoJoined.Truncate(exclamIdx);
         
+        
+	       // WILDCARD IGNORE FUNCTION 
+            
+	       if (userWhoJoined.Length() > 0 && !contextServer->fRuntimeIgnoreList.empty()) {
+	           bool shouldDrop = false;
+	           for (const auto& ignoredNick : contextServer->fRuntimeIgnoreList) {
+	               if (MatchWildcard(userWhoJoined.String(), ignoredNick.c_str())) {
+	                   shouldDrop = true;
+	                   break;
+	               }
+	           }
+	           if (shouldDrop) {
+	               return; // SILENTLY DROP PACKET PAYLOAD MESSAGES
+	           }
+	       }
+        
         std::string targetServerName = contextServer->Text();
         bool foundServerInConfig = false;
         size_t resolvedIndex = 0;
@@ -8872,10 +8888,26 @@ private:
         // Live PART & QUIT Handlers (Safely removes users dynamically when they depart or disconnect)
         if (command == "PART" || command == "QUIT") {
             if (contextServer == nullptr) return;
-
+            
             BString userWhoLeft = prefix;
             int32 exclamIdx = userWhoLeft.FindFirst("!");
             if (exclamIdx != B_ERROR) userWhoLeft.Truncate(exclamIdx);
+            
+	       // // WILDCARD IGNORE FUNCTION 
+           
+	       if (userWhoLeft.Length() > 0 && !contextServer->fRuntimeIgnoreList.empty()) {
+	           bool shouldDrop = false;
+	           for (const auto& ignoredNick : contextServer->fRuntimeIgnoreList) {
+	               if (MatchWildcard(userWhoLeft.String(), ignoredNick.c_str())) {
+	                   shouldDrop = true;
+	                   break;
+	               }
+	           }
+	           if (shouldDrop) {
+	               return; // SILENTLY DROP PACKET PAYLOAD MESSAGES
+	           }
+	       }
+            
             userWhoLeft.Trim();
 
             BString targetChannel = line;
