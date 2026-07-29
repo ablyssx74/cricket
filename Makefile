@@ -2,7 +2,7 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.55
+VERSION = 0.0.56
 
 # Compiler and tool definitions
 CXX = g++
