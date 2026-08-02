@@ -4,9 +4,22 @@ PACKAGE_DIR := build/package
 NAME = cricket
 VERSION = 0.0.56
 
-# Compiler and tool definitions
-CXX = g++
-ARCH = x86_64
+# --- 2. Architecture & Paths ---
+UNAME_M := $(shell uname -p)
+ifeq ($(UNAME_M), x86)
+    CXX = g++-x86
+    ARCH = x86_gcc2
+    LIB_ARCH_DIR = /x86
+    LDFLAGS = -L/boot/system/lib/x86 -Wl,--gc-sections -s
+    DEFINES += -DIS_HAIKU_32BIT
+    TPL_FILE := x86/$(NAME)_x86.tpl
+else
+    CXX = g++
+    ARCH = x86_64
+    LIB_ARCH_DIR = 
+    LDFLAGS = -L/boot/system/lib -Wl,--gc-sections -s
+    TPL_FILE := $(NAME).tpl 
+endif
 
 # OPTIMIZED CXXFLAGS: Aggressive loop optimizations (-O3), dead-code section generation,
 # and warning suppressions to guarantee a clean, flawless compilation terminal output.
@@ -21,9 +34,6 @@ RSRCS = $(RDEFS:.rdef=.rsrc)
 # Haiku specific libraries
 LIBS = -lbe -lnetwork -lnetservices -lbnetapi -lshared -ltranslation -ltracker -lssl -lcrypto 
 
-# OPTIMIZED LDFLAGS: Link-time garbage collection (--gc-sections) to discard 
-# unused library modules and full symbol stripping (-s) to shed release size.
-LDFLAGS = -L/boot/system/lib -Wl,--gc-sections -s
 
 # Default target
 all: $(TARGET)

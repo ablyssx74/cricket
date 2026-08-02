@@ -5521,7 +5521,7 @@ public:
                 BTextView* tv = fInputControl->TextView();
                 if (tv != nullptr) {
                     if (*fHistoryIndex == totalItems) {
-                        tv->SetText("", 0);
+                        tv->SetText("");
                     } else {
                         BString* historicalText = fHistoryList->ItemAt(*fHistoryIndex);
                         if (historicalText != nullptr) {
