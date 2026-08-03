@@ -19,7 +19,6 @@ requires {
 	nlohmann_json
 	lib:libssl$(is32bit)
 	lib:libcrypto$(is32bit)
-	curl$(is32bit)
 }
 conflicts {
 	hirc	

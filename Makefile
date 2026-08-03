@@ -2,7 +2,7 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.56
+VERSION = 0.0.57
 REVISION = 1
 
 # --- 2. Architecture & Paths ---
@@ -12,15 +12,16 @@ ifeq ($(UNAME_M), x86)
     ARCH = x86_gcc2
     LIB_ARCH_DIR = /x86
     LDFLAGS = -L/boot/system/lib/x86 -Wl,--gc-sections -s
+    is32bit = _x86
     DEFINES += -DIS_HAIKU_32BIT
-	is32bit = _x86
 else
     CXX = g++
     ARCH = x86_64
     LIB_ARCH_DIR = 
     LDFLAGS = -L/boot/system/lib -Wl,--gc-sections -s
-
 endif
+
+DEFINES := $(DEFINES)
 
 # OPTIMIZED CXXFLAGS: Aggressive loop optimizations (-O3), dead-code section generation,
 # and warning suppressions to guarantee a clean, flawless compilation terminal output.
@@ -51,13 +52,13 @@ $(TARGET): $(OBJS) $(RSRCS)
 
 # Compile source files to object files
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(DEFINES) $(CXXFLAGS) -c $< -o $@
 	
 release: all
 	@[ -n "$(PACKAGE_DIR)" ] || { echo "PACKAGE_DIR is undefined"; exit 1; }
 	rm -rf "./$(PACKAGE_DIR)"
 	mkdir -p $(PACKAGE_DIR)
-	sed -e 's/$$(NAME)/$(NAME)/g' -e 's/$$(REVISION)/$(REVISION)/g' -e 's/$$(is32bit)/$(is32bit)/g' -e 's/$$(VERSION)/$(VERSION)/g' -e 's/$$(ARCH)/$(ARCH)/' -e 's/$$(YEAR)/$(shell date +%Y)/' $(NAME).tpl > $(PACKAGE_DIR)/.PackageInfo
+	sed -e 's/$$(NAME)/$(NAME)/g' -e 's/$$(VERSION)/$(VERSION)/g'  -e 's/$$(REVISION)/$(REVISION)/g' -e 's/$$(is32bit)/$(is32bit)/g' -e 's/$$(ARCH)/$(ARCH)/' -e 's/$$(YEAR)/$(shell date +%Y)/' $(NAME).tpl > $(PACKAGE_DIR)/.PackageInfo
 	mkdir -p $(PACKAGE_DIR)/apps
 	mkdir -p $(PACKAGE_DIR)/bin
 	mkdir -p $(PACKAGE_DIR)/data/deskbar/menu/Applications
