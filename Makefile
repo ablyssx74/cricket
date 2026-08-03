@@ -12,13 +12,13 @@ ifeq ($(UNAME_M), x86)
     LIB_ARCH_DIR = /x86
     LDFLAGS = -L/boot/system/lib/x86 -Wl,--gc-sections -s
     DEFINES += -DIS_HAIKU_32BIT
-    TPL_FILE := x86/$(NAME)_x86.tpl
+	is32bit = _x86
 else
     CXX = g++
     ARCH = x86_64
     LIB_ARCH_DIR = 
     LDFLAGS = -L/boot/system/lib -Wl,--gc-sections -s
-    TPL_FILE := $(NAME).tpl 
+
 endif
 
 # OPTIMIZED CXXFLAGS: Aggressive loop optimizations (-O3), dead-code section generation,
@@ -56,7 +56,7 @@ release: all
 	@[ -n "$(PACKAGE_DIR)" ] || { echo "PACKAGE_DIR is undefined"; exit 1; }
 	rm -rf "./$(PACKAGE_DIR)"
 	mkdir -p $(PACKAGE_DIR)
-	sed -e 's/$$(NAME)/$(NAME)/g' -e 's/$$(VERSION)/$(VERSION)/g' -e 's/$$(ARCH)/$(ARCH)/' -e 's/$$(YEAR)/$(shell date +%Y)/' $(NAME).tpl > $(PACKAGE_DIR)/.PackageInfo
+	sed -e 's/$$(NAME)/$(NAME)/g' -e 's/$$(is32bit)/$(is32bit)/g' -e 's/$$(VERSION)/$(VERSION)/g' -e 's/$$(ARCH)/$(ARCH)/' -e 's/$$(YEAR)/$(shell date +%Y)/' $(NAME).tpl > $(PACKAGE_DIR)/.PackageInfo
 	mkdir -p $(PACKAGE_DIR)/apps
 	mkdir -p $(PACKAGE_DIR)/bin
 	mkdir -p $(PACKAGE_DIR)/data/deskbar/menu/Applications
