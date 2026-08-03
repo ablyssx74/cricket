@@ -1,5 +1,5 @@
 name			$(NAME)
-version			$(VERSION)-1
+version			$(VERSION)-$(REVISION)
 architecture	$(ARCH)
 summary 		"cricket"
 description 	"cricket - A lightweight, multi-server IRC client."
@@ -12,7 +12,7 @@ copyrights {
 	"$(YEAR) ablyss"
 }
 provides {
-	$(NAME) = $(VERSION)-1
+	$(NAME) = $(VERSION)-$(REVISION)
 }
 requires {
 	haiku

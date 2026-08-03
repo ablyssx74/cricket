@@ -3,6 +3,7 @@ TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
 VERSION = 0.0.56
+REVISION = 1
 
 # --- 2. Architecture & Paths ---
 UNAME_M := $(shell uname -p)
@@ -56,14 +57,14 @@ release: all
 	@[ -n "$(PACKAGE_DIR)" ] || { echo "PACKAGE_DIR is undefined"; exit 1; }
 	rm -rf "./$(PACKAGE_DIR)"
 	mkdir -p $(PACKAGE_DIR)
-	sed -e 's/$$(NAME)/$(NAME)/g' -e 's/$$(is32bit)/$(is32bit)/g' -e 's/$$(VERSION)/$(VERSION)/g' -e 's/$$(ARCH)/$(ARCH)/' -e 's/$$(YEAR)/$(shell date +%Y)/' $(NAME).tpl > $(PACKAGE_DIR)/.PackageInfo
+	sed -e 's/$$(NAME)/$(NAME)/g' -e 's/$$(REVISION)/$(REVISION)/g' -e 's/$$(is32bit)/$(is32bit)/g' -e 's/$$(VERSION)/$(VERSION)/g' -e 's/$$(ARCH)/$(ARCH)/' -e 's/$$(YEAR)/$(shell date +%Y)/' $(NAME).tpl > $(PACKAGE_DIR)/.PackageInfo
 	mkdir -p $(PACKAGE_DIR)/apps
 	mkdir -p $(PACKAGE_DIR)/bin
 	mkdir -p $(PACKAGE_DIR)/data/deskbar/menu/Applications
 	cp $(NAME) $(PACKAGE_DIR)/apps/$(NAME)
 	ln -s ../apps/$(NAME) $(PACKAGE_DIR)/bin/$(NAME)
 	ln -s ../../../../apps/$(NAME) $(PACKAGE_DIR)/data/deskbar/menu/Applications/$(NAME)
-	package create -C $(PACKAGE_DIR) $(NAME)-$(VERSION)-1-$(ARCH).hpkg
+	package create -C $(PACKAGE_DIR) $(NAME)-$(VERSION)-$(REVISION)-$(ARCH).hpkg
 
 # Clean up build files
 clean:
