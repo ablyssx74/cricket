@@ -2,7 +2,7 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.57
+VERSION = 0.0.58
 REVISION = 1
 
 # --- 2. Architecture & Paths ---
@@ -25,7 +25,7 @@ DEFINES := $(DEFINES)
 
 # OPTIMIZED CXXFLAGS: Aggressive loop optimizations (-O3), dead-code section generation,
 # and warning suppressions to guarantee a clean, flawless compilation terminal output.
-CXXFLAGS = -Wall -O3 -fdata-sections -ffunction-sections -Wno-reorder -Wno-unused-but-set-variable
+CXXFLAGS = -Wall -O3 -fdata-sections -ffunction-sections -Wno-reorder -Wno-unused-but-set-variable -I/boot/system/develop/headers/private/netservices2 
 
 # Source files, objects, and resources
 SRCS = cricket.cpp icons.cpp
@@ -34,7 +34,9 @@ RDEFS = cricket.rdef
 RSRCS = $(RDEFS:.rdef=.rsrc)
 
 # Haiku specific libraries
-LIBS = -lbe -lnetwork -lnetservices -lbnetapi -lshared -ltranslation -ltracker -lssl -lcrypto 
+LIBS = -lbe -lnetwork -lnetservices2 -lbnetapi -lshared -ltranslation -ltracker -lssl -lcrypto -lcurl
+
+
 
 
 # Default target

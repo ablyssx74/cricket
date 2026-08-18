@@ -3,79 +3,75 @@
  * All rights reserved. Distributed under the terms of the MIT license.
  */
 
-// Haiku Core Application & System Kit Headers
+#include "icons.h"
+#include "nlohmann/json.hpp"
+#include <Alert.h>
 #include <Application.h>
-#include <Window.h>
-#include <View.h>
-#include <Font.h>
-#include <OS.h>
-#include <SupportKit.h>
-#include <Roster.h>
-#include <Slider.h> 
+#include <Bitmap.h>
 #include <Box.h>
-#include <MessageFilter.h>
+#include <Button.h>
+#include <CheckBox.h>
 #include <Clipboard.h>
-#include <TabView.h>
-#include <StringView.h>
-#include <SeparatorView.h>
 #include <ColorControl.h>
-#include <Notification.h>
-
-// Storage, Path Finder & System File Kits
+#include <Cursor.h>  
+#include <DataIO.h>
 #include <Directory.h>
 #include <Entry.h>
-#include <FindDirectory.h>
-#include <NodeInfo.h>
-#include <Path.h>
+#include <ExclusiveBorrow.h>
 #include <FilePanel.h>
-
-// Vector Graphics & Interface Icons Elements
+#include <FindDirectory.h>
+#include <Font.h>
+#include <HttpFields.h>
+#include <HttpResult.h>
+#include <HttpRequest.h>
+#include <HttpSession.h>
 #include <IconUtils.h>   
-#include "icons.h"
-#include <Bitmap.h>   
-#include <TranslationUtils.h> 
-#include <MessageRunner.h>  
-
-// Interface Controls & Layout Managers
-#include <Button.h>
-#include <TextControl.h>
-#include <TextView.h>
-#include <ListView.h>
+#include <LayoutBuilder.h>
 #include <ListItem.h>
+#include <ListView.h>
+#include <MenuField.h>
+#include <MenuItem.h>
+#include <MessageFilter.h>
+#include <MessageRunner.h>  
+#include <NetEndpoint.h>
+#include <NetworkAddress.h>
+#include <NodeInfo.h>
+#include <Notification.h>
+#include <OS.h>
 #include <ObjectList.h>
 #include <OutlineListView.h>
-#include <ScrollView.h>
+#include <Path.h>
 #include <PopUpMenu.h>
-#include <MenuItem.h>
-#include <LayoutBuilder.h>
-#include <SplitView.h>
-#include <Alert.h>
-#include <CheckBox.h>
-#include <MenuField.h>
-#include <Cursor.h>  
-#include <vector>
-#include <algorithm>
-
-// Data Types, Sockets & Networking Kit Headers
-#include <String.h>
-#include <NetworkAddress.h>
+#include <Roster.h>
+#include <ScrollView.h>
 #include <SecureSocket.h>
+#include <SeparatorView.h>
+#include <Slider.h> 
 #include <Socket.h>
-#include <NetEndpoint.h>
-#include <openssl/ssl.h>
+#include <SplitView.h>
+#include <String.h>
+#include <StringView.h>
+#include <SupportKit.h>
+#include <TabView.h>
+#include <TextControl.h>
+#include <TextView.h>
+#include <TranslationUtils.h> 
+#include <Url.h>
+#include <View.h>
+#include <Window.h>
+#include <algorithm>
+#include <curl/curl.h> 
+#include <fstream>
+#include <map>
+#include <memory>
 #include <openssl/err.h>
-
-
-
-// Standard C/C++ STL & POSIX Includes
+#include <openssl/ssl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fstream>
-#include <map>
-#include "nlohmann/json.hpp"
-// #include <SupportDefs.h>
-#include <Notification.h>
+#include <vector>
+
+
 
 
 // Define application messages
@@ -143,9 +139,14 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 
+BString gGeminiApiKeyString = ""; 
+BString gTargetLanguageString = "French";
+bool gEnableLiveTranslationGlobal = false; 
+
+
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.57 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.58 (Haiku OS)";
 }
 
 
@@ -155,6 +156,10 @@ using json = nlohmann::json;
 const std::string DEFAULT_BG_PATH = "";
 
 struct ServerConfig {
+	
+	std::string sourceLanguage = "Auto-Detect";
+	std::string targetLanguage = "French";
+
     std::string name;
     std::string host;
     uint16 port;
@@ -230,6 +235,12 @@ void save_config() {
     j["userListFontSize"] = cfg.userListFontSize;
     j["show_update_notifications"] = cfg.showUpdateNotifications;
 
+    j["enableLiveTranslation"] = gEnableLiveTranslationGlobal; 
+    j["gemini_api_key"]        = gGeminiApiKeyString.String();
+    j["target_language"]       = gTargetLanguageString.String();
+
+
+
     // --- STRIP THE VERSION SUFFIX BEFORE SAVING ---
     std::string cleanQuitMsg = cfg.quitMessage;
     size_t suffixPos = cleanQuitMsg.find(" [Cricket IRC Client");
@@ -257,7 +268,6 @@ void save_config() {
         s["timestampInterval"] = srv.timestampInterval;
         s["nick_alert"] = srv.nickAlert;
 
-
         s["use_sasl"] = srv.useSASL;
         s["sasl_user"] = srv.saslUser;
         s["use_certfp"] = srv.useCertFP;
@@ -282,7 +292,6 @@ void save_config() {
         }
         s["autojoin"] = ajArray;
 
-        // --- NEW: SAVE STANDARD SERVER AUTOJOIN COMMANDS ---
         json acArray = json::array();
         for (const auto& cmd : srv.autocmdlist) {
             acArray.push_back(cmd);
@@ -361,7 +370,6 @@ void save_config() {
         }
         s["autojoin"] = ajArray;
 
-        // --- NEW: SAVE CUSTOM SERVER AUTOJOIN COMMANDS ---
         json acArray = json::array();
         for (const auto& cmd : srv.autocmdlist) {
             acArray.push_back(cmd);
@@ -428,26 +436,23 @@ void load_config() {
             try {
                 json j = json::parse(infile);
                 
-                // ---  DYNAMIC VERSION APFENDER AT BOOT ---
-                // 1. Fetch the raw saved string value from the json map
+
                 BString savedQuit = j.value("quitMessage", "App Quit").c_str();
                 
-                // 2. Clear out any legacy hardcoded string formats (like "App Quit: Cricket IRC Client...")
                 int32 legacyColonIdx = savedQuit.FindFirst(": Cricket IRC Client");
                 if (legacyColonIdx != B_ERROR) {
                     savedQuit.Truncate(legacyColonIdx);
                 }
+                
                 int32 legacyBracketIdx = savedQuit.FindFirst(" [Cricket IRC Client");
                 if (legacyBracketIdx != B_ERROR) {
                     savedQuit.Truncate(legacyBracketIdx);
                 }
                 savedQuit.Trim();
                 
-                // 3. Combine user text with the active version string
                 BString finalQuitMsg;
                 finalQuitMsg << savedQuit << " [" << AppInfo::VERSION_STRING << "]";
                 cfg.quitMessage = finalQuitMsg.String();
-                // -----------------------------------------------
 
                 cfg.awayMessage = j.value("awayMessage", "I am away from my computer right now.");
                 cfg.debugEnable = j.value("debugEnable", false);             
@@ -458,6 +463,25 @@ void load_config() {
                 cfg.searchEngine = j.value("search_engine", "https://duckduckgo.com");
                 cfg.showUpdateNotifications = j.value("show_update_notifications", true);
 
+                // =========================================================================
+                // --- INTEGRATED GLOBAL TRANSLATOR SETTINGS LOAD LOGIC ---
+                // =========================================================================
+                if (j.contains("enableLiveTranslation")) {
+                    gEnableLiveTranslationGlobal = j["enableLiveTranslation"].get<bool>(); 
+                } else {
+                    gEnableLiveTranslationGlobal = false; 
+                }
+
+                if (j.contains("gemini_api_key")) {
+                    std::string keyToken = j["gemini_api_key"].get<std::string>();
+                    gGeminiApiKeyString.SetTo(keyToken.c_str());
+                }
+
+                if (j.contains("target_language")) {
+                    std::string languageToken = j["target_language"].get<std::string>();
+                    gTargetLanguageString.SetTo(languageToken.c_str());
+                }
+                // =========================================================================
 
                 
                 // Parse standard servers array
@@ -623,98 +647,321 @@ void load_config() {
         }
     }
 
-	 if (mustSaveDefaults || cfg.servers.empty()) {
-	        cfg.servers.clear();        
-	        cfg.customServers.clear(); 
-	        cfg.useCustomDrawFunction = true; 
-	        
-	        // --- FIXED FALLBACK FORMAT MATCH ---
-	        BString defaultQuit;
-	        defaultQuit << "App Quit [" << AppInfo::VERSION_STRING << "]";
-	        cfg.quitMessage = defaultQuit.String();
-	        cfg.awayMessage = "I am away from my computer right now.";
-			
-	        srand(static_cast<unsigned int>(real_time_clock_usecs()));
-	        int randomSuffix = 1000 + (rand() % 9000);
-	        BString dynamicNick;
-	        dynamicNick << "HaikuIRCUser" << randomSuffix;
-	
-	        // 1. RECONSTRUCT LIBERA CHAT DEFAULT PROFILE
-	        ServerConfig libera;
-	        libera.name = "Libera Chat";
-	        libera.host = "irc.libera.chat";
-	        libera.port = 6697;
-	        libera.nick = dynamicNick.String();
-	        libera.altNick = BString(dynamicNick).Append("+").String(); 
-	        libera.altNick2 = BString(dynamicNick).Append("__").String();
-	        libera.pass = "";  
-	        libera.autoConnect = false;    
-	        libera.autoReconnect = false;  
-	       
-	        libera.useSASL = false;
-	        libera.saslUser = "";
-	        libera.useCertFP = false;
-	        libera.certProfileName = "";
-	        libera.certFileName = "";                    
-	        libera.keyFileName = "";   
-	        
-	        libera.autojoin = {""};
-	        libera.autocmdlist = {""};
-	        libera.ignoredNicks = {}; 
-	        libera.nickColors = {};       
-	        libera.nickColorValues = {};  
-	        libera.timestampInterval = 30;
-	        
-	        libera.backgroundImagePath = "";
-	        libera.backgroundOpacity = 30; 
-	        libera.enableEmoticons = true; 
-	        libera.useCustomDrawFunction = cfg.useCustomDrawFunction;
-	        libera.logChatsToFile = false;
-	        libera.enableColorCodes = true;
-	         
-	        libera.serverListFontSize = cfg.serverListFontSize;
-	        libera.chatLogFontSize    = cfg.chatLogFontSize;
-	        libera.userListFontSize   = cfg.userListFontSize;
-	        cfg.servers.push_back(libera);
-	
-	        // 2. OFTC NETWORK DEFAULT PROFILE
-	        ServerConfig oftc;
-	        oftc.name = "OFTC";
-	        oftc.host = "irc.oftc.net";
-	        oftc.port = 6697;
-	        oftc.nick = dynamicNick.String();
-	        oftc.altNick = BString(dynamicNick).Append("+").String();
-	        oftc.altNick2 = BString(dynamicNick).Append("__").String();
-	        oftc.pass = ""; 
-	        oftc.autoConnect = false;
-	        oftc.autoReconnect = false;         
-	        oftc.useSASL = false;
-	        oftc.saslUser = "";
-	        oftc.useCertFP = false;
-	        oftc.certProfileName = "";
-	        oftc.certFileName = "";                    
-	        oftc.keyFileName = "";          
-	        
-	        oftc.autojoin = {"#haiku"};
-	        oftc.autocmdlist = {""};
-	        oftc.ignoredNicks = {};
-	        oftc.nickColors = {};       
-	        oftc.nickColorValues = {};  
-			oftc.timestampInterval = 30;
-			
-	        oftc.backgroundImagePath = "";
-	        oftc.backgroundOpacity = 30;
-	        oftc.enableEmoticons = true;
-	        oftc.useCustomDrawFunction = cfg.useCustomDrawFunction;
-	        oftc.logChatsToFile = false;
-	        oftc.enableColorCodes = true;
-	
-	        oftc.serverListFontSize = cfg.serverListFontSize;
-	        oftc.chatLogFontSize    = cfg.chatLogFontSize;
-	        oftc.userListFontSize   = cfg.userListFontSize;
-	        cfg.servers.push_back(oftc);
-	    }
+    if (mustSaveDefaults || cfg.servers.empty()) {
+        cfg.servers.clear();        
+        cfg.customServers.clear(); 
+        cfg.useCustomDrawFunction = true; 
+        
+        // --- FIXED FALLBACK FORMAT MATCH ---
+        BString defaultQuit;
+        defaultQuit << "App Quit [" << AppInfo::VERSION_STRING << "]";
+        cfg.quitMessage = defaultQuit.String();
+        cfg.awayMessage = "I am away from my computer right now.";
+        
+        // =========================================================================
+        // --- INITIALIZE TRANSLATOR MASTER GLOBAL FALLBACK DEFAULTS ---
+        // =========================================================================
+        gEnableLiveTranslationGlobal = false; 
+        gGeminiApiKeyString.SetTo("");
+        gTargetLanguageString.SetTo("French"); 
+        // =========================================================================
+
+        
+        srand(static_cast<unsigned int>(real_time_clock_usecs()));
+        int randomSuffix = 1000 + (rand() % 9000);
+        BString dynamicNick;
+        dynamicNick << "HaikuIRCUser" << randomSuffix;
+
+        // 1. RECONSTRUCT LIBERA CHAT DEFAULT PROFILE
+        ServerConfig libera;
+        libera.name = "Libera Chat";
+        libera.host = "irc.libera.chat";
+        libera.port = 6697;
+        libera.nick = dynamicNick.String();
+        libera.altNick = BString(dynamicNick).Append("+").String(); 
+        libera.altNick2 = BString(dynamicNick).Append("__").String();
+        libera.pass = "";  
+        libera.autoConnect = false;    
+        libera.autoReconnect = false;  
+       
+        libera.useSASL = false;
+        libera.saslUser = "";
+        libera.useCertFP = false;
+        libera.certProfileName = "";
+        libera.certFileName = "";                    
+        libera.keyFileName = "";   
+        
+        libera.autojoin = {""};
+        libera.autocmdlist = {""};
+        libera.ignoredNicks = {}; 
+        libera.nickColors = {};       
+        libera.nickColorValues = {};  
+        libera.timestampInterval = 30;
+        
+        libera.backgroundImagePath = "";
+        libera.backgroundOpacity = 30; 
+        libera.enableEmoticons = true; 
+        libera.useCustomDrawFunction = cfg.useCustomDrawFunction;
+        libera.logChatsToFile = false;
+        libera.enableColorCodes = true;
+         
+        libera.serverListFontSize = cfg.serverListFontSize;
+        libera.chatLogFontSize    = cfg.chatLogFontSize;
+        libera.userListFontSize   = cfg.userListFontSize;
+        cfg.servers.push_back(libera);
+
+        // 2. OFTC NETWORK DEFAULT PROFILE
+        ServerConfig oftc;
+        oftc.name = "OFTC";
+        oftc.host = "irc.oftc.net";
+        oftc.port = 6697;
+        oftc.nick = dynamicNick.String();
+        oftc.altNick = BString(dynamicNick).Append("+").String();
+        oftc.altNick2 = BString(dynamicNick).Append("__").String();
+        oftc.pass = ""; 
+        oftc.autoConnect = false;
+        oftc.autoReconnect = false;         
+        oftc.useSASL = false;
+        oftc.saslUser = "";
+        oftc.useCertFP = false;
+        oftc.certProfileName = "";
+        oftc.certFileName = "";                    
+        oftc.keyFileName = "";          
+        
+        oftc.autojoin = {"#haiku"};
+        oftc.autocmdlist = {""};
+        oftc.ignoredNicks = {};
+        oftc.nickColors = {};       
+        oftc.nickColorValues = {};  
+        oftc.timestampInterval = 30;
+        
+        oftc.backgroundImagePath = "";
+        oftc.backgroundOpacity = 30;
+        oftc.enableEmoticons = true;
+        oftc.useCustomDrawFunction = cfg.useCustomDrawFunction;
+        oftc.logChatsToFile = false;
+        oftc.enableColorCodes = true;
+
+        oftc.serverListFontSize = cfg.serverListFontSize;
+        oftc.chatLogFontSize    = cfg.chatLogFontSize;
+        oftc.userListFontSize   = cfg.userListFontSize;
+        cfg.servers.push_back(oftc);
+        
+        // Immediately commit these clean starting values directly to disk
+        save_config();
+    }
 }
+
+
+
+
+
+static size_t CurlWriteCallback(void* contents, size_t size, size_t nmemb, void* userp)
+{
+    size_t totalSize = size * nmemb;
+    BString* responseString = static_cast<BString*>(userp);
+    responseString->Append(static_cast<const char*>(contents), totalSize);
+    return totalSize;
+}
+
+using namespace BPrivate::Network;
+
+enum {
+    MSG_TRANSLATE_LINE_QUEUE = 'TLQU',
+    MSG_TRANSLATION_COMPLETE = 'TRCO'
+};
+
+class GeminiTranslationService : public BLooper {
+public:
+    GeminiTranslationService() : BLooper("GeminiTranslatorEngine") 
+    {
+        fSession = new BHttpSession();
+        Run(); 
+        // Always print service startup confirmation regardless of cfg settings
+        printf("[GeminiDebug] Asynchronous Service successfully spawned and idling.\n");
+    }
+
+    virtual ~GeminiTranslationService() 
+    {
+        Lock();
+        delete fSession;
+        Quit();
+    }
+
+    virtual void MessageReceived(BMessage* message) override 
+    {
+        switch (message->what) {
+            // =========================================================================
+            // --- TRANSLATOR RUNTIME ASYNCHRONOUS NETWORK ENGINE LOOP ---
+            // =========================================================================
+            case MSG_TRANSLATE_LINE_QUEUE: {
+                if (cfg.debugEnable) {
+                    printf("\n[GeminiDebug] ==================================================\n");
+                    printf("[GeminiDebug] Pipeline Triggered: Processing incoming background message task.\n");
+                }
+
+                BString rawLine;
+                void* nodePtr = nullptr;
+                void* looperPtr = nullptr;
+
+                if (message->FindString("raw_line", &rawLine) != B_OK ||
+                    message->FindPointer("server_node", &nodePtr) != B_OK ||
+                    message->FindPointer("window_looper", &looperPtr) != B_OK) {
+                    if (cfg.debugEnable) printf("[GeminiDebug] CRITICAL ERROR: Failed to unpack baseline tracking parameters from BMessage container!\n");
+                    break;
+                }
+
+                rawLine.ReplaceAll("\r", "");
+                rawLine.ReplaceAll("\n", "");
+                rawLine.Trim();
+
+                if (cfg.debugEnable) printf("[GeminiDebug] Intercepted Network Data: \"%s\"\n", rawLine.String());
+
+                BLooper* targetLooper = static_cast<BLooper*>(looperPtr);
+
+                // Isolate ONLY the spoken text payload block
+                BString msgPayload = "";
+                int32 msgStart = rawLine.FindFirst(" :");
+                if (msgStart != B_ERROR) {
+                    rawLine.CopyInto(msgPayload, msgStart + 2, rawLine.Length() - (msgStart + 2));
+                    if (cfg.debugEnable) printf("[GeminiDebug] Isolated Content Text To Translate: \"%s\"\n", msgPayload.String());
+                } else {
+                    msgPayload = rawLine;
+                    if (cfg.debugEnable) printf("[GeminiDebug] WARNING: Could not find standard ' :' token. Parsing full layout line boundary.\n");
+                }
+
+                msgPayload.ReplaceAll("\r", " ");
+                msgPayload.ReplaceAll("\n", " ");
+                msgPayload.ReplaceAll("\"", "\\\"");
+
+                // Build the payload matching your verified structure
+                BString jsonPayload;
+                jsonPayload << "{\n"
+                            << "  \"model\": \"gemini-3.7-flash\",\n"
+                            << "  \"system_instruction\": \"Translate the input chat message to " << gTargetLanguageString << ". Keep the tone identical. Respond ONLY with the translation.\",\n"
+                            << "  \"input\": \"" << msgPayload << "\"\n"
+                            << "}";
+
+                if (cfg.debugEnable) {
+                    printf("[GeminiDebug] Outbound Target Translation Language: %s\n", gTargetLanguageString.String());
+                    printf("[GeminiDebug] Active Token Key Character Length: %d bytes\n", (int)gGeminiApiKeyString.Length());
+                    printf("[GeminiDebug] Assembled JSON Body Payload Data Block:\n%s\n", jsonPayload.String());
+                }
+
+                BString jsonResponse = "";
+                
+                CURL* curl = curl_easy_init();
+                if (curl != nullptr) {
+                    struct curl_slist* headers = nullptr;
+                    
+                    headers = curl_slist_append(headers, "Content-Type: application/json");
+                    
+                    BString authHeader = "x-goog-api-key: ";
+                    authHeader << gGeminiApiKeyString;
+                    headers = curl_slist_append(headers, authHeader.String());
+
+                    BString targetUrl = "https://generativelanguage.googleapis.com/v1beta/interactions";
+                    curl_easy_setopt(curl, CURLOPT_URL, targetUrl.String());
+                    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+                    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+                    
+                    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonPayload.String());
+                    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, jsonPayload.Length());
+
+                    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCallback);
+                    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &jsonResponse);
+
+                    CURLcode res = curl_easy_perform(curl);
+                    if (res != CURLE_OK) {
+                        if (cfg.debugEnable) printf("[GeminiDebug] Native libcurl Socket Connection Error: %s\n", curl_easy_strerror(res));
+                    } else {
+                        if (cfg.debugEnable) printf("[GeminiDebug] Network request dispatched successfully.\n");
+                    }
+
+                    curl_slist_free_all(headers);
+                    curl_easy_cleanup(curl);
+                } else {
+                    if (cfg.debugEnable) printf("[GeminiDebug] CRITICAL ERROR: libcurl subsystem failed to initialize library handles!\n");
+                }
+
+                if (cfg.debugEnable) printf("[GeminiDebug] Raw Network JSON Response block received from Google:\n%s\n", jsonResponse.String());
+
+                if (jsonResponse.Length() == 0) {
+                    if (cfg.debugEnable) {
+                        printf("[GeminiDebug] ERROR: Response buffer length evaluates to 0. Pipeline aborted.\n");
+                        printf("[GeminiDebug] ==================================================\n");
+                    }
+                    break;
+                }
+
+                // =========================================================================
+                // CRASH PROTECTION FILTER: VERIFY GOOGLE RETURNED A VALID TRANSLATION
+                // =========================================================================
+                BString searchToken = "\"text\":\"";
+                int32 startPos = jsonResponse.FindFirst(searchToken);
+                
+                if (startPos == B_ERROR) {
+                    searchToken = "\"text\": \"";
+                    startPos = jsonResponse.FindFirst(searchToken);
+                }
+
+                if (startPos != B_ERROR) {
+                    startPos += searchToken.Length();
+                    int32 endPos = jsonResponse.FindFirst('"', startPos);
+                    if (endPos != B_ERROR) {
+                        BString translatedText;
+                        jsonResponse.CopyInto(translatedText, startPos, endPos - startPos);
+                        translatedText.ReplaceAll("\\\"", "\"");
+
+                        if (cfg.debugEnable) printf("[GeminiDebug] Parsing SUCCESS! Extracted text: \"%s\"\n", translatedText.String());
+
+                        BString translatedLine = rawLine;
+                        if (msgStart != B_ERROR) {
+                            translatedLine.Truncate(msgStart + 2);
+                            translatedLine.Append(translatedText);
+                        } else {
+                            translatedLine = translatedText;
+                        }
+
+                        BMessage reply(MSG_TRANSLATION_COMPLETE);
+                        reply.AddString("translated_line", translatedLine);
+                        reply.AddPointer("server_node", nodePtr);
+                        targetLooper->PostMessage(&reply);
+                    }
+                } else {
+                    // =====================================================================
+                    // --- FAIL-SAFE FALLBACK MODE ---
+                    // =====================================================================
+                    // If Google says 'Quota Exceeded', don't swallow the text line!
+                    // Deliver the raw, untranslated English line to the chat view instantly.
+                    if (cfg.debugEnable) {
+                        printf("[GeminiDebug] PARSING FAILURE: Missing text tokens. (Likely a Quota Limit Error)\n");
+                        printf("[GeminiDebug] Deploying Fail-Safe: Routing original raw line to screen.\n");
+                    }
+
+                    BMessage reply(MSG_TRANSLATION_COMPLETE);
+                    reply.AddString("translated_line", rawLine); // Passes original untranslated text envelope
+                    reply.AddPointer("server_node", nodePtr);
+                    targetLooper->PostMessage(&reply);
+                }
+                
+                if (cfg.debugEnable) printf("[GeminiDebug] ==================================================\n");
+                break;
+
+            }
+
+            default:
+                BLooper::MessageReceived(message);
+        }
+    }
+
+private:
+    BHttpSession* fSession;
+};
+
+// Declare a single global instance pointer to track our background thread service loop
+GeminiTranslationService* gTranslatorService = nullptr;
+
 
 
 // =============================================================================
@@ -4088,11 +4335,89 @@ public:
             .Add(colorBox, 1.0)     
             .Add(filtersBox, 1.0);
 
-        // --- Assemble Tabs into the Window ---
+        // =========================================================================
+        // --- TAB 5: AI TRANSLATOR INTERFACE TAB WITH LANGUAGE SELECTION ---
+        // =========================================================================
+        BGroupView* translatorTab = new BGroupView(B_VERTICAL, 5);
+        translatorTab->SetName("Translator");
+
+        // 1. Live Translation Toggle Checkbox
+        fEnableLiveTranslationCheck = new BCheckBox("enable_live_translation", 
+            "Enable Real-Time Live AI Translation", new BMessage('tltg'));
+        fEnableLiveTranslationCheck->SetValue(gEnableLiveTranslationGlobal ? B_CONTROL_ON : B_CONTROL_OFF);
+
+        fEnableLiveTranslationCheck->SetToolTip("Automatically translates incoming chat foreign languages to your chosen language.");
+
+        // 2. Gemini API Key Input Field
+        fTranslationKeyInput = new BTextControl("trans_key", "Gemini API Token Key:", gGeminiApiKeyString.String(), nullptr);
+        fTranslationKeyInput->SetToolTip("Paste your active API string token generated inside Google AI Studio.");
+        fTranslationKeyInput->SetModificationMessage(new BMessage('tlch'));
+
+        // 3. UPDATED: Expanded Target Language Picker Dropdown List
+        BPopUpMenu* langPopUp = new BPopUpMenu("lang_popup");
+        const char* languages[] = {
+            "English", "French", "German", "Spanish", "Italian", 
+            "Japanese", "Chinese", "Korean", "Russian", "Portuguese", 
+            "Dutch", "Polish", "Swedish", "Finnish", "Arabic"
+        };
+        
+        // Loop bound changed to 15 to handle all new language options perfectly
+        for (int i = 0; i < 15; i++) {
+            BMessage* langMsg = new BMessage('tlng');
+            langMsg->AddString("language", languages[i]);
+            BMenuItem* langItem = new BMenuItem(languages[i], langMsg);
+            
+            // Mark the currently active language choice
+            if (gTargetLanguageString.ICompare(languages[i]) == 0) {
+                langItem->SetMarked(true);
+            }
+            langPopUp->AddItem(langItem);
+        }
+        fLanguageMenuField = new BMenuField("lang_field", "Target Language:", langPopUp);
+
+
+        // 4. User Helper / Instructions Text Notice
+        BStringView* studioLinkNotice = new BStringView("studio_notice", 
+            "💡 You can generate an API key for free at: https://aistudio.google.com");
+        
+        BFont noticeFont;
+        studioLinkNotice->GetFont(&noticeFont);
+        noticeFont.SetFace(B_ITALIC_FACE);
+        studioLinkNotice->SetFont(&noticeFont, B_FONT_FACE);
+
+        // 5. Assemble components into a structured BBox container grid
+        BBox* transBox = new BBox(B_FANCY_BORDER);
+        transBox->SetLabel("Google Gemini Translation Engine Configuration");
+        
+        BLayoutBuilder::Group<>(transBox, B_VERTICAL, 10)
+            .SetInsets(12, 24, 12, 12)
+            .Add(fEnableLiveTranslationCheck)
+            .AddStrut(5.0f)
+            .AddGrid(5.0f, 5.0f)
+                .Add(fTranslationKeyInput->CreateLabelLayoutItem(), 0, 0)
+                .Add(fTranslationKeyInput->CreateTextViewLayoutItem(), 1, 0)
+                
+                // Add our shiny new language dropdown to the second row of the grid layout
+                .Add(fLanguageMenuField->CreateLabelLayoutItem(), 0, 1)
+                .Add(fLanguageMenuField->CreateMenuBarLayoutItem(), 1, 1)
+            .End()
+            .AddStrut(5.0f)
+            .Add(studioLinkNotice);
+
+        // 6. Package layout vertically inside the container frame tab view
+        BLayoutBuilder::Group<>(translatorTab, B_VERTICAL, 8)
+            .SetInsets(10)
+            .Add(transBox, 0.0)
+            .AddGlue();
+
+        // --- Assemble ALL Tabs into the Master Tab Container ---
         tabView->AddTab(identityTab);
         tabView->AddTab(prefsTab);
         tabView->AddTab(autojoinTab);
         tabView->AddTab(filtersTab); 
+        tabView->AddTab(translatorTab);
+
+
 
 // 1. Create the BBox container and its internal grid layout
 BBox* messageBox = new BBox(B_PLAIN_BORDER, NULL);
@@ -4159,6 +4484,47 @@ ResizeTo(560, 520);
             }
             break;
         }
+        
+        // =========================================================================
+        // --- TRANSLATOR CONFIGURATION LIVE UPDATE HANDLERS (STEP 3 FIXED) ---
+        // =========================================================================
+
+        
+        case 'tlng': { // Language Selection Changed Event
+            const char* chosenLang;
+            if (message->FindString("language", &chosenLang) == B_OK) {
+                gTargetLanguageString = chosenLang;
+                save_config();
+                printf("[GeminiDebug] Target Language Updated to: %s\n", gTargetLanguageString.String());
+            }
+            break;
+        }
+
+        case 'tltg': { // Toggle translation checkbox event
+            if (fEnableLiveTranslationCheck != nullptr) {
+                // FIXED: Assign the widget state directly to your global configuration variable!
+                gEnableLiveTranslationGlobal = (fEnableLiveTranslationCheck->Value() == B_CONTROL_ON);
+                save_config(); 
+                
+                if (cfg.debugEnable) {
+                    printf("[GeminiDebug] Global Translation Checkbox Toggled: %s\n", 
+                        gEnableLiveTranslationGlobal ? "ON" : "OFF");
+                }
+            }
+            break;
+        }
+
+        case 'tlch': { // Text field real-time modification event
+            if (fTranslationKeyInput != nullptr) {
+                gGeminiApiKeyString = fTranslationKeyInput->Text();
+                gGeminiApiKeyString.Trim();
+                save_config(); 
+            }
+            break;
+        }
+
+
+
      	
        // =========================================================================
        // Notifications
@@ -4760,79 +5126,121 @@ ResizeTo(560, 520);
             }
 
                 
-            case 'cfsv': {
-                ServerConfig& srv = GetActiveConfig();
-                srv.nick = fNickInput->Text();
-                srv.altNick  = fAltNickInput->Text();
-                srv.altNick2 = fAltNick2Input->Text();
-				srv.pass 	 = fPassInput->Text();             
-                
-				srv.useSASL = (fUseSASLCheck->Value() == B_CONTROL_ON);
-				srv.saslUser = fSASLUserInput->Text();
-				
-				srv.useCertFP = (fUseCertFPCheck->Value() == B_CONTROL_ON);
-				srv.certProfileName = fCertProfileInput->Text();
-                srv.certFileName = fCertFileInput->Text();
-                srv.keyFileName  = fKeyFileInput->Text();
-                
-                srv.backgroundImagePath = fBgPathInput->Text();
-                srv.backgroundOpacity = fBgOpacitySlider->Value(); 
-                
-
-                cfg.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
-                cfg.searchEngine = fLocalSearchEngineChoice.String();                
-                cfg.awayMessage = fAwayInput->Text();
-                cfg.quitMessage = fQuitInput->Text();
-                
-                BMenuItem* item = fServerListFontMenu->Menu()->FindMarked();
-                if (item && item->Message()) srv.serverListFontSize = item->Message()->FindInt32("size");
-
-                item = fChatLogFontMenu->Menu()->FindMarked();
-                if (item && item->Message()) srv.chatLogFontSize = item->Message()->FindInt32("size");
-
-                item = fUserListFontMenu->Menu()->FindMarked();
-                if (item && item->Message()) srv.userListFontSize = item->Message()->FindInt32("size");
-
-                srv.autoConnect = (fAutoConnectCheck->Value() == B_CONTROL_ON);
-                srv.autoReconnect = (fAutoReconnectCheck->Value() == B_CONTROL_ON);
-                srv.hideStatusMessages = (fHideStatusCheck->Value() == B_CONTROL_ON);         
-                srv.enableEmoticons = (fEnableEmoticonsCheck->Value() == B_CONTROL_ON);
-                srv.useCustomDrawFunction = (fUseCustomDrawCheck->Value() == B_CONTROL_ON);
-                srv.enableColorCodes = (fEnableColorCodesCheck->Value() == B_CONTROL_ON);
-                srv.logChatsToFile = (fLogChatsToFileCheck->Value() == B_CONTROL_ON);
-				
-                // --- COMMIT LOCAL AUTOJOIN CHANGED VECTOR PERMANENTLY ---
-                // If list is empty, we preserve a baseline blank value to prevent connection script stalls
-                if (fLocalAutojoinList.empty()) {
-                    srv.autojoin = {""};
-                } else {
-                    srv.autojoin = fLocalAutojoinList;
-                }
-
-                // --- COMMIT LOCAL AUTOMATED COMMANDS CHANGED VECTOR PERMANENTLY ---
-                if (fLocalCmdList.empty()) {
-                    srv.autocmdlist = {""};
-                } else {
-                    srv.autocmdlist = fLocalCmdList;
-                }
-
-                // Memory cleanup pass before shutdown
-                while (fAutojoinListView->CountItems() > 0) {
-                    delete fAutojoinListView->RemoveItem((int32)0);
-                }
-
-                // --- CLEANUP PASS FOR COMMANDS LIST VIEW ITEMS ---
-                while (fCmdListView->CountItems() > 0) {
-                    delete fCmdListView->RemoveItem((int32)0);
-                }
+	        // =========================================================================
+	        // PROPERTIES DIALOG ACTION: MASTER SAVE ENGINE (STEP 4)
+	        // =========================================================================
+	        case 'cfsv': {
+	            ServerConfig& srv = GetActiveConfig();
+	
+	            // 1. Flush Core Identity & Security Credentials Fields
+	            srv.nick = fNickInput->Text();
+	            srv.altNick  = fAltNickInput->Text();
+	            srv.altNick2 = fAltNick2Input->Text();
+	            srv.pass 	 = fPassInput->Text();             
+	            
+	            srv.useSASL = (fUseSASLCheck->Value() == B_CONTROL_ON);
+	            srv.saslUser = fSASLUserInput->Text();
+	            
+	            srv.useCertFP = (fUseCertFPCheck->Value() == B_CONTROL_ON);
+	            srv.certProfileName = fCertProfileInput->Text();
+	            srv.certFileName = fCertFileInput->Text();
+	            srv.keyFileName  = fKeyFileInput->Text();
+	            
+	            // 2. Flush Appearance, Wallpaper, and Dimming Level Data
+	            srv.backgroundImagePath = fBgPathInput->Text();
+	            srv.backgroundOpacity = fBgOpacitySlider->Value(); 
+	
+	            // 3. Synchronize Global Profile Configurations
+	            cfg.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
+	            cfg.searchEngine = fLocalSearchEngineChoice.String();                
+	            cfg.awayMessage = fAwayInput->Text();
+	            cfg.quitMessage = fQuitInput->Text();
+	            
+	            // =========================================================================
+	            // --- INTEGRATED TRANSLATOR TAB RUNTIME SAVE PERSISTENCE (STEP 4 FIXED) ---
+	            // =========================================================================
+	            if (fTranslationKeyInput != nullptr) {
+	                // FIXED: Updates your global mutable BString configuration container safely 
+	                // without encountering conversion compile halts or read-only string layout exceptions!
+	                gGeminiApiKeyString = fTranslationKeyInput->Text();
+	                gGeminiApiKeyString.Trim();
+	            }
+	            
+	            // NEW: Read the active, marked dropdown choice right out of the layout menu
+	            if (fLanguageMenuField != nullptr && fLanguageMenuField->Menu() != nullptr) {
+	                BMenuItem* markedLang = fLanguageMenuField->Menu()->FindMarked();
+	                if (markedLang != nullptr) {
+	                    gTargetLanguageString = markedLang->Label();
+	                }
+	            }
+	            // =========================================================================
 
 
-                BMessage updateNotify('mscf'); 
-                if (fParentWindow) fParentWindow->PostMessage(&updateNotify);
-                delete fFilePanel; 
-                Quit();
-                break;
-            }
+	
+	            // 4. Parse Selected Fonts Sizes from PopUp Menus
+	            BMenuItem* fontItem = fServerListFontMenu->Menu()->FindMarked();
+	            if (fontItem && fontItem->Message()) srv.serverListFontSize = fontItem->Message()->FindInt32("size");
+	
+	            fontItem = fChatLogFontMenu->Menu()->FindMarked();
+	            if (fontItem && fontItem->Message()) srv.chatLogFontSize = fontItem->Message()->FindInt32("size");
+	
+	            fontItem = fUserListFontMenu->Menu()->FindMarked();
+	            if (fontItem && fontItem->Message()) srv.userListFontSize = fontItem->Message()->FindInt32("size");
+	
+	            // 5. Save Connection and Interface Toggle Flags
+	            srv.autoConnect = (fAutoConnectCheck->Value() == B_CONTROL_ON);
+	            srv.autoReconnect = (fAutoReconnectCheck->Value() == B_CONTROL_ON);
+	            srv.hideStatusMessages = (fHideStatusCheck->Value() == B_CONTROL_ON);         
+	            srv.enableEmoticons = (fEnableEmoticonsCheck->Value() == B_CONTROL_ON);
+	            srv.useCustomDrawFunction = (fUseCustomDrawCheck->Value() == B_CONTROL_ON);
+	            srv.enableColorCodes = (fEnableColorCodesCheck->Value() == B_CONTROL_ON);
+	            srv.logChatsToFile = (fLogChatsToFileCheck->Value() == B_CONTROL_ON);
+	            
+	            // 6. Deep Copy Workspaces Vectors and Protect against Connection Script Stalls
+	            if (fLocalAutojoinList.empty()) {
+	                srv.autojoin = {""};
+	            } else {
+	                srv.autojoin = fLocalAutojoinList;
+	            }
+	
+	            if (fLocalCmdList.empty()) {
+	                srv.autocmdlist = {""};
+	            } else {
+	                srv.autocmdlist = fLocalCmdList;
+	            }
+	
+	            srv.ignoredNicks = fLocalIgnoreList;
+	            srv.nickColors = fLocalColorNicknames;
+	            srv.nickColorValues = fLocalColorValues;
+	
+	            // 7. Sync Modifications Directly to Running Node Objects Instantly
+	            if (fItem != nullptr) {
+	                fItem->fEnableColorCodes = srv.enableColorCodes;
+	                fItem->fRuntimeColorNicks = fLocalColorNicknames;
+	                fItem->fRuntimeColorValues = fLocalColorValues;
+	                fItem->fRuntimeIgnoreList = fLocalIgnoreList;
+	            }
+	
+	            // 8. Commit Final Config Configuration Parameters to Local Hard Disk
+	            save_config();
+	
+	            // 9. UI Layout List Memory Cleanup Passes to Prevent Memory Leaks
+	            while (fAutojoinListView->CountItems() > 0) {
+	                delete fAutojoinListView->RemoveItem((int32)0);
+	            }
+	            while (fCmdListView->CountItems() > 0) {
+	                delete fCmdListView->RemoveItem((int32)0);
+	            }
+	
+	            // Dispatch update notification package downstream to parent view looper
+	            BMessage updateNotify('mscf'); 
+	            if (fParentWindow) fParentWindow->PostMessage(&updateNotify);
+	            
+	            delete fFilePanel; 
+	            Quit();
+	            break;
+	        }
+
             
             default:
                 BWindow::MessageReceived(message);
@@ -4930,6 +5338,10 @@ private:
 	BCheckBox* fNickAlertCheckbox;
 	BCheckBox* fShowUpdateCheck;
 
+	// Translator
+	BCheckBox*    fEnableLiveTranslationCheck;
+	BTextControl* fTranslationKeyInput;
+	BMenuField* fLanguageMenuField;
 
 	
     //  Safe helper function to fetch correct active reference target safely
@@ -5828,11 +6240,14 @@ public:
       fIsCustom(false)
                         
     {
-        
-
-        SetFlags(Flags() | B_QUIT_ON_WINDOW_CLOSE);
-
         //@constructor
+
+        SetFlags(Flags() | B_QUIT_ON_WINDOW_CLOSE);        
+        
+        if (gTranslatorService == nullptr) {
+    		gTranslatorService = new GeminiTranslationService();
+		}	        
+        
         BString windowTitle;
         windowTitle << AppInfo::VERSION_STRING;
         SetTitle(windowTitle.String());
@@ -13453,6 +13868,22 @@ public:
         }
 
 
+	    case MSG_TRANSLATION_COMPLETE: {
+	        BString translatedLine;
+	        void* nodePtr = nullptr;
+	        
+	        if (message->FindString("translated_line", &translatedLine) == B_OK &&
+	            message->FindPointer("server_node", &nodePtr) == B_OK) {
+	            
+	            ServerTreeItem* targetNode = static_cast<ServerTreeItem*>(nodePtr);
+	            
+	            // Hand the fully translated text line straight to your renderer!
+	            ParseAndDisplayIRC(translatedLine, targetNode);
+	        }
+	        break;
+	    }
+
+
         case MSG_IRC_RECEIVED: {   	        	
             BString rawLine;
             // 1. Intercept incoming raw text payload line
@@ -13626,20 +14057,42 @@ public:
 
                 // B. Process single-byte toggle markers (Bold, Reset, Underline, Reverse)
                 if (showCodesForThisServer) {
-                rawLine.ReplaceAll("\x02",  "[B]");
-                rawLine.ReplaceAll("\x0F",  "[R]");
-                rawLine.ReplaceAll("\x1F",  "[U]");
-                rawLine.ReplaceAll("\x16",  "[REV]");
+                    rawLine.ReplaceAll("\x02",  "[B]");
+                    rawLine.ReplaceAll("\x0F",  "[R]");
+                    rawLine.ReplaceAll("\x1F",  "[U]");
+                    rawLine.ReplaceAll("\x16",  "[REV]");
                 } else {
-                	rawLine.ReplaceAll("\x1F",  "");
-                	rawLine.ReplaceAll("\x16",  "");
-                	}
-                	// 3. Forward the sanitized string directly into the parser architecture
-                	
-                	ParseAndDisplayIRC(rawLine, targetServerNode);
+                    rawLine.ReplaceAll("\x1F",  "");
+                    rawLine.ReplaceAll("\x16",  "");
                 }
-             break;
+
+                // ===================================================================
+                // --- STABLE BACKGROUND TRANSLATION QUEUE & NATIVE FALLBACK ---
+                // ===================================================================
+ 
+                if (gEnableLiveTranslationGlobal && gGeminiApiKeyString.Length() > 0 
+                    && rawLine.FindFirst(" PRIVMSG ") != B_ERROR && gTranslatorService != nullptr) {
+                    
+                    BMessage queueMsg(MSG_TRANSLATE_LINE_QUEUE);
+                    queueMsg.AddString("raw_line", rawLine);
+                    queueMsg.AddPointer("server_node", (void*)targetServerNode);
+                    queueMsg.AddPointer("window_looper", this);
+
+                    // Safely dispatch the text task to our single-instance worker queue
+                    gTranslatorService->PostMessage(&queueMsg);
+                } else {
+
+                    ParseAndDisplayIRC(rawLine, targetServerNode);
+                }
+                // ===================================================================
+
+
+
+                
+            }
+            break;
         }
+
         
         
         
