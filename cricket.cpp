@@ -992,9 +992,6 @@ static int32 BackgroundUpdateChecker(void* data) {
     remoteVersionStr.Trim(); 
     if (cfg.debugEnable) printf("[DEBUG_UPDATE] Raw text received from GitHub: '%s'\n", remoteVersionStr.String());
 
-    remoteVersionStr.Trim(); 
-    if (cfg.debugEnable) printf("[DEBUG_UPDATE] Raw text received from GitHub: '%s'\n", remoteVersionStr.String());
-    
     if (remoteVersionStr.Length() > 0) {
         BString currentVersionStr = AppInfo::VERSION_STRING;
         if (cfg.debugEnable) printf("[DEBUG_UPDATE] Local AppInfo text before cleaning: '%s'\n", currentVersionStr.String());
