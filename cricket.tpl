@@ -18,6 +18,7 @@ requires {
 	haiku
 	nlohmann_json
 	lib:libssl$(is32bit)
+	lib:libcurl$(is32bit)
 	lib:libcrypto$(is32bit)
 }
 conflicts {
