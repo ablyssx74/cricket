@@ -138,17 +138,9 @@ class ServerTreeItem;
 static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
-
-BString gGeminiApiKeyString = ""; 
-BString gTargetLanguageString = "French";
-bool gEnableLiveTranslationGlobal = false; 
-
-
-
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.58 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.59 (Haiku OS)";
 }
-
 
 
 using json = nlohmann::json;
@@ -157,8 +149,13 @@ const std::string DEFAULT_BG_PATH = "";
 
 struct ServerConfig {
 	
-	std::string sourceLanguage = "Auto-Detect";
-	std::string targetLanguage = "French";
+    // --- TRANSLATOR EXTENSIONS ---
+    bool enableLiveTranslation = false;
+    std::string geminiApiKey = "";
+    std::string geminiModel = "gemini-3.7-flash";
+    std::string sourceLanguage = "Auto-Detect";
+    std::string targetLanguage = "French";
+
 
     std::string name;
     std::string host;
@@ -235,12 +232,6 @@ void save_config() {
     j["userListFontSize"] = cfg.userListFontSize;
     j["show_update_notifications"] = cfg.showUpdateNotifications;
 
-    j["enableLiveTranslation"] = gEnableLiveTranslationGlobal; 
-    j["gemini_api_key"]        = gGeminiApiKeyString.String();
-    j["target_language"]       = gTargetLanguageString.String();
-
-
-
     // --- STRIP THE VERSION SUFFIX BEFORE SAVING ---
     std::string cleanQuitMsg = cfg.quitMessage;
     size_t suffixPos = cleanQuitMsg.find(" [Cricket IRC Client");
@@ -285,6 +276,12 @@ void save_config() {
         s["serverListFontSize"] = srv.serverListFontSize;
         s["chatLogFontSize"] = srv.chatLogFontSize;
         s["userListFontSize"] = srv.userListFontSize;
+
+        // --- ADDED: Server-specific translation settings for default servers ---
+        s["enableLiveTranslation"] = srv.enableLiveTranslation;
+        s["gemini_api_key"]        = srv.geminiApiKey;
+        s["target_language"]       = srv.targetLanguage;
+        s["gemini_model"]          = srv.geminiModel;
 
         json ajArray = json::array();
         for (const auto& chan : srv.autojoin) {
@@ -364,6 +361,12 @@ void save_config() {
         s["chatLogFontSize"] = srv.chatLogFontSize;
         s["userListFontSize"] = srv.userListFontSize;
 
+        // --- ADDED: Server-specific translation settings for custom servers ---
+        s["enableLiveTranslation"] = srv.enableLiveTranslation;
+        s["gemini_api_key"]        = srv.geminiApiKey;
+        s["target_language"]       = srv.targetLanguage;
+        s["gemini_model"]          = srv.geminiModel;
+
         json ajArray = json::array();
         for (const auto& chan : srv.autojoin) {
             ajArray.push_back(chan);
@@ -415,6 +418,7 @@ void save_config() {
 
 
 
+
 void load_config() {
     ensure_config_dir();
     cfg.debugEnable = false;
@@ -463,26 +467,6 @@ void load_config() {
                 cfg.searchEngine = j.value("search_engine", "https://duckduckgo.com");
                 cfg.showUpdateNotifications = j.value("show_update_notifications", true);
 
-                // =========================================================================
-                // --- INTEGRATED GLOBAL TRANSLATOR SETTINGS LOAD LOGIC ---
-                // =========================================================================
-                if (j.contains("enableLiveTranslation")) {
-                    gEnableLiveTranslationGlobal = j["enableLiveTranslation"].get<bool>(); 
-                } else {
-                    gEnableLiveTranslationGlobal = false; 
-                }
-
-                if (j.contains("gemini_api_key")) {
-                    std::string keyToken = j["gemini_api_key"].get<std::string>();
-                    gGeminiApiKeyString.SetTo(keyToken.c_str());
-                }
-
-                if (j.contains("target_language")) {
-                    std::string languageToken = j["target_language"].get<std::string>();
-                    gTargetLanguageString.SetTo(languageToken.c_str());
-                }
-                // =========================================================================
-
                 
                 // Parse standard servers array
                 
@@ -514,6 +498,13 @@ void load_config() {
                         srv.certProfileName = s.value("cert_profile_name", "");                        
                         srv.certFileName = s.value("cert_file_name", "");                    
                         srv.keyFileName = s.value("key_file_name", "");   
+                        
+ 						
+				        srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
+				        srv.geminiApiKey           = s.value("gemini_api_key", "");
+				        srv.targetLanguage         = s.value("target_language", "French");
+				        srv.geminiModel            = s.value("gemini_model", "gemini-3.7-flash");
+
                         
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
@@ -592,6 +583,11 @@ void load_config() {
                         srv.certFileName = s.value("cert_file_name", "");                    
                         srv.keyFileName = s.value("key_file_name", "");   
                         
+                        srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
+				        srv.geminiApiKey           = s.value("gemini_api_key", "");
+				        srv.targetLanguage         = s.value("target_language", "French");
+				        srv.geminiModel            = s.value("gemini_model", "gemini-3.7-flash");
+				        
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
                         srv.userListFontSize   = s.value("userListFontSize", cfg.userListFontSize);
@@ -658,15 +654,7 @@ void load_config() {
         cfg.quitMessage = defaultQuit.String();
         cfg.awayMessage = "I am away from my computer right now.";
         
-        // =========================================================================
-        // --- INITIALIZE TRANSLATOR MASTER GLOBAL FALLBACK DEFAULTS ---
-        // =========================================================================
-        gEnableLiveTranslationGlobal = false; 
-        gGeminiApiKeyString.SetTo("");
-        gTargetLanguageString.SetTo("French"); 
-        // =========================================================================
-
-        
+       
         srand(static_cast<unsigned int>(real_time_clock_usecs()));
         int randomSuffix = 1000 + (rand() % 9000);
         BString dynamicNick;
@@ -704,10 +692,16 @@ void load_config() {
         libera.useCustomDrawFunction = cfg.useCustomDrawFunction;
         libera.logChatsToFile = false;
         libera.enableColorCodes = true;
-         
+    
         libera.serverListFontSize = cfg.serverListFontSize;
         libera.chatLogFontSize    = cfg.chatLogFontSize;
-        libera.userListFontSize   = cfg.userListFontSize;
+        libera.userListFontSize   = cfg.userListFontSize;       
+                
+        libera.enableLiveTranslation = false;
+        libera.geminiApiKey = "";
+        libera.targetLanguage = "French";
+        libera.geminiModel = "gemini-3.7-flash";
+        
         cfg.servers.push_back(libera);
 
         // 2. OFTC NETWORK DEFAULT PROFILE
@@ -745,6 +739,12 @@ void load_config() {
         oftc.serverListFontSize = cfg.serverListFontSize;
         oftc.chatLogFontSize    = cfg.chatLogFontSize;
         oftc.userListFontSize   = cfg.userListFontSize;
+        
+        oftc.enableLiveTranslation = false;
+        oftc.geminiApiKey = "";
+        oftc.targetLanguage = "French";
+        oftc.geminiModel = "gemini-3.7-flash";
+       
         cfg.servers.push_back(oftc);
         
         // Immediately commit these clean starting values directly to disk
@@ -794,7 +794,7 @@ public:
             // =========================================================================
             // --- TRANSLATOR RUNTIME ASYNCHRONOUS NETWORK ENGINE LOOP ---
             // =========================================================================
-            case MSG_TRANSLATE_LINE_QUEUE: {
+          case MSG_TRANSLATE_LINE_QUEUE: {
                 if (cfg.debugEnable) {
                     printf("\n[GeminiDebug] ==================================================\n");
                     printf("[GeminiDebug] Pipeline Triggered: Processing incoming background message task.\n");
@@ -802,10 +802,12 @@ public:
 
                 BString rawLine;
                 void* nodePtr = nullptr;
+                void* configPtr = nullptr;   
                 void* looperPtr = nullptr;
 
                 if (message->FindString("raw_line", &rawLine) != B_OK ||
                     message->FindPointer("server_node", &nodePtr) != B_OK ||
+                    message->FindPointer("server_config", &configPtr) != B_OK ||
                     message->FindPointer("window_looper", &looperPtr) != B_OK) {
                     if (cfg.debugEnable) printf("[GeminiDebug] CRITICAL ERROR: Failed to unpack baseline tracking parameters from BMessage container!\n");
                     break;
@@ -834,17 +836,31 @@ public:
                 msgPayload.ReplaceAll("\n", " ");
                 msgPayload.ReplaceAll("\"", "\\\"");
 
-                // Build the payload matching your verified structure
+
+                ServerConfig* srv = static_cast<ServerConfig*>(configPtr);
+
+                std::string srvModel    = srv->geminiModel;
+                std::string srvLanguage = srv->targetLanguage;
+                std::string srvApiKey   = srv->geminiApiKey;
+
                 BString jsonPayload;
                 jsonPayload << "{\n"
-                            << "  \"model\": \"gemini-3.7-flash\",\n"
-                            << "  \"system_instruction\": \"Translate the input chat message to " << gTargetLanguageString << ". Keep the tone identical. Respond ONLY with the translation.\",\n"
-                            << "  \"input\": \"" << msgPayload << "\"\n"
+                            << "  \"contents\": [{\n"
+                            << "    \"parts\": [{\n"
+                            << "      \"text\": \"" << msgPayload << "\"\n"
+                            << "    }]\n"
+                            << "  }],\n"
+                            << "  \"systemInstruction\": {\n"
+                            << "    \"parts\": [{\n"
+                            << "      \"text\": \"Translate the input chat message to " << srvLanguage.c_str() << ". Keep the tone identical. Respond ONLY with the translation.\"\n"
+                            << "    }]\n"
+                            << "  }\n"
                             << "}";
 
                 if (cfg.debugEnable) {
-                    printf("[GeminiDebug] Outbound Target Translation Language: %s\n", gTargetLanguageString.String());
-                    printf("[GeminiDebug] Active Token Key Character Length: %d bytes\n", (int)gGeminiApiKeyString.Length());
+                    printf("[GeminiDebug] Server Translation Engine Context Profile: %s\n", srvModel.c_str());
+                    printf("[GeminiDebug] Outbound Target Translation Language: %s\n", srvLanguage.c_str());
+                    printf("[GeminiDebug] Active Token Key Character Length: %d bytes\n", (int)srvApiKey.length());
                     printf("[GeminiDebug] Assembled JSON Body Payload Data Block:\n%s\n", jsonPayload.String());
                 }
 
@@ -857,10 +873,16 @@ public:
                     headers = curl_slist_append(headers, "Content-Type: application/json");
                     
                     BString authHeader = "x-goog-api-key: ";
-                    authHeader << gGeminiApiKeyString;
+                    authHeader << srvApiKey.c_str();
                     headers = curl_slist_append(headers, authHeader.String());
 
-                    BString targetUrl = "https://generativelanguage.googleapis.com/v1beta/interactions";
+                    // =========================================================================
+                    // --- STEP 3: CONSTRUCT THE DYNAMIC MODEL URL ---
+                    // =========================================================================
+                    // Google places the target model directly within the query path string
+                    BString targetUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
+                    targetUrl << srvModel.c_str() << ":generateContent";
+
                     curl_easy_setopt(curl, CURLOPT_URL, targetUrl.String());
                     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
                     curl_easy_setopt(curl, CURLOPT_POST, 1L);
@@ -932,16 +954,15 @@ public:
                     // =====================================================================
                     // --- FAIL-SAFE FALLBACK MODE ---
                     // =====================================================================
-                    // If Google says 'Quota Exceeded', don't swallow the text line!
-                    // Deliver the raw, untranslated English line to the chat view instantly.
                     if (cfg.debugEnable) {
                         printf("[GeminiDebug] PARSING FAILURE: Missing text tokens. (Likely a Quota Limit Error)\n");
                         printf("[GeminiDebug] Deploying Fail-Safe: Routing original raw line to screen.\n");
                     }
 
                     BMessage reply(MSG_TRANSLATION_COMPLETE);
-                    reply.AddString("translated_line", rawLine); // Passes original untranslated text envelope
+                    reply.AddString("translated_line", rawLine); 
                     reply.AddPointer("server_node", nodePtr);
+
                     targetLooper->PostMessage(&reply);
                 }
                 
@@ -3894,7 +3915,7 @@ public:
         fIsCustom = isCustom; 
         AddToSubset(parent);
         ServerConfig& srv = GetActiveConfig();
-
+		
         std::string saslUser;
 	    fLocalSearchEngineChoice = cfg.searchEngine.c_str();
 
@@ -4333,7 +4354,7 @@ public:
             .Add(filtersBox, 1.0);
 
         // =========================================================================
-        // --- TAB 5: AI TRANSLATOR INTERFACE TAB WITH LANGUAGE SELECTION ---
+        // --- TAB 5: AI TRANSLATOR INTERFACE TAB WITH LANGUAGE & MODEL SELECTION ---
         // =========================================================================
         BGroupView* translatorTab = new BGroupView(B_VERTICAL, 5);
         translatorTab->SetName("Translator");
@@ -4341,16 +4362,41 @@ public:
         // 1. Live Translation Toggle Checkbox
         fEnableLiveTranslationCheck = new BCheckBox("enable_live_translation", 
             "Enable Real-Time Live AI Translation", new BMessage('tltg'));
-        fEnableLiveTranslationCheck->SetValue(gEnableLiveTranslationGlobal ? B_CONTROL_ON : B_CONTROL_OFF);
-
+        // UPDATED: Now pulls right out of your active server structural references
+        fEnableLiveTranslationCheck->SetValue(srv.enableLiveTranslation ? B_CONTROL_ON : B_CONTROL_OFF);
         fEnableLiveTranslationCheck->SetToolTip("Automatically translates incoming chat foreign languages to your chosen language.");
 
         // 2. Gemini API Key Input Field
-        fTranslationKeyInput = new BTextControl("trans_key", "Gemini API Token Key:", gGeminiApiKeyString.String(), nullptr);
+        // UPDATED: Evaluates using the target server-isolated configuration string object properties
+        fTranslationKeyInput = new BTextControl("trans_key", "Gemini API Token Key:", srv.geminiApiKey.c_str(), nullptr);
         fTranslationKeyInput->SetToolTip("Paste your active API string token generated inside Google AI Studio.");
         fTranslationKeyInput->SetModificationMessage(new BMessage('tlch'));
 
-        // 3. UPDATED: Expanded Target Language Picker Dropdown List
+        // 3a. Model Selection Dropdown Menu
+        BPopUpMenu* modelPopUp = new BPopUpMenu("model_popup");
+        const char* models[] = {
+            "gemini-3.7-flash", 
+            "gemini-3.7-pro",   
+            "gemini-3.6-flash", 
+            "gemini-3.5-flash-lite"
+        };
+        
+        for (int i = 0; i < 4; i++) {
+            BMessage* modelMsg = new BMessage('tmdl');
+            modelMsg->AddString("model", models[i]);
+            BMenuItem* modelItem = new BMenuItem(models[i], modelMsg);
+            
+            // UPDATED: Validates selection strings strictly against per-server definitions
+            if (srv.geminiModel == models[i]) {
+                modelItem->SetMarked(true);
+            }
+            modelPopUp->AddItem(modelItem);
+        }
+        fModelMenuField = new BMenuField("model_field", "Gemini Model:", modelPopUp);
+        fModelMenuField->SetToolTip("gemini-3.7-flash (Default): Ultra-fast, highly intelligent workhorse optimized for real-time chat translation.\ngemini-3.7-pro: Deep reasoning and advanced accuracy; best for complex chat contexts at higher token usage.\ngemini-3.6-flash: Reliable and highly efficient text processing engine from the previous generation.\ngemini-3.5-flash-lite: Ultra-low latency model tailored for instant translation with minimal processing lag.");
+
+
+        // 3b. Expanded Target Language Picker Dropdown List
         BPopUpMenu* langPopUp = new BPopUpMenu("lang_popup");
         const char* languages[] = {
             "English", "French", "German", "Spanish", "Italian", 
@@ -4358,24 +4404,22 @@ public:
             "Dutch", "Polish", "Swedish", "Finnish", "Arabic"
         };
         
-        // Loop bound changed to 15 to handle all new language options perfectly
         for (int i = 0; i < 15; i++) {
             BMessage* langMsg = new BMessage('tlng');
             langMsg->AddString("language", languages[i]);
             BMenuItem* langItem = new BMenuItem(languages[i], langMsg);
             
-            // Mark the currently active language choice
-            if (gTargetLanguageString.ICompare(languages[i]) == 0) {
+            // UPDATED: Validates against server-isolated context attributes
+            if (srv.targetLanguage == languages[i]) {
                 langItem->SetMarked(true);
             }
             langPopUp->AddItem(langItem);
         }
         fLanguageMenuField = new BMenuField("lang_field", "Target Language:", langPopUp);
 
-
         // 4. User Helper / Instructions Text Notice
         BStringView* studioLinkNotice = new BStringView("studio_notice", 
-            "💡 You can generate an API key for free at: https://aistudio.google.com");
+            "💡 You can generate an API key for free at: https://aistudio.google.com/api-keys");
         
         BFont noticeFont;
         studioLinkNotice->GetFont(&noticeFont);
@@ -4394,9 +4438,11 @@ public:
                 .Add(fTranslationKeyInput->CreateLabelLayoutItem(), 0, 0)
                 .Add(fTranslationKeyInput->CreateTextViewLayoutItem(), 1, 0)
                 
-                // Add our shiny new language dropdown to the second row of the grid layout
-                .Add(fLanguageMenuField->CreateLabelLayoutItem(), 0, 1)
-                .Add(fLanguageMenuField->CreateMenuBarLayoutItem(), 1, 1)
+                .Add(fModelMenuField->CreateLabelLayoutItem(), 0, 1)
+                .Add(fModelMenuField->CreateMenuBarLayoutItem(), 1, 1)
+
+                .Add(fLanguageMenuField->CreateLabelLayoutItem(), 0, 2)
+                .Add(fLanguageMenuField->CreateMenuBarLayoutItem(), 1, 2)
             .End()
             .AddStrut(5.0f)
             .Add(studioLinkNotice);
@@ -4406,6 +4452,8 @@ public:
             .SetInsets(10)
             .Add(transBox, 0.0)
             .AddGlue();
+
+
 
         // --- Assemble ALL Tabs into the Master Tab Container ---
         tabView->AddTab(identityTab);
@@ -4472,7 +4520,10 @@ ResizeTo(560, 520);
 
 
     void MessageReceived(BMessage* message) override {
-        switch (message->what) {
+    	
+     ServerConfig& srv = GetActiveConfig(); 
+     
+     switch (message->what) {
         	
       case MSG_TOGGLE_SHOW_UPDATES: {
             if (fShowUpdateCheck != nullptr) {
@@ -4490,32 +4541,45 @@ ResizeTo(560, 520);
         case 'tlng': { // Language Selection Changed Event
             const char* chosenLang;
             if (message->FindString("language", &chosenLang) == B_OK) {
-                gTargetLanguageString = chosenLang;
+                srv.targetLanguage = chosenLang; // FIXED: Changed from gTargetLanguageString
                 save_config();
-                printf("[GeminiDebug] Target Language Updated to: %s\n", gTargetLanguageString.String());
+                if (cfg.debugEnable) {
+                    printf("[GeminiDebug] [%s] Language Updated to: %s\n", srv.name.c_str(), srv.targetLanguage.c_str());
+                }
             }
             break;
         }
 
         case 'tltg': { // Toggle translation checkbox event
             if (fEnableLiveTranslationCheck != nullptr) {
-                // FIXED: Assign the widget state directly to your global configuration variable!
-                gEnableLiveTranslationGlobal = (fEnableLiveTranslationCheck->Value() == B_CONTROL_ON);
+                srv.enableLiveTranslation = (fEnableLiveTranslationCheck->Value() == B_CONTROL_ON); // FIXED: Changed from gEnableLiveTranslationGlobal
                 save_config(); 
-                
                 if (cfg.debugEnable) {
-                    printf("[GeminiDebug] Global Translation Checkbox Toggled: %s\n", 
-                        gEnableLiveTranslationGlobal ? "ON" : "OFF");
+                    printf("[GeminiDebug] [%s] Translation Checkbox Toggled: %s\n", 
+                        srv.name.c_str(), srv.enableLiveTranslation ? "ON" : "OFF");
                 }
             }
             break;
         }
 
-        case 'tlch': { // Text field real-time modification event
+        case 'tlch': { // Text field modification event
             if (fTranslationKeyInput != nullptr) {
-                gGeminiApiKeyString = fTranslationKeyInput->Text();
-                gGeminiApiKeyString.Trim();
+                BString activeKey = fTranslationKeyInput->Text();
+                activeKey.Trim();
+                srv.geminiApiKey = activeKey.String(); // FIXED: Changed from gGeminiApiKeyString
                 save_config(); 
+            }
+            break;
+        }
+
+        case 'tmdl': { // Model Selection Changed Event
+            const char* SelectedModel;
+            if (message->FindString("model", &SelectedModel) == B_OK) {
+                srv.geminiModel = SelectedModel; // FIXED: Changed from gGeminiModelString
+                save_config();
+                if (cfg.debugEnable) {
+                    printf("[GeminiDebug] [%s] Engine Model Updated to: %s\n", srv.name.c_str(), srv.geminiModel.c_str());
+                }
             }
             break;
         }
@@ -5157,19 +5221,16 @@ ResizeTo(560, 520);
 	            // --- INTEGRATED TRANSLATOR TAB RUNTIME SAVE PERSISTENCE (STEP 4 FIXED) ---
 	            // =========================================================================
 	            if (fTranslationKeyInput != nullptr) {
-	                // FIXED: Updates your global mutable BString configuration container safely 
-	                // without encountering conversion compile halts or read-only string layout exceptions!
-	                gGeminiApiKeyString = fTranslationKeyInput->Text();
-	                gGeminiApiKeyString.Trim();
+	                srv.geminiApiKey = fTranslationKeyInput->Text(); // FIXED: Changed from gGeminiApiKeyString
 	            }
-	            
-	            // NEW: Read the active, marked dropdown choice right out of the layout menu
+	
 	            if (fLanguageMenuField != nullptr && fLanguageMenuField->Menu() != nullptr) {
 	                BMenuItem* markedLang = fLanguageMenuField->Menu()->FindMarked();
 	                if (markedLang != nullptr) {
-	                    gTargetLanguageString = markedLang->Label();
+	                    srv.targetLanguage = markedLang->Label(); // FIXED: Changed from gTargetLanguageString
 	                }
 	            }
+
 	            // =========================================================================
 
 
@@ -5339,6 +5400,7 @@ private:
 	BCheckBox*    fEnableLiveTranslationCheck;
 	BTextControl* fTranslationKeyInput;
 	BMenuField* fLanguageMenuField;
+	BMenuField*     fModelMenuField; 
 
 	
     //  Safe helper function to fetch correct active reference target safely
@@ -14062,26 +14124,54 @@ public:
                     rawLine.ReplaceAll("\x1F",  "");
                     rawLine.ReplaceAll("\x16",  "");
                 }
-
+                
                 // ===================================================================
                 // --- STABLE BACKGROUND TRANSLATION QUEUE & NATIVE FALLBACK ---
                 // ===================================================================
- 
-                if (gEnableLiveTranslationGlobal && gGeminiApiKeyString.Length() > 0 
+                ServerTreeItem* treeItem = static_cast<ServerTreeItem*>(targetServerNode);
+                ServerConfig* srvPtr = nullptr;
+
+                if (treeItem != nullptr) {
+                    bool custom = treeItem->IsCustom();
+                    size_t idx = treeItem->GetIndex(); 
+
+                    if (custom) {
+                        if (idx < cfg.customServers.size()) {
+                            srvPtr = &cfg.customServers[idx];
+                        }
+                    } else {
+                        if (idx < cfg.servers.size()) {
+                            srvPtr = &cfg.servers[idx];
+                        }
+                    }
+                }
+
+                // FIXED: Checked per-server values instead of old global tags
+                if (srvPtr != nullptr && srvPtr->enableLiveTranslation && !srvPtr->geminiApiKey.empty() 
                     && rawLine.FindFirst(" PRIVMSG ") != B_ERROR && gTranslatorService != nullptr) {
                     
                     BMessage queueMsg(MSG_TRANSLATE_LINE_QUEUE);
                     queueMsg.AddString("raw_line", rawLine);
+                    
+                    // --- CHANGED HERE ---
+                    // 1. Pass the underlying config pointer so the thread can fetch api keys/models
+                    queueMsg.AddPointer("server_config", (void*)srvPtr); 
+                    
+                    // 2. Keep passing the original UI item layout token so display code can find the tab
                     queueMsg.AddPointer("server_node", (void*)targetServerNode);
+                    
                     queueMsg.AddPointer("window_looper", this);
 
-                    // Safely dispatch the text task to our single-instance worker queue
                     gTranslatorService->PostMessage(&queueMsg);
                 } else {
-
                     ParseAndDisplayIRC(rawLine, targetServerNode);
                 }
                 // ===================================================================
+
+
+
+
+
 
 
 
