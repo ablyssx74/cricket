@@ -2726,31 +2726,34 @@ void CustomChatView::MouseDown(BPoint point) {
             BString labelAra = BString("Arabic");
             BString labelHin = BString("Hindi");
             BString labelDut = BString("Dutch");
+            BString labelPol = BString("Polish");
             BString labelSwe = BString("Swedish");
+            BString labelFin = BString("Finnish");
             BString labelTur = BString("Turkish");
 
-            BMessage* msgEng = new BMessage('trns'); msgEng->AddString("lang", "English"); msgEng->AddString("text", selectedText);
-            BMessage* msgSpa = new BMessage('trns'); msgSpa->AddString("lang", "Spanish"); msgSpa->AddString("text", selectedText);
-            BMessage* msgFre = new BMessage('trns'); msgFre->AddString("lang", "French"); msgFre->AddString("text", selectedText);
-            BMessage* msgGer = new BMessage('trns'); msgGer->AddString("lang", "German"); msgGer->AddString("text", selectedText);
-            BMessage* msgJap = new BMessage('trns'); msgJap->AddString("lang", "Japanese"); msgJap->AddString("text", selectedText);
-            BMessage* msgChi = new BMessage('trns'); msgChi->AddString("lang", "Chinese"); msgChi->AddString("text", selectedText);
-            BMessage* msgIta = new BMessage('trns'); msgIta->AddString("lang", "Italian"); msgIta->AddString("text", selectedText);
+            BMessage* msgEng = new BMessage('trns'); msgEng->AddString("lang", "English");    msgEng->AddString("text", selectedText);
+            BMessage* msgSpa = new BMessage('trns'); msgSpa->AddString("lang", "Spanish");    msgSpa->AddString("text", selectedText);
+            BMessage* msgFre = new BMessage('trns'); msgFre->AddString("lang", "French");     msgFre->AddString("text", selectedText);
+            BMessage* msgGer = new BMessage('trns'); msgGer->AddString("lang", "German");     msgGer->AddString("text", selectedText);
+            BMessage* msgJap = new BMessage('trns'); msgJap->AddString("lang", "Japanese");   msgJap->AddString("text", selectedText);
+            BMessage* msgChi = new BMessage('trns'); msgChi->AddString("lang", "Chinese");    msgChi->AddString("text", selectedText);
+            BMessage* msgIta = new BMessage('trns'); msgIta->AddString("lang", "Italian");    msgIta->AddString("text", selectedText);
             BMessage* msgPor = new BMessage('trns'); msgPor->AddString("lang", "Portuguese"); msgPor->AddString("text", selectedText);
-            BMessage* msgRus = new BMessage('trns'); msgRus->AddString("lang", "Russian"); msgRus->AddString("text", selectedText);
-            BMessage* msgKor = new BMessage('trns'); msgKor->AddString("lang", "Korean"); msgKor->AddString("text", selectedText);
-            BMessage* msgAra = new BMessage('trns'); msgAra->AddString("lang", "Arabic"); msgAra->AddString("text", selectedText);
-            BMessage* msgHin = new BMessage('trns'); msgHin->AddString("lang", "Hindi"); msgHin->AddString("text", selectedText);
-            BMessage* msgDut = new BMessage('trns'); msgDut->AddString("lang", "Dutch"); msgDut->AddString("text", selectedText);
-            BMessage* msgSwe = new BMessage('trns'); msgSwe->AddString("lang", "Swedish"); msgSwe->AddString("text", selectedText);
-            BMessage* msgTur = new BMessage('trns'); msgTur->AddString("lang", "Turkish"); msgTur->AddString("text", selectedText);
+            BMessage* msgRus = new BMessage('trns'); msgRus->AddString("lang", "Russian");    msgRus->AddString("text", selectedText);
+            BMessage* msgKor = new BMessage('trns'); msgKor->AddString("lang", "Korean");     msgKor->AddString("text", selectedText);
+            BMessage* msgAra = new BMessage('trns'); msgAra->AddString("lang", "Arabic");     msgAra->AddString("text", selectedText);
+            BMessage* msgHin = new BMessage('trns'); msgHin->AddString("lang", "Hindi");      msgHin->AddString("text", selectedText);
+            BMessage* msgDut = new BMessage('trns'); msgDut->AddString("lang", "Dutch");      msgDut->AddString("text", selectedText);
+            BMessage* msgPol = new BMessage('trns'); msgPol->AddString("lang", "Polish");     msgPol->AddString("text", selectedText);
+            BMessage* msgSwe = new BMessage('trns'); msgSwe->AddString("lang", "Swedish");    msgSwe->AddString("text", selectedText);
+            BMessage* msgFin = new BMessage('trns'); msgFin->AddString("lang", "Finnish");    msgFin->AddString("text", selectedText);
+            BMessage* msgTur = new BMessage('trns'); msgTur->AddString("lang", "Turkish");    msgTur->AddString("text", selectedText);
             
             BMenuItem* itemEng = new BMenuItem(labelEng.String(), msgEng);
             BMenuItem* itemSpa = new BMenuItem(labelSpa.String(), msgSpa);
             BMenuItem* itemFre = new BMenuItem(labelFre.String(), msgFre);
             BMenuItem* itemGer = new BMenuItem(labelGer.String(), msgGer);
-            BMenuItem* itemJap = new BMenuItem(labelJap.String(), msgJap);
-            
+            BMenuItem* itemJap = new BMenuItem(labelJap.String(), msgJap);            
             BMenuItem* itemChi = new BMenuItem(labelChi.String(), msgChi);
             BMenuItem* itemIta = new BMenuItem(labelIta.String(), msgIta);
             BMenuItem* itemPor = new BMenuItem(labelPor.String(), msgPor);
@@ -2759,7 +2762,9 @@ void CustomChatView::MouseDown(BPoint point) {
             BMenuItem* itemAra = new BMenuItem(labelAra.String(), msgAra);
             BMenuItem* itemHin = new BMenuItem(labelHin.String(), msgHin);
             BMenuItem* itemDut = new BMenuItem(labelDut.String(), msgDut);
+            BMenuItem* itemPol = new BMenuItem(labelPol.String(), msgPol);
             BMenuItem* itemSwe = new BMenuItem(labelSwe.String(), msgSwe);
+            BMenuItem* itemFin = new BMenuItem(labelFin.String(), msgFin);
             BMenuItem* itemTur = new BMenuItem(labelTur.String(), msgTur);
 
 
@@ -2769,8 +2774,7 @@ void CustomChatView::MouseDown(BPoint point) {
                 itemSpa->SetTarget(this->Window());
                 itemFre->SetTarget(this->Window());
                 itemGer->SetTarget(this->Window());
-                itemJap->SetTarget(this->Window());
-                
+                itemJap->SetTarget(this->Window());                
                 itemChi->SetTarget(this->Window());
 	            itemIta->SetTarget(this->Window());
 	            itemPor->SetTarget(this->Window());
@@ -2779,7 +2783,9 @@ void CustomChatView::MouseDown(BPoint point) {
 	            itemAra->SetTarget(this->Window());
 	            itemHin->SetTarget(this->Window());
 	            itemDut->SetTarget(this->Window());
+	            itemPol->SetTarget(this->Window());
 	            itemSwe->SetTarget(this->Window());
+	            itemFin->SetTarget(this->Window());
 	            itemTur->SetTarget(this->Window());
 
             }
@@ -2797,7 +2803,9 @@ void CustomChatView::MouseDown(BPoint point) {
             translateSubMenu->AddItem(itemAra);
             translateSubMenu->AddItem(itemHin);
             translateSubMenu->AddItem(itemDut);
+            translateSubMenu->AddItem(itemPol); 
             translateSubMenu->AddItem(itemSwe);
+            translateSubMenu->AddItem(itemFin); 
             translateSubMenu->AddItem(itemTur);                     
             
             contextMenu->AddItem(translateSubMenu);
@@ -4399,12 +4407,12 @@ public:
         // 3b. Expanded Target Language Picker Dropdown List
         BPopUpMenu* langPopUp = new BPopUpMenu("lang_popup");
         const char* languages[] = {
-            "English", "French", "German", "Spanish", "Italian", 
-            "Japanese", "Chinese", "Korean", "Russian", "Portuguese", 
-            "Dutch", "Polish", "Swedish", "Finnish", "Arabic"
+            "English", "Spanish", "French", "German", "Japanese", "Chinese", 
+            "Italian", "Portuguese", "Russian", "Korean", "Arabic", "Hindi", 
+            "Dutch", "Polish", "Swedish", "Finnish", "Turkish"   
         };
         
-        for (int i = 0; i < 15; i++) {
+        for (int i = 0; i < 16; i++) {
             BMessage* langMsg = new BMessage('tlng');
             langMsg->AddString("language", languages[i]);
             BMenuItem* langItem = new BMenuItem(languages[i], langMsg);
