@@ -139,7 +139,7 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.59 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.60 (Haiku OS)";
 }
 
 
@@ -152,11 +152,9 @@ struct ServerConfig {
     // --- TRANSLATOR EXTENSIONS ---
     bool enableLiveTranslation = false;
     std::string geminiApiKey = "";
-    std::string geminiModel = "gemini-3.7-flash";
+    std::string geminiModel = "gemini-3.5-flash-lite";
     std::string sourceLanguage = "Auto-Detect";
     std::string targetLanguage = "French";
-
-
     std::string name;
     std::string host;
     uint16 port;
@@ -503,7 +501,7 @@ void load_config() {
 				        srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
 				        srv.geminiApiKey           = s.value("gemini_api_key", "");
 				        srv.targetLanguage         = s.value("target_language", "French");
-				        srv.geminiModel            = s.value("gemini_model", "gemini-3.7-flash");
+				        srv.geminiModel            = s.value("gemini_model", "gemini-3.5-flash-lite");
 
                         
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
@@ -586,7 +584,7 @@ void load_config() {
                         srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
 				        srv.geminiApiKey           = s.value("gemini_api_key", "");
 				        srv.targetLanguage         = s.value("target_language", "French");
-				        srv.geminiModel            = s.value("gemini_model", "gemini-3.7-flash");
+				        srv.geminiModel            = s.value("gemini_model", "gemini-3.5-flash-lite");
 				        
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
@@ -648,7 +646,7 @@ void load_config() {
         cfg.customServers.clear(); 
         cfg.useCustomDrawFunction = true; 
         
-        // --- FIXED FALLBACK FORMAT MATCH ---
+        // --- FALLBACK FORMAT MATCH ---
         BString defaultQuit;
         defaultQuit << "App Quit [" << AppInfo::VERSION_STRING << "]";
         cfg.quitMessage = defaultQuit.String();
@@ -700,7 +698,7 @@ void load_config() {
         libera.enableLiveTranslation = false;
         libera.geminiApiKey = "";
         libera.targetLanguage = "French";
-        libera.geminiModel = "gemini-3.7-flash";
+        libera.geminiModel = "gemini-3.5-flash-lite";
         
         cfg.servers.push_back(libera);
 
@@ -743,7 +741,7 @@ void load_config() {
         oftc.enableLiveTranslation = false;
         oftc.geminiApiKey = "";
         oftc.targetLanguage = "French";
-        oftc.geminiModel = "gemini-3.7-flash";
+        oftc.geminiModel = "gemini-3.5-flash-lite";
        
         cfg.servers.push_back(oftc);
         
@@ -1286,8 +1284,6 @@ struct StyledLine {
             size_t size = sizeof(text_run_array) + (sizeof(text_run) * (r->count - 1));
             runs = (text_run_array*)malloc(size);
             if (runs != nullptr) {
-                // FIXED: Replace raw memcpy byte overwrite with standard-compliant member-wise 
-                // assignment loops to satisfy strict modern C++ compiler initialization parameters
                 runs->count = r->count;
                 for (int32 k = 0; k < r->count; k++) {
                     runs->runs[k] = r->runs[k];
@@ -3286,9 +3282,7 @@ public:
         owner->MovePenTo(itemRect.left + 10, baselineY);
         owner->DrawString(truncatedChannel.String());
 
-        // --- FIXED #1: RESTORE STABLE GREEN COLOR FOR VISIBLE USER LOGS ---
         if (!IsSelected()) {
-            // Using explicit custom dark green color code (RGB) to guarantee contrast scannability
             rgb_color forestGreen = {0, 180, 0, 255};
             owner->SetHighColor(forestGreen); 
         }
@@ -3299,7 +3293,7 @@ public:
         owner->MovePenTo(itemRect.left + 160, baselineY);
         owner->DrawString(truncatedUsers.String());
 
-        // --- FIXED #2: ROBUST VISIBLE CLIPPING BOUNDARY TRACKER CALCULATION ---
+        // --- ROBUST VISIBLE CLIPPING BOUNDARY TRACKER CALCULATION ---
         if (IsSelected()) {
             owner->SetHighColor(ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR));
         } else {
@@ -4383,10 +4377,10 @@ public:
         // 3a. Model Selection Dropdown Menu
         BPopUpMenu* modelPopUp = new BPopUpMenu("model_popup");
         const char* models[] = {
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
             "gemini-3.7-flash", 
-            "gemini-3.7-pro",   
-            "gemini-3.6-flash", 
-            "gemini-3.5-flash-lite"
+            "gemini-3.7-pro"           
         };
         
         for (int i = 0; i < 4; i++) {
@@ -4401,7 +4395,8 @@ public:
             modelPopUp->AddItem(modelItem);
         }
         fModelMenuField = new BMenuField("model_field", "Gemini Model:", modelPopUp);
-        fModelMenuField->SetToolTip("gemini-3.7-flash (Default): Ultra-fast, highly intelligent workhorse optimized for real-time chat translation.\ngemini-3.7-pro: Deep reasoning and advanced accuracy; best for complex chat contexts at higher token usage.\ngemini-3.6-flash: Reliable and highly efficient text processing engine from the previous generation.\ngemini-3.5-flash-lite: Ultra-low latency model tailored for instant translation with minimal processing lag.");
+        fModelMenuField->SetToolTip("gemini-3.5-flash-lite (Default): Ultra-low latency model tailored for instant translation with minimal processing lag\ngemini-3.6-flash: Reliable and highly efficient text processing engine from the previous generation.\ngemini-3.7-flash: Ultra-fast, highly intelligent workhorse optimized for real-time chat translation.\ngemini-3.7-pro: Deep reasoning and advanced accuracy; best for complex chat contexts at higher token usage.");
+       
 
 
         // 3b. Expanded Target Language Picker Dropdown List
@@ -4412,7 +4407,7 @@ public:
             "Dutch", "Polish", "Swedish", "Finnish", "Turkish"   
         };
         
-        for (int i = 0; i < 16; i++) {
+        for (int i = 0; i < 17; i++) {
             BMessage* langMsg = new BMessage('tlng');
             langMsg->AddString("language", languages[i]);
             BMenuItem* langItem = new BMenuItem(languages[i], langMsg);
@@ -4542,14 +4537,14 @@ ResizeTo(560, 520);
         }
         
         // =========================================================================
-        // --- TRANSLATOR CONFIGURATION LIVE UPDATE HANDLERS (STEP 3 FIXED) ---
+        // --- TRANSLATOR CONFIGURATION LIVE UPDATE HANDLERS (STEP 3) ---
         // =========================================================================
 
         
         case 'tlng': { // Language Selection Changed Event
             const char* chosenLang;
             if (message->FindString("language", &chosenLang) == B_OK) {
-                srv.targetLanguage = chosenLang; // FIXED: Changed from gTargetLanguageString
+                srv.targetLanguage = chosenLang;
                 save_config();
                 if (cfg.debugEnable) {
                     printf("[GeminiDebug] [%s] Language Updated to: %s\n", srv.name.c_str(), srv.targetLanguage.c_str());
@@ -4560,7 +4555,7 @@ ResizeTo(560, 520);
 
         case 'tltg': { // Toggle translation checkbox event
             if (fEnableLiveTranslationCheck != nullptr) {
-                srv.enableLiveTranslation = (fEnableLiveTranslationCheck->Value() == B_CONTROL_ON); // FIXED: Changed from gEnableLiveTranslationGlobal
+                srv.enableLiveTranslation = (fEnableLiveTranslationCheck->Value() == B_CONTROL_ON); 
                 save_config(); 
                 if (cfg.debugEnable) {
                     printf("[GeminiDebug] [%s] Translation Checkbox Toggled: %s\n", 
@@ -4574,7 +4569,7 @@ ResizeTo(560, 520);
             if (fTranslationKeyInput != nullptr) {
                 BString activeKey = fTranslationKeyInput->Text();
                 activeKey.Trim();
-                srv.geminiApiKey = activeKey.String(); // FIXED: Changed from gGeminiApiKeyString
+                srv.geminiApiKey = activeKey.String(); 
                 save_config(); 
             }
             break;
@@ -4583,7 +4578,7 @@ ResizeTo(560, 520);
         case 'tmdl': { // Model Selection Changed Event
             const char* SelectedModel;
             if (message->FindString("model", &SelectedModel) == B_OK) {
-                srv.geminiModel = SelectedModel; // FIXED: Changed from gGeminiModelString
+                srv.geminiModel = SelectedModel; 
                 save_config();
                 if (cfg.debugEnable) {
                     printf("[GeminiDebug] [%s] Engine Model Updated to: %s\n", srv.name.c_str(), srv.geminiModel.c_str());
@@ -5226,16 +5221,16 @@ ResizeTo(560, 520);
 	            cfg.quitMessage = fQuitInput->Text();
 	            
 	            // =========================================================================
-	            // --- INTEGRATED TRANSLATOR TAB RUNTIME SAVE PERSISTENCE (STEP 4 FIXED) ---
+	            // --- INTEGRATED TRANSLATOR TAB RUNTIME SAVE PERSISTENCE (STEP 4) ---
 	            // =========================================================================
 	            if (fTranslationKeyInput != nullptr) {
-	                srv.geminiApiKey = fTranslationKeyInput->Text(); // FIXED: Changed from gGeminiApiKeyString
+	                srv.geminiApiKey = fTranslationKeyInput->Text();
 	            }
 	
 	            if (fLanguageMenuField != nullptr && fLanguageMenuField->Menu() != nullptr) {
 	                BMenuItem* markedLang = fLanguageMenuField->Menu()->FindMarked();
 	                if (markedLang != nullptr) {
-	                    srv.targetLanguage = markedLang->Label(); // FIXED: Changed from gTargetLanguageString
+	                    srv.targetLanguage = markedLang->Label();
 	                }
 	            }
 
@@ -6228,7 +6223,7 @@ private:
 
 class ChannelInviteOnlyWindow : public BWindow {
 public:
-    // FIXED: Correctly pass parameters into the base BWindow constructor call
+    // Correctly pass parameters into the base BWindow constructor call
     ChannelInviteOnlyWindow(BWindow* parent, void* contextServer, const BString& channelName)
         : BWindow(BRect(0, 0, 380, 180), "Channel Entry Bounced", B_MODAL_WINDOW_LOOK, 
                   B_MODAL_SUBSET_WINDOW_FEEL, B_NOT_ZOOMABLE | B_NOT_RESIZABLE) {
@@ -6269,7 +6264,6 @@ public:
 
     void MessageReceived(BMessage* message) override {
         if (message->what == 'knok') {
-            // FIXED: Look up map handle using your updated fContextServer token key variable name
             if (fContextServer != nullptr) {
                 SSL* activeSslHandle = gServerSslHandles[fContextServer];
 
@@ -6376,7 +6370,7 @@ public:
             customNode->SetHideStatus(cfg.customServers[i].hideStatusMessages);
             
             // =========================================================================
-            // FIXED STARTUP SYNC: Push the custom config setting into the runtime tree node!
+            // STARTUP SYNC: Push the custom config setting into the runtime tree node!
             // =========================================================================
             customNode->fEnableColorCodes = cfg.customServers[i].enableColorCodes;
             // =========================================================================
@@ -6423,11 +6417,7 @@ public:
 
        
         BScrollView* userScroll = new BScrollView("scroll_users", fUserList, 0, false, true);
-        
-        
-        
-        // FIX: Replaced new BMessage(MSG_SEND_MESSAGE) with nullptr.
-        // This stops Haiku from auto-transmitting text whenever focus is lost.
+
         fInputControl = new BTextControl("input", "", "", nullptr);
 
         BTextView* inputTextView = fInputControl->TextView();
@@ -6487,7 +6477,6 @@ public:
         channelScroll->SetExplicitPreferredSize(BSize(130, B_SIZE_UNLIMITED)); 
         userScroll->SetExplicitPreferredSize(BSize(110, B_SIZE_UNLIMITED));    
 
-        // FIXED BOTTOM TOOLBAR: Using our layout-safe toggle button control
         BLayoutBuilder::Group<>(this, B_VERTICAL, 5)
             .SetInsets(10)
             .Add(mainSplitter, 1.0) 
@@ -6882,7 +6871,7 @@ public:
                     runArray->runs[runCount].color = textColor;
                     runCount++;
                 } else if (openingBracketIdx == 0) {
-                    // FIXED: Explicitly configure every attribute of slot 0 to avoid garbage values
+                    // Explicitly configure every attribute of slot 0 to avoid garbage values
                     runArray->runs[0].offset = 0;
                     runArray->runs[0].font = boldChatFont;
                     runArray->runs[0].color = textColor;
@@ -7336,7 +7325,7 @@ private:
 	                    runArray->runs[runCount].color = textColor;
 	                    runCount++;
 	                } else if (openingBracketIdx == 0) {
-	                    // FIXED: Explicitly configure every attribute of slot 0 to avoid garbage values
+	                    // Explicitly configure every attribute of slot 0 to avoid garbage values
 	                    runArray->runs[0].offset = 0;
 	                    runArray->runs[0].font = boldChatFont;
 	                    runArray->runs[0].color = textColor;
@@ -8302,10 +8291,6 @@ private:
                 targetChannel.Trim();
             }
 
-            // =========================================================================
-            // FIXED NICKNAME RESOLUTION LAYER
-            // =========================================================================
-            // Parse the sidebar text carefully. If it's "Libera Chat [ablyss_]", extract "ablyss_"
             BString activeMyNick = "";
             BString serverText = contextServer->Text();
             
@@ -8447,7 +8432,7 @@ private:
                     LogToItemBuffer(fActiveBufferItem, notice);
 
                     // Launch the modal password collection dialog framework asynchronously
-                    // FIXED: Hand over contextServer and pass the correct 'badChannel' local variable string
+                    // Hand over contextServer and pass the correct 'badChannel' local variable string
                     ChannelKeyPromptWindow* promptWin = new ChannelKeyPromptWindow(this, contextServer, badChannel);
                     promptWin->Show();
                 }
@@ -8599,7 +8584,7 @@ private:
                     BListItem* superItem = fChannelTree->Superitem(chanNode);
                     
                     // =========================================================================
-                    // FIXED PRIVATE QUERY ROOT VERIFICATION (REPLACES BROKEN SUPERITEM LOGIC)
+                    // PRIVATE QUERY ROOT VERIFICATION (REPLACES BROKEN SUPERITEM LOGIC)
                     // =========================================================================
                     if (superItem == nullptr) {
                         bool belongsToThisServer = false;
@@ -8699,7 +8684,7 @@ private:
         
 
         // =========================================================================
-        // FIXED NUMERIC 433: ERR_NICKNAMEINUSE RESOLVER (STALL PREVENTION GATE)
+        // NUMERIC 433: ERR_NICKNAMEINUSE RESOLVER (STALL PREVENTION GATE)
         // =========================================================================
         if (command == "433") {
             if (contextServer == nullptr) return;
@@ -9411,7 +9396,7 @@ private:
                 if (!chanNode) continue;
                 
                 // =========================================================================
-                // FIXED: ROBUST CHANNEL MATCHING (Supports ##trivia and case-insensitivity)
+                // ROBUST CHANNEL MATCHING (Supports ##trivia and case-insensitivity)
                 // =========================================================================
                 if (command == "PART") {
                     BString cleanNodeText(chanNode->Text());
@@ -9421,11 +9406,11 @@ private:
                     }
                     cleanNodeText.Trim();
                     
-                    // FIXED: Corrected object method notation and completed comparison check
+                    // Corrected object method notation and completed comparison check
                     if (targetChannel.ICompare(cleanNodeText) != 0) continue;
                 }
 
-                // FIXED: Corrected map validation bounds container check
+                // Corrected map validation bounds container check
                 if (fChannelUsers.count(chanNode) > 0 && fChannelUsers[chanNode] != nullptr) {
                     BObjectList<UserListItem, true>* userVector = fChannelUsers[chanNode];
                     
@@ -10339,7 +10324,7 @@ private:
             }
 
             // =========================================================================
-            // FIXED INTEGRATED HOOK: UNIVERSAL INBOUND SERVICES SCANNER & DISPATCH (ANTI-FLOOD GATE)
+            // INTEGRATED HOOK: UNIVERSAL INBOUND SERVICES SCANNER & DISPATCH (ANTI-FLOOD GATE)
             // =========================================================================
             // Strict match validation layout targets service bots explicitly
             bool isServicesMessage = (prefix.IFindFirst("nickserv") != B_ERROR || 
@@ -10454,7 +10439,7 @@ private:
             LogToItemBuffer(targetNode, formattedMessage);
 
             // =========================================================================
-            // FIXED UNIFIED INTERFACE GRAPHICS REPAINT FOR AUTOTABS & MOTD LOGS
+            // UNIFIED INTERFACE GRAPHICS REPAINT FOR AUTOTABS & MOTD LOGS
             // =========================================================================
             if (fActiveBufferItem == targetNode) {
                 if (fCustomChatLog != nullptr) {
@@ -10674,7 +10659,7 @@ static status_t NetworkLoop(void* data) {
 
 
     // =========================================================================
-    // 5. HIGH-SPEED MAIN STREAM READ LOOP (FIXED STATIC ARRAY CONTAINER)
+    // 5. HIGH-SPEED MAIN STREAM READ LOOP (STATIC ARRAY CONTAINER)
     // =========================================================================
     //  Swapped 'char buffer;' for a true 1024-byte static block array!
     char buffer[1024]; 
@@ -10900,7 +10885,7 @@ public:
             selectedText.Trim();
 
             // =========================================================================
-            // FIXED UNIFIED WEB TRANSLATOR (MIMICS GOOGLE SEARCH W/ STRING APPENDING)
+            // UNIFIED WEB TRANSLATOR (MIMICS GOOGLE SEARCH W/ STRING APPENDING)
             // =========================================================================
             if (selectedText.Length() > 0) {
                 // URL-escape special network characters securely (Matches Search engine logic)
@@ -11196,7 +11181,7 @@ public:
                         SSL_write(activeSslHandle, rawInvite.String(), rawInvite.Length());
                         
                         if (cfg.debugEnable) {
-                            // FIXED: Corrected the printf syntax and added all details
+                            // Corrected the printf syntax and added all details
                             printf("[DEBUG POPUP] Invitation dispatched -> User: %s | Channel: %s | Network: %s\n", 
                                    knocker.String(), channel.String(), serverCtx->Text());
                         }
@@ -11362,7 +11347,7 @@ public:
         // ICON GRID MANAGER LAUNCHER: Toggles the custom borderless icon canvas on and off
         case MSG_TOGGLE_ICON_POPUP: {
             if (fIconToggleButton != nullptr) {
-                // 1. FIXED TOGGLE: If the window is already active, close it and break out
+                // 1. TOGGLE: If the window is already active, close it and break out
                 if (fActiveIconPopup != nullptr) {
                     fActiveIconPopup->PostMessage(B_QUIT_REQUESTED);
                     fActiveIconPopup = nullptr;
@@ -11748,7 +11733,7 @@ public:
 		        int32 tagPos = activeChannel.FindFirst(" [");
 		        if (tagPos != B_ERROR) {
 		            activeChannel.Truncate(tagPos);
-		        } // Fixed syntax typo here from original code
+		        } 
 		
 		        if (!activeChannel.StartsWith("#") && !activeChannel.StartsWith("&") && !activeChannel.StartsWith("!")) {
 		            break;
@@ -11996,7 +11981,7 @@ public:
                 }
 
                 // =========================================================================
-                // FIXED CONTEXT MATCHING LAYER: Pull accurate context items out of message
+                // CONTEXT MATCHING LAYER: Pull accurate context items out of message
                 // =========================================================================
                 if (message->FindPointer("channel_item", (void**)&targetItem) != B_OK || targetItem == nullptr) {
                     targetItem = static_cast<ChannelTreeItem*>(fActiveBufferItem);
@@ -12743,7 +12728,7 @@ public:
         targetChanName.Trim();
 
         // ====================================================================
-        // FIXED: ROBUST CHANNEL PREFIX CHECK (Supports ##trivia, &channels, etc)
+        // ROBUST CHANNEL PREFIX CHECK (Supports ##trivia, &channels, etc)
         // ====================================================================
         // IRC Standards (RFC 2811) allow #, &, +, and !. We check the first char.
         bool isActualIrcChannel = false;
@@ -12758,7 +12743,7 @@ public:
         
         if (parentServer != nullptr && isActualIrcChannel) {
             // =========================================================================
-            // FIXED: SECURE OPENSSL TRANSMITTER FOR PART COMMANDS
+            // SECURE OPENSSL TRANSMITTER FOR PART COMMANDS
             // =========================================================================
             SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(parentServer)];
             int activeFd = gServerRawSockets[static_cast<void*>(parentServer)];
@@ -13306,7 +13291,7 @@ public:
                     
                     fActiveBufferItem = selectedItem;
                     
-                    // === FIXED CONTEXT POINTER SYNCHRONIZATION ===
+                    // === CONTEXT POINTER SYNCHRONIZATION ===
                     BListItem* superItem = fChannelTree->Superitem(rawItem);
                     if (superItem != nullptr) {
                         ServerTreeItem* parentServer = dynamic_cast<ServerTreeItem*>(superItem);
@@ -13900,7 +13885,7 @@ public:
                     }
 
                     // =========================================================================
-                    // UNIFIED OPENSSL STREAM TEXT ROUTER ENGINE (FIXED MULTI-SERVER GATE)
+                    // UNIFIED OPENSSL STREAM TEXT ROUTER ENGINE (MULTI-SERVER GATE)
                     // =========================================================================
                     if (rawPayload.Length() > 0) {
                         //  Safely cast the key to void* to match the top map signatures perfectly!
@@ -14063,7 +14048,7 @@ public:
 	                                
 	                                // Safety check: ensure we are modifying within the prefix boundary
 	                                if (nickStartPos != B_ERROR && nickStartPos < cmdIdx) {
-	                                    // FIXED: Insert the reset code right after the nick length (before the '!')
+	                                    // Insert the reset code right after the nick length (before the '!')
 	                                    // This forces it to stay bound to the nick token when ParseAndDisplayIRC splits it
 	                                    rawLine.Insert(colorCloseCode, nickStartPos + senderNick.Length());
 	                                    
@@ -14154,7 +14139,7 @@ public:
                     }
                 }
 
-                // FIXED: Checked per-server values instead of old global tags
+                // Checked per-server values instead of old global tags
                 if (srvPtr != nullptr && srvPtr->enableLiveTranslation && !srvPtr->geminiApiKey.empty() 
                     && rawLine.FindFirst(" PRIVMSG ") != B_ERROR && gTranslatorService != nullptr) {
                     
