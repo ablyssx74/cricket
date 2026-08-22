@@ -12,7 +12,7 @@
 * Aspell Spell Checking
 * Loads all URLs with Firefox if Firefox is set as preferred in FileTypes
 * Smart Timestamp Display
-* Checks online for updates and sends notification if available.
+* Checks Online for Updates & Sends Notification if Available.
 * Color Highlight keywords.
 * Ignore keywords.
 * Emots 
