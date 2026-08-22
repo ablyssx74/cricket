@@ -7,15 +7,15 @@
 ### A lightweight, multi-server IRC client for Haiku OS.
 
 ### Notable Features
-* CertFP  / SASL Fully Supported
-* Gemini AI Real-time Language Translator
-* Aspell Spell Checking
-* Loads all URLs with Firefox if Firefox is set as preferred in FileTypes
-* Smart Timestamp Display
+* CertFP  / SASL Fully Supported.
+* Gemini AI Real-time Language Translator.
+* Aspell Spell Checking.
+* Loads all URLs with Firefox if Firefox is set as preferred in FileTypes.
+* Smart Timestamp Display.
 * Checks Online for Updates & Sends Notification if Available.
 * Color Highlight keywords.
 * Ignore keywords.
-* Emots 
+* Emots.
 
 
 
