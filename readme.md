@@ -4,7 +4,18 @@
   cricket
 </h1>
 
-A lightweight, multi-server IRC client for Haiku OS.
+### A lightweight, multi-server IRC client for Haiku OS.
+
+### Notable Features
+* CertFP  / SASL Fully Supported
+* Gemini AI Real-time Language Translator
+* Aspell Spell Checking
+* Loads all URLs with Firefox if Firefox is set as preferred in FileTypes
+* Smart Timestamp Display
+* Checks online for updates and sends notification if available.
+* Color Highlight keywords.
+* Ignore keywords.
+* Emots 
 
 
 
