@@ -4,7 +4,7 @@
   cricket
 </h1>
 
-### A lightweight, multi-server IRC client for Haiku OS.
+### A Native Multi-Server IRC Client for Haiku OS.
 
 ### Notable Features
 * CertFP  / SASL Fully Supported.
