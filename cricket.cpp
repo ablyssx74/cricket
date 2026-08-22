@@ -3,6 +3,7 @@
  * All rights reserved. Distributed under the terms of the MIT license.
  */
 
+#include <aspell.h>
 #include "icons.h"
 #include "nlohmann/json.hpp"
 #include <Alert.h>
@@ -25,7 +26,8 @@
 #include <HttpResult.h>
 #include <HttpRequest.h>
 #include <HttpSession.h>
-#include <IconUtils.h>   
+#include <IconUtils.h>
+#include <InterfaceKit.h>
 #include <LayoutBuilder.h>
 #include <ListItem.h>
 #include <ListView.h>
@@ -70,6 +72,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <vector>
+
+
+
 
 
 
@@ -139,7 +144,7 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.60 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.61 (Haiku OS)";
 }
 
 
@@ -148,7 +153,7 @@ using json = nlohmann::json;
 const std::string DEFAULT_BG_PATH = "";
 
 struct ServerConfig {
-	
+
     // --- TRANSLATOR EXTENSIONS ---
     bool enableLiveTranslation = false;
     std::string geminiApiKey = "";
@@ -195,6 +200,9 @@ struct ServerConfig {
 
 
 struct Config {
+		// Aspell
+	bool enableSpellCheck = false;
+	
     bool debugEnable = false;
     std::vector<ServerConfig> servers;
     std::vector<ServerConfig> customServers; 
@@ -223,6 +231,7 @@ void ensure_config_dir() {
 void save_config() {
     ensure_config_dir();
     json j;
+    j["enableSpellCheck"] = cfg.enableSpellCheck;
     j["debugEnable"] = cfg.debugEnable;
     j["search_engine"] = cfg.searchEngine;
     j["serverListFontSize"] = cfg.serverListFontSize;
@@ -274,7 +283,8 @@ void save_config() {
         s["serverListFontSize"] = srv.serverListFontSize;
         s["chatLogFontSize"] = srv.chatLogFontSize;
         s["userListFontSize"] = srv.userListFontSize;
-
+        
+	 
         // --- ADDED: Server-specific translation settings for default servers ---
         s["enableLiveTranslation"] = srv.enableLiveTranslation;
         s["gemini_api_key"]        = srv.geminiApiKey;
@@ -419,6 +429,7 @@ void save_config() {
 
 void load_config() {
     ensure_config_dir();
+    cfg.enableSpellCheck = true;
     cfg.debugEnable = false;
     cfg.useCustomDrawFunction = true;
 
@@ -457,6 +468,7 @@ void load_config() {
                 cfg.quitMessage = finalQuitMsg.String();
 
                 cfg.awayMessage = j.value("awayMessage", "I am away from my computer right now.");
+                cfg.enableSpellCheck = j.value("enableSpellCheck", true); 
                 cfg.debugEnable = j.value("debugEnable", false);             
                 cfg.serverListFontSize = j.value("serverListFontSize", (int32)12);
                 cfg.chatLogFontSize    = j.value("chatLogFontSize", (int32)12);
@@ -497,7 +509,7 @@ void load_config() {
                         srv.certFileName = s.value("cert_file_name", "");                    
                         srv.keyFileName = s.value("key_file_name", "");   
                         
- 						
+						
 				        srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
 				        srv.geminiApiKey           = s.value("gemini_api_key", "");
 				        srv.targetLanguage         = s.value("target_language", "French");
@@ -580,6 +592,7 @@ void load_config() {
                         srv.certProfileName = s.value("cert_profile_name", "");
                         srv.certFileName = s.value("cert_file_name", "");                    
                         srv.keyFileName = s.value("key_file_name", "");   
+                        
                         
                         srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
 				        srv.geminiApiKey           = s.value("gemini_api_key", "");
@@ -693,8 +706,8 @@ void load_config() {
     
         libera.serverListFontSize = cfg.serverListFontSize;
         libera.chatLogFontSize    = cfg.chatLogFontSize;
-        libera.userListFontSize   = cfg.userListFontSize;       
-                
+        libera.userListFontSize   = cfg.userListFontSize;           
+         
         libera.enableLiveTranslation = false;
         libera.geminiApiKey = "";
         libera.targetLanguage = "French";
@@ -4053,7 +4066,10 @@ public:
 
         
         // --- Center Aligned Server Title Header ---
-        BStringView* titleHeader = new BStringView("server_title_header", srv.name.c_str());
+		BString displayTitle(srv.name.c_str());
+		displayTitle << " Settings"; 		
+		BStringView* titleHeader = new BStringView("server_title_header", displayTitle.String());
+
         titleHeader->SetAlignment(B_ALIGN_CENTER);
         
         // Make the text stand out slightly by setting its font style to Bold
@@ -4136,8 +4152,16 @@ public:
 	    fShowUpdateCheck = new BCheckBox("show_updates_box", "Enable Updates Available Notifications", 
                                   new BMessage(MSG_TOGGLE_SHOW_UPDATES));
 		fShowUpdateCheck->SetValue(cfg.showUpdateNotifications ? B_CONTROL_ON : B_CONTROL_OFF);
-
-
+		
+		
+		
+		// =========================================================================
+        //  SpellCheck---
+        // =========================================================================        
+        fEnableSpellCheck = new BCheckBox("enable_spell_check", "Enable Spell Checking", nullptr);
+        fEnableSpellCheck->SetValue(cfg.enableSpellCheck ? B_CONTROL_ON : B_CONTROL_OFF);
+        fEnableSpellCheck->SetToolTip("Enables Spell checking.");
+		
         // --- Create Tab View Architecture ---
         BTabView* tabView = new BTabView("config_tabs", B_WIDTH_AS_USUAL);
 
@@ -4197,9 +4221,7 @@ public:
             .Add(fEnableEmoticonsCheck)
             .Add(fUseCustomDrawCheck)
             .Add(fLogChatsToFileCheck)
-            .Add(fEnableColorCodesCheck)
-            .Add(fShowUpdateCheck)
-            .Add(fDebugEnableCheck);
+            .Add(fEnableColorCodesCheck);
 
         // --- INSTANTIATE THE TIMESTAMP INTERVAL POPUP MENU ---
         BPopUpMenu* tsMenu = new BPopUpMenu("timestamp_select");
@@ -4221,10 +4243,7 @@ public:
         }
         fTimestampMenu = new BMenuField("ts_menu", "Timestamp Frequency:", tsMenu);
 
-        // --- NEW: INSTANTIATE THE DEFAULT SEARCH ENGINE POPUP MENU ---
-        
-
-        
+        // --- NEW: INSTANTIATE THE DEFAULT SEARCH ENGINE POPUP MENU ---        
         BPopUpMenu* seMenu = new BPopUpMenu("search_engine_select");
         const char* engines[] = { "Bing", "DuckDuckGo", "Google", "Yahoo" };
         const char* urls[] = {
@@ -4270,7 +4289,7 @@ public:
                 .Add(fTimestampMenu)
                 // --- NEW: INJECTED DIRECTLY UNDERNEATH TIMESTAMP FREQUENCY ---
                 .AddStrut(5.0f) 
-                .Add(fSearchEngineMenu)
+                //.Add(fSearchEngineMenu)
                 .AddGlue() 
             .End()
             .Add(scrollableCheckboxes, 0.45);
@@ -4455,8 +4474,7 @@ public:
             .SetInsets(10)
             .Add(transBox, 0.0)
             .AddGlue();
-
-
+ 
 
         // --- Assemble ALL Tabs into the Master Tab Container ---
         tabView->AddTab(identityTab);
@@ -4467,51 +4485,53 @@ public:
 
 
 
-// 1. Create the BBox container and its internal grid layout
-BBox* messageBox = new BBox(B_PLAIN_BORDER, NULL);
-messageBox->SetLabel("Global Messages");
-
-BGridLayout* boxGrid = new BGridLayout(5.0f, 5.0f);
-messageBox->SetLayout(boxGrid);
-
-// Populate the grid layout inside the box
-BLayoutBuilder::Grid<>(boxGrid)
-    .SetInsets(12, 24, 12, 12)
-    // Row 0: Away Message
-    .Add(fAwayInput->CreateLabelLayoutItem(), 0, 0)
-    .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 0, 1, 1) 
-    
-    // Row 1: Quit Message
-    .Add(fQuitInput->CreateLabelLayoutItem(), 0, 1)
-    .Add(fQuitInput->CreateTextViewLayoutItem(), 1, 1, 1, 1)
-    
-    // Column 2: Explicit glue item acting as a structural spacer to the right
-    .Add(BSpaceLayoutItem::CreateGlue(), 2, 0, 1, 2)
-    
-    // Distribute weights evenly between the text fields (Col 1) and the empty space (Col 2)
-    .SetColumnWeight(1, 1.0f)
-    .SetColumnWeight(2, 1.0f);
-
-// 2. Build the Master Window layout
-BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
-    .SetInsets(12)
-    .Add(titleHeader, 0.0) 
-    .Add(tabView, 1.0)     
-    
-    // Add the fully-configured BBox
-    .Add(messageBox, 0.0)
-    
-    // Keep action buttons grouped together at the bottom right
-    .AddGroup(B_HORIZONTAL, 5)
-        .AddGlue() 
-        .Add(cancelBtn)
-        .Add(saveBtn)
-    .End();
-
-ResizeTo(560, 520);
-
-
-  
+		// 1. Create the BBox container and its internal grid layout
+		BBox* messageBox = new BBox(B_PLAIN_BORDER, NULL);
+		messageBox->SetLabel("Global Settings");
+		
+		BGridLayout* boxGrid = new BGridLayout(5.0f, 5.0f);
+		messageBox->SetLayout(boxGrid);
+		
+		// Explicitly anchor column scaling metrics cleanly outside the continuous builder loop
+		boxGrid->SetColumnWeight(1, 1.0f); // Allow input tracking boxes to claim expanding window text room
+		
+		// Dynamically populate the layout sequentially without static numeric position coordinates
+		BLayoutBuilder::Grid<>(boxGrid)
+		    .SetInsets(12, 24, 12, 12)
+		
+		    .Add(fDebugEnableCheck, 0, 0, 2, 1)     
+		    .Add(fShowUpdateCheck, 0, 1, 2, 1)
+		    .Add(fEnableSpellCheck, 0, 2, 2, 1)
+		    .Add(fSearchEngineMenu, 0, 3, 2, 1)
+		
+		    // Row 3: Away Message Options Group
+		    .Add(fAwayInput->CreateLabelLayoutItem(), 0, 4)
+		    .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 4) 
+		    
+		    // Row 4: Quit Message Options Group
+		    .Add(fQuitInput->CreateLabelLayoutItem(), 0, 5)
+		    .Add(fQuitInput->CreateTextViewLayoutItem(), 1, 5)
+		
+		;
+		
+		// 2. Build the Master Window layout
+		BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
+		    .SetInsets(12)
+		    .Add(titleHeader, 0.0) 
+		    .Add(tabView, 1.0)     
+		    
+		    // Add the fully-configured, auto-sizing BBox
+		    .Add(messageBox, 0.0)
+		    
+		    // Keep action buttons grouped together at the bottom right
+		    .AddGroup(B_HORIZONTAL, 5)
+		        .AddGlue() 
+		        .Add(cancelBtn)
+		        .Add(saveBtn)
+		    .End();
+		
+		
+		ResizeTo(560, 520);
 
             
         if (parent) {
@@ -4536,11 +4556,10 @@ ResizeTo(560, 520);
             break;
         }
         
+        
         // =========================================================================
         // --- TRANSLATOR CONFIGURATION LIVE UPDATE HANDLERS (STEP 3) ---
-        // =========================================================================
-
-        
+        // =========================================================================        
         case 'tlng': { // Language Selection Changed Event
             const char* chosenLang;
             if (message->FindString("language", &chosenLang) == B_OK) {
@@ -4611,7 +4630,7 @@ ResizeTo(560, 520);
             break;
         }
 
-        	
+  	
         	
         case 'clpv': {
             if (fColorPicker != nullptr && fColorPreviewBox != nullptr) {
@@ -5216,6 +5235,7 @@ ResizeTo(560, 520);
 	
 	            // 3. Synchronize Global Profile Configurations
 	            cfg.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
+	            cfg.enableSpellCheck = (fEnableSpellCheck->Value() == B_CONTROL_ON);
 	            cfg.searchEngine = fLocalSearchEngineChoice.String();                
 	            cfg.awayMessage = fAwayInput->Text();
 	            cfg.quitMessage = fQuitInput->Text();
@@ -5405,6 +5425,8 @@ private:
 	BMenuField* fLanguageMenuField;
 	BMenuField*     fModelMenuField; 
 
+	// Spellcheck
+	BCheckBox*    fEnableSpellCheck;
 	
     //  Safe helper function to fetch correct active reference target safely
     ServerConfig& GetActiveConfig() {
@@ -5934,19 +5956,92 @@ private:
 };
 
 
+class SpellPopup : public BWindow {
+public:
+    SpellPopup(BPoint screenPos, BMessage* suggestionsMsg)
+        : BWindow(BRect(screenPos.x, screenPos.y, screenPos.x + 190, screenPos.y + 65),
+                  "SpellPopup", B_NO_BORDER_WINDOW_LOOK, B_FLOATING_ALL_WINDOW_FEEL,
+                  B_NOT_MOVABLE | B_NOT_RESIZABLE | B_AVOID_FOCUS)
+    {
+        // Force a crisp light-amber tooltip background color
+        BView* bgView = new BView(Bounds(), "bg", B_FOLLOW_ALL, B_WILL_DRAW);
+        bgView->SetViewColor(255, 255, 225); 
+        AddChild(bgView);
 
+        // Position the text view inside the border bounds
+        BRect textRect = Bounds().InsetBySelf(6, 4);
+        BTextView* textView = new BTextView(textRect, "text", textRect, B_FOLLOW_ALL, B_WILL_DRAW);
+        textView->SetViewColor(255, 255, 225);
+        textView->MakeEditable(false);
+        textView->MakeSelectable(false);
+
+        // Build the text display
+        BString label("Did you mean:\n");
+        const char* suggestion;
+        int32 index = 0;
+        
+        while (suggestionsMsg->FindString("suggestion", index, &suggestion) == B_OK && index < 3) {
+            label << " " << (index + 1) << ". " << suggestion << "\n";
+            index++;
+        }
+        
+        if (index == 0) label << " (No suggestions found)";
+
+        // Set the text into the view buffer first
+        textView->SetText(label.String());
+
+        // CRITICAL FIX FOR DARK THEME: Force absolute color values onto the character buffer
+        rgb_color blackColor = {0, 0, 0, 255};
+        
+        // 1. Force the entire text block to render as crisp black font
+        BFont plainFont(be_plain_font);
+        textView->SetFontAndColor(0, textView->TextLength(), &plainFont, B_FONT_ALL, &blackColor);
+
+        // 2. Overwrite the first 14 characters ("Did you mean:\n") to be bold and black
+        BFont boldFont(be_plain_font);
+        boldFont.SetFace(B_BOLD_FACE);
+        textView->SetFontAndColor(0, 14, &boldFont, B_FONT_FACE, &blackColor);
+
+        bgView->AddChild(textView);
+    }
+};
+
+
+
+#ifndef MSG_SHOW_SPELLCHECK_POPUP
+#define MSG_SHOW_SPELLCHECK_POPUP    'mSSh'
+#define MSG_DISMISS_SPELLCHECK_POPUP 'mDSh'
+#endif
 
 class InputFieldKeyFilter : public BMessageFilter {
 public:
     InputFieldKeyFilter(BTextControl* inputControl, BObjectList<BString, true>* list, int32* index, BListView* userList) 
-        : BMessageFilter(B_KEY_DOWN), 
+        // FIX 1: Shift delivery mode to B_PROGRAMMED_DELIVERY to manage event ordering
+        : BMessageFilter(B_PROGRAMMED_DELIVERY, B_ANY_SOURCE, B_KEY_DOWN), 
           fInputControl(inputControl), 
           fHistoryList(list), 
           fHistoryIndex(index),
           fUserList(userList),
           fInCompletionMode(false),
           fLastMatchIndex(-1),
-          fCompletionStartPos(0) {}
+          fCompletionStartPos(0) 
+    {
+        // Set up the local Aspell configuration safely
+        fAspellConfig = new_aspell_config();
+        aspell_config_replace(fAspellConfig, "lang", "en_US"); 
+        
+        AspellCanHaveError* possibleError = new_aspell_speller(fAspellConfig);
+        if (aspell_error_number(possibleError) != 0) {
+            fSpeller = nullptr;
+        } else {
+            fSpeller = to_aspell_speller(possibleError);
+        }
+    }
+
+    virtual ~InputFieldKeyFilter() {
+        if (fSpeller) delete_aspell_speller(fSpeller);
+        delete_aspell_config(fAspellConfig);
+    }
 
     virtual filter_result Filter(BMessage* message, BHandler** target) {
         int32 key = 0;
@@ -5973,14 +6068,9 @@ public:
                 if (historicalText != nullptr) {
                     BTextView* tv = fInputControl->TextView();
                     if (tv != nullptr) {
-                        // 1. Overwrite the text view directly (this triggers the internal text cache refresh)
                         tv->SetText(historicalText->String(), historicalText->Length());
-                        
-                        // 2. Snap the flashing cursor cleanly to the very end of the line
                         int32 len = tv->TextLength();
                         tv->Select(len, len); 
-                        
-                        // 3. Force the visual framework to update the layout bounds
                         tv->Invalidate();
                     }
                 }
@@ -6002,8 +6092,6 @@ public:
                             tv->SetText(historicalText->String(), historicalText->Length());
                         }
                     }
-                    
-                    // Snap the flashing cursor cleanly to the very end of the line
                     int32 len = tv->TextLength();
                     tv->Select(len, len); 
                     tv->Invalidate();
@@ -6011,36 +6099,114 @@ public:
                 return B_SKIP_MESSAGE; // Swallow key event
             }
         }
-
-        // --- DOWN ARROW KEY DETECTED (Haiku Raw Key: 0x62) ---
-        else if (key == 0x62) {
-            if (totalItems > 0 && *fHistoryIndex < totalItems) {
-                // ... (Keep your down arrow loop exactly as it is)
-                return B_SKIP_MESSAGE;
-            }
-        }
         
-        // =========================================================================
-        // ADDED: EXPLICIT ENTER/RETURN KEY CHECK
-        // =========================================================================
+        // --- ENTER/RETURN KEY CHECK ---
         int32 rawChar = 0;
         if (message->FindInt32("raw_char", &rawChar) == B_OK && rawChar == '\n') {
-            // Build a manual messenger bundle containing our strict authorization flag
             BMessage sendMsg(MSG_SEND_MESSAGE);
             sendMsg.AddBool("explicit_enter_keypress", true);
             
-            // Post it straight to the parent window's message queue
             if (fInputControl->Window() != nullptr) {
                 fInputControl->Window()->PostMessage(&sendMsg);
             }
             
-            return B_SKIP_MESSAGE; // Swallow event so Haiku doesn't duplicate the text
+            // Inform layout loop to close old popups when submitting a line
+            if ((*target) && (*target)->Looper()) {
+                (*target)->Looper()->PostMessage(MSG_DISMISS_SPELLCHECK_POPUP);
+            }
+            
+            return B_SKIP_MESSAGE; 
         }
 
-        return B_DISPATCH_MESSAGE;
+        // =========================================================================
+        // FIX 2: FORCE CHARACTER INTO THE TEXT BUFFER FIRST
+        // =========================================================================
+        BTextView* textView = fInputControl->TextView();
+        if (textView != nullptr) {
+            // Commit the keystroke right now so textView->Text() is perfectly updated
+            textView->MessageReceived(message);
+        }
+
+        // =========================================================================
+        // LIVE ASPELL SPELLCHECK INJECTION
+        // =========================================================================
+        if (!cfg.enableSpellCheck) {
+            if ((*target) && (*target)->Looper()) {
+                (*target)->Looper()->PostMessage(MSG_DISMISS_SPELLCHECK_POPUP);
+            }
+
+            return B_SKIP_MESSAGE; 
+        }
+
+        if (textView != nullptr && fSpeller != nullptr) {
+            BString currentText(textView->Text());
+            
+            if (currentText.Length() > 0) {
+                int32 lastSpace = currentText.FindLast(' ');
+                BString lastWord;
+
+                
+                if (lastSpace == B_ERROR) {
+                    lastWord = currentText;
+                } else {
+                    currentText.CopyInto(lastWord, lastSpace + 1, currentText.Length() - (lastSpace + 1));
+                }
+                lastWord.Trim();
+
+                // Only perform checks on multi-character words
+                if (lastWord.Length() > 1) {
+                    int isCorrect = aspell_speller_check(fSpeller, lastWord.String(), lastWord.Length());
+                    
+                    if (cfg.debugEnable) printf("[SpellCheck Debug] Checking word: '%s' -> Correct: %d\n", lastWord.String(), isCorrect);
+
+                    if (isCorrect == 0) { // Typo caught!
+                        const AspellWordList* suggestions = aspell_speller_suggest(fSpeller, lastWord.String(), lastWord.Length());
+                        AspellStringEnumeration* elements = aspell_word_list_elements(suggestions);
+                        
+                        BMessage popupMsg(MSG_SHOW_SPELLCHECK_POPUP);
+                        
+                        int32 startSel, finishSel;
+                        textView->GetSelection(&startSel, &finishSel);
+                        
+                        float lineHeight = 0.0;
+                        BPoint caretPoint = textView->PointAt(startSel, &lineHeight);
+                        caretPoint.y += lineHeight; 
+                        textView->ConvertToScreen(&caretPoint);
+                        
+                        popupMsg.AddPoint("position", caretPoint);
+                        popupMsg.AddString("misspelled", lastWord);
+
+                        int count = 0;
+                        const char* word;
+                        while ((word = aspell_string_enumeration_next(elements)) != nullptr && count < 3) {
+                            popupMsg.AddString("suggestion", word);
+                            count++;
+                        }
+                        delete_aspell_string_enumeration(elements);
+                        
+                        if ((*target) && (*target)->Looper()) {
+                            (*target)->Looper()->PostMessage(&popupMsg);
+                        }
+                    } else {
+                        if ((*target) && (*target)->Looper()) {
+                            (*target)->Looper()->PostMessage(MSG_DISMISS_SPELLCHECK_POPUP);
+                        }
+                    }
+                } else {
+                    if ((*target) && (*target)->Looper()) {
+                        (*target)->Looper()->PostMessage(MSG_DISMISS_SPELLCHECK_POPUP);
+                    }
+                }
+            } else {
+                if ((*target) && (*target)->Looper()) {
+                    (*target)->Looper()->PostMessage(MSG_DISMISS_SPELLCHECK_POPUP);
+                }
+            }
+        }
+
+        // Return B_SKIP_MESSAGE since we manually forced delivery via MessageReceived above
+        return B_SKIP_MESSAGE;
     }
-
-
 
 
 private:
@@ -6049,7 +6215,7 @@ private:
         BTextView* tv = fInputControl->TextView();
         if (tv != nullptr) {
             int32 textLen = tv->TextLength();
-            tv->Select(textLen, textLen); // Force pen cursor to the end
+            tv->Select(textLen, textLen); 
         }
     }
 
@@ -6062,11 +6228,9 @@ private:
         int32 start, end;
         textView->GetSelection(&start, &end);
 
-        // If not currently cycling matches, initialize completion state
         if (!fInCompletionMode) {
             BString currentText(textView->Text());
             
-            // Extract the partial word by scanning backward from the cursor to the nearest space
             int32 i = start - 1;
             while (i >= 0 && currentText.ByteAt(i) != ' ') {
                 i--;
@@ -6078,7 +6242,7 @@ private:
             if (fOriginalPrefix.Length() == 0) return;
 
             fInCompletionMode = true;
-            fLastMatchIndex = -1; // Reset to start before the list
+            fLastMatchIndex = -1; 
         }
 
         int32 totalUsers = fUserList->CountItems();
@@ -6086,7 +6250,6 @@ private:
 
         BString nextMatch = "";
         
-        // Loop through BListView items to find the next match matching the prefix
         for (int32 i = 0; i < totalUsers; ++i) {
             int32 checkIndex = (fLastMatchIndex + 1 + i) % totalUsers;
             
@@ -6095,45 +6258,41 @@ private:
 
             BString nick(item->Text());
             
-            // Strip common IRC mode prefixes (@, +, %) if they are visible in UI list
             if (nick.Length() > 0 && (nick.ByteAt(0) == '@' || nick.ByteAt(0) == '+' || nick.ByteAt(0) == '%')) {
                 nick.Remove(0, 1);
             }
 
-            // Perform a case-insensitive prefix match using Haiku's BString API
             if (nick.ICompare(fOriginalPrefix, fOriginalPrefix.Length()) == 0) {
                 nextMatch = nick;
-                fLastMatchIndex = checkIndex; // Cache index for the next Tab stroke
+                fLastMatchIndex = checkIndex; 
                 break;
             }
         }
 
         if (nextMatch.Length() > 0) {
-            // Apply proper context spacing (colon suffix at the start of a sentence)
             if (fCompletionStartPos == 0) {
                 nextMatch << ": ";
             } else {
                 nextMatch << " ";
             }
 
-            // Replace the old text chunk with our newly completed name match
             textView->GetSelection(&start, &end);
             textView->Select(fCompletionStartPos, start);
             textView->Delete();
-            textView->Insert(nextMatch.String());
-        }
-    }
-
-    BTextControl*               fInputControl;
-    BObjectList<BString, true>* fHistoryList;
-    int32*                      fHistoryIndex;
-    BListView*                  fUserList;
-
-    // Tab completion state tracking
-    bool                        fInCompletionMode;
-    BString                     fOriginalPrefix;
-    int32                       fLastMatchIndex;
-    int32                       fCompletionStartPos;
+			textView->Insert(nextMatch.String());
+		}
+	}
+	BTextControl*               fInputControl;
+	BObjectList<BString, true>* fHistoryList;
+	int32*                      fHistoryIndex;
+	BListView*                  fUserList;
+	bool                        fInCompletionMode;
+	BString                     fOriginalPrefix;
+	int32                       fLastMatchIndex;
+	int32                       fCompletionStartPos;
+	// Aspell Local Engine Items
+	AspellConfig*               fAspellConfig;
+	AspellSpeller*              fSpeller;
 };
 
 
@@ -6292,6 +6451,8 @@ private:
 
 
 class CricketWindow : public BWindow {
+private:
+SpellPopup* fSpellPopup = nullptr;
 public:
     // --- Restore flexible window border decoration masks ---
     CricketWindow() : BWindow(BRect(100, 100, 900, 600), "Cricket IRC Client", 
@@ -6418,13 +6579,19 @@ public:
        
         BScrollView* userScroll = new BScrollView("scroll_users", fUserList, 0, false, true);
 
-        fInputControl = new BTextControl("input", "", "", nullptr);
-
-        BTextView* inputTextView = fInputControl->TextView();
-        if (inputTextView != nullptr) {
-            // Pass the pointers to the collection list and index counters
-            inputTextView->AddFilter(new InputFieldKeyFilter(fInputControl, &fHistoryList, &fHistoryIndex, fUserList));
-        }
+		//@here
+		fInputControl = new BTextControl("input", "", "", nullptr);
+		
+		BTextView* inputTextView = fInputControl->TextView();
+		if (inputTextView != nullptr) {
+		    // Keep passing your history pointers alongside the control!
+		    inputTextView->AddFilter(new InputFieldKeyFilter(
+		        fInputControl, 
+		        &fHistoryList, 
+		        &fHistoryIndex, 
+		        fUserList
+		    ));
+		}
 
 
         // Ensure we have at least one server available to read initial sizes from safely
@@ -10857,7 +11024,39 @@ public:
         switch (message->what) {
         	
 
+        case MSG_SHOW_SPELLCHECK_POPUP: {
+            if (!cfg.enableSpellCheck) {
+                if (fSpellPopup != nullptr) {
+                    fSpellPopup->Lock();
+                    fSpellPopup->Quit();
+                    fSpellPopup = nullptr;
+                }
+                break;
+            }
 
+            BPoint screenPos;
+            if (message->FindPoint("position", &screenPos) == B_OK) {
+                if (fSpellPopup != nullptr) {
+                    fSpellPopup->Lock();
+                    fSpellPopup->Quit();
+                    fSpellPopup = nullptr;
+                }
+
+                fSpellPopup = new SpellPopup(screenPos, message);
+                fSpellPopup->Show();
+            }
+            break;
+        }
+
+
+        case MSG_DISMISS_SPELLCHECK_POPUP: {
+            if (fSpellPopup != nullptr) {
+                fSpellPopup->Lock();
+                fSpellPopup->Quit();
+                fSpellPopup = nullptr;
+            }
+            break;
+        }
         	
 
         // =========================================================================
@@ -11264,75 +11463,6 @@ public:
             }
             break;
         }
-
-
-
-
-
-
-        case 'tgem': {
-            // 1. Recover the pointer to the target server item
-            ServerTreeItem* srvItem = nullptr;
-            if (message->FindPointer("server_item", (void**)&srvItem) == B_OK && srvItem != nullptr) {
-                
-                // 2. Locate the matching server struct inside config mapping
-                BString currentServerName(srvItem->Text());
-                bool targetState = false;
-                bool serverFound = false;
-                
-                // Search primary servers list
-                for (auto& srv : cfg.servers) {
-                    if (BString(srv.name.c_str()) == currentServerName) {
-                        srv.enableEmoticons = !srv.enableEmoticons;
-                        targetState = srv.enableEmoticons;
-                        serverFound = true;
-                        break;
-                    }
-                }
-
-                // Fallback to custom servers list if not found in primary list
-                if (!serverFound) {
-                    for (auto& srv : cfg.customServers) {
-                        if (BString(srv.name.c_str()) == currentServerName) {
-                            srv.enableEmoticons = !srv.enableEmoticons;
-                            targetState = srv.enableEmoticons;
-                            break;
-                        }
-                    }
-                }
-                
-                // 3. CRITICAL: Save the modified configuration to disk immediately!
-                save_config();
-                
-                // 4. Update the source menu item's visual checkmark state dynamically
-                void* sourcePtr = nullptr;
-                if (message->FindPointer("source", &sourcePtr) == B_OK) {
-                    BMenuItem* clickedItem = static_cast<BMenuItem*>(sourcePtr);
-                    if (clickedItem != nullptr) {
-                        clickedItem->SetMarked(targetState);
-                    }
-                }
-                
-                // 5. Force UI/Toolbar layout sync if editing the active window view context
-                if (fCurrentServerNode == srvItem) {
-                    if (fIconToggleButton != nullptr) {
-                        if (targetState) {
-                            fIconToggleButton->Show();
-                        } else {
-                            fIconToggleButton->Hide();
-                        }
-                    }
-                    
-                    if (fCustomChatLog != nullptr) {
-                        fCustomChatLog->Invalidate();
-                    }
-                    
-                    this->InvalidateLayout(true);
-                }
-            }
-            break;
-        }
-
 
 
 

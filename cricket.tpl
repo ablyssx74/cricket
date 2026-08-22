@@ -20,6 +20,7 @@ requires {
 	lib:libssl$(is32bit)
 	lib:libcurl$(is32bit)
 	lib:libcrypto$(is32bit)
+	aspell$(is32bit)
 }
 conflicts {
 	hirc	

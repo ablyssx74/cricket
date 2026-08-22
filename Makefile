@@ -2,7 +2,7 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.60
+VERSION = 0.0.61
 REVISION = 1
 
 # --- 2. Architecture & Paths ---
@@ -34,7 +34,7 @@ RDEFS = cricket.rdef
 RSRCS = $(RDEFS:.rdef=.rsrc)
 
 # Haiku specific libraries
-LIBS = -lbe -lnetwork -lnetservices2 -lbnetapi -lshared -ltranslation -ltracker -lssl -lcrypto -lcurl
+LIBS = -lbe -lnetwork -lnetservices2 -lbnetapi -lshared -ltranslation -ltracker -lssl -lcrypto -lcurl -laspell
 
 
 
