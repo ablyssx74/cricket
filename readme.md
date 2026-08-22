@@ -19,7 +19,7 @@
 
 
 
-### Build x86_64
+### Build 64bit / 32bit
 ```
 make release
 
