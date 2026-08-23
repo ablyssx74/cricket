@@ -766,8 +766,7 @@ public:
     {
         fSession = new BHttpSession();
         Run(); 
-        // Always print service startup confirmation regardless of cfg settings
-        printf("[GeminiDebug] Asynchronous Service successfully spawned and idling.\n");
+        if (cfg.debugEnable) printf("[GeminiDebug] Asynchronous Service successfully spawned and idling.\n");
     }
 
     virtual ~GeminiTranslationService() 
