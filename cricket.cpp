@@ -144,7 +144,7 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.61 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.62 (Haiku OS)";
 }
 
 
@@ -153,13 +153,11 @@ using json = nlohmann::json;
 const std::string DEFAULT_BG_PATH = "";
 
 struct ServerConfig {
-
-    // --- TRANSLATOR EXTENSIONS ---
     bool enableLiveTranslation = false;
     std::string geminiApiKey = "";
     std::string geminiModel = "gemini-3.5-flash-lite";
     std::string sourceLanguage = "Auto-Detect";
-    std::string targetLanguage = "French";
+    std::string targetLanguage = "French";    //
     std::string name;
     std::string host;
     uint16 port;
@@ -169,21 +167,17 @@ struct ServerConfig {
     std::string pass;
     std::vector<std::string> autojoin; 
     std::vector<std::string> autocmdlist; 
-
     bool autoConnect; 
     bool autoReconnect;
     bool hideStatusMessages = false;
     bool enableEmoticons;    
     std::string backgroundImagePath; 
-    int32 backgroundOpacity; 
-    
+    int32 backgroundOpacity;     
     int32 serverListFontSize = 12;
     int32 chatLogFontSize = 12;
     int32 userListFontSize = 12;
     bool useCustomDrawFunction = true; 
     bool nickAlert = true; 
-
-    // Per-server Chat Logging Option (Defaults to false)
     bool logChatsToFile = false; 
     bool enableColorCodes = true;
     std::vector<std::string> ignoredNicks; 
@@ -200,9 +194,7 @@ struct ServerConfig {
 
 
 struct Config {
-		// Aspell
-	bool enableSpellCheck = false;
-	
+	bool enableSpellCheck = false;	
     bool debugEnable = false;
     std::vector<ServerConfig> servers;
     std::vector<ServerConfig> customServers; 
@@ -282,10 +274,8 @@ void save_config() {
 		
         s["serverListFontSize"] = srv.serverListFontSize;
         s["chatLogFontSize"] = srv.chatLogFontSize;
-        s["userListFontSize"] = srv.userListFontSize;
-        
+        s["userListFontSize"] = srv.userListFontSize;        
 	 
-        // --- ADDED: Server-specific translation settings for default servers ---
         s["enableLiveTranslation"] = srv.enableLiveTranslation;
         s["gemini_api_key"]        = srv.geminiApiKey;
         s["target_language"]       = srv.targetLanguage;
@@ -369,7 +359,6 @@ void save_config() {
         s["chatLogFontSize"] = srv.chatLogFontSize;
         s["userListFontSize"] = srv.userListFontSize;
 
-        // --- ADDED: Server-specific translation settings for custom servers ---
         s["enableLiveTranslation"] = srv.enableLiveTranslation;
         s["gemini_api_key"]        = srv.geminiApiKey;
         s["target_language"]       = srv.targetLanguage;
@@ -425,8 +414,6 @@ void save_config() {
 }
 
 
-
-
 void load_config() {
     ensure_config_dir();
     cfg.enableSpellCheck = true;
@@ -476,10 +463,7 @@ void load_config() {
                 cfg.useCustomDrawFunction = j.value("useCustomDrawFunction", true);
                 cfg.searchEngine = j.value("search_engine", "https://duckduckgo.com");
                 cfg.showUpdateNotifications = j.value("show_update_notifications", true);
-
-                
-                // Parse standard servers array
-                
+               
                 if (j.contains("servers") && j["servers"].is_array()) {
                     for (const auto& s : j["servers"]) {
                         ServerConfig srv;
@@ -507,15 +491,12 @@ void load_config() {
                         srv.useCertFP = s.value("use_certfp", false);
                         srv.certProfileName = s.value("cert_profile_name", "");                        
                         srv.certFileName = s.value("cert_file_name", "");                    
-                        srv.keyFileName = s.value("key_file_name", "");   
-                        
+                        srv.keyFileName = s.value("key_file_name", "");                           
 						
 				        srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
 				        srv.geminiApiKey           = s.value("gemini_api_key", "");
 				        srv.targetLanguage         = s.value("target_language", "French");
-				        srv.geminiModel            = s.value("gemini_model", "gemini-3.5-flash-lite");
-
-                        
+				        srv.geminiModel            = s.value("gemini_model", "gemini-3.5-flash-lite");                        
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
                         srv.userListFontSize   = s.value("userListFontSize", cfg.userListFontSize);
@@ -538,7 +519,7 @@ void load_config() {
                             }
                         }
                         
-                         // --- NEW: DESERIALIZE NICKNAME COLORS ---
+                         // --- DESERIALIZE NICKNAME COLORS ---
                         srv.nickColors.clear();
                         if (s.contains("nick_color_names") && s["nick_color_names"].is_array()) {
                             for (const auto& name : s["nick_color_names"]) {
@@ -579,7 +560,6 @@ void load_config() {
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
                         srv.timestampInterval = s.value("timestampInterval", cfg.timestampInterval);
                         srv.nickAlert = s.value("nick_alert", true);
-
 						srv.backgroundImagePath = s.value("background_image", ""); 
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
@@ -591,8 +571,7 @@ void load_config() {
                         srv.useCertFP = s.value("use_certfp", false);
                         srv.certProfileName = s.value("cert_profile_name", "");
                         srv.certFileName = s.value("cert_file_name", "");                    
-                        srv.keyFileName = s.value("key_file_name", "");   
-                        
+                        srv.keyFileName = s.value("key_file_name", "");                          
                         
                         srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
 				        srv.geminiApiKey           = s.value("gemini_api_key", "");
@@ -621,7 +600,7 @@ void load_config() {
                             }
                         }
                         
-                        // --- NEW: DESERIALIZE NICKNAME COLORS ---
+                        // --- DESERIALIZE NICKNAME COLORS ---
                         srv.nickColors.clear();
                         if (s.contains("nick_color_names") && s["nick_color_names"].is_array()) {
                             for (const auto& name : s["nick_color_names"]) {
@@ -663,15 +642,14 @@ void load_config() {
         BString defaultQuit;
         defaultQuit << "App Quit [" << AppInfo::VERSION_STRING << "]";
         cfg.quitMessage = defaultQuit.String();
-        cfg.awayMessage = "I am away from my computer right now.";
-        
+        cfg.awayMessage = "I am away from my computer right now.";        
        
         srand(static_cast<unsigned int>(real_time_clock_usecs()));
         int randomSuffix = 1000 + (rand() % 9000);
         BString dynamicNick;
         dynamicNick << "HaikuIRCUser" << randomSuffix;
 
-        // 1. RECONSTRUCT LIBERA CHAT DEFAULT PROFILE
+        // 1. LIBERA CHAT DEFAULT PROFILE
         ServerConfig libera;
         libera.name = "Libera Chat";
         libera.host = "irc.libera.chat";
@@ -755,10 +733,10 @@ void load_config() {
         oftc.geminiApiKey = "";
         oftc.targetLanguage = "French";
         oftc.geminiModel = "gemini-3.5-flash-lite";
-       
-        cfg.servers.push_back(oftc);
+               
+        cfg.servers.push_back(oftc);        
         
-        // Immediately commit these clean starting values directly to disk
+
         save_config();
     }
 }
@@ -928,7 +906,7 @@ public:
                 }
 
                 // =========================================================================
-                // CRASH PROTECTION FILTER: VERIFY GOOGLE RETURNED A VALID TRANSLATION
+                // VERIFY GOOGLE RETURNED A VALID TRANSLATION
                 // =========================================================================
                 BString searchToken = "\"text\":\"";
                 int32 startPos = jsonResponse.FindFirst(searchToken);
@@ -1031,7 +1009,7 @@ static int32 BackgroundUpdateChecker(void* data) {
         int32 curMajor = 0, curMinor = 0, curRevision = 0;
         int32 remMajor = 0, remMinor = 0, remRevision = 0;
 
-        // --- Bulletproof sscanf Pattern Matching ---
+        // --- sscanf Pattern Matching ---
         // Looks for a 'v' immediately followed by a number, bypassing words like "HaikuDVR" or "Version"
         if (sscanf(currentVersionStr.String(), "%*[^v]v%d.%d.%d", &curMajor, &curMinor, &curRevision) != 3) {
             // Fallback: search for raw dot-separated numbers anywhere if 'v' isn't found
@@ -1091,10 +1069,6 @@ static int32 BackgroundUpdateChecker(void* data) {
     
     return B_OK;
 }
-
-
-
-
 
 
 
@@ -10881,15 +10855,52 @@ static status_t NetworkLoop(void* data) {
                 continue;
             }
 
-            // Watch raw lines entering display parsing handlers
-            if (cleanLine.IFindFirst("CAP") != B_ERROR || cleanLine.IFindFirst("903") != B_ERROR || cleanLine.IFindFirst("904") != B_ERROR) {
-                if (cfg.debugEnable) printf("[DEBUG_LOOP] [%s] Forwarding to UI Handler -> '%s'\n", targetNode->Text(), cleanLine.String());
+            // =========================================================================
+            // IRC COMMAND TOKEN DECODER (Prevents substring false-positives)
+            // =========================================================================
+            bool isRegistrationLine = false;
+            
+            // IRC format: [ :prefix ] <command> [ params ]
+            int32 commandStart = 0;
+            if (cleanLine.StartsWith(":")) {
+                commandStart = cleanLine.FindFirst(" ");
+                if (commandStart != B_ERROR) {
+                    commandStart++; // Move past the space to the start of the command
+                }
             }
+
+            if (commandStart != B_ERROR && commandStart < cleanLine.Length()) {
+                // Find where the command token ends
+                int32 commandEnd = cleanLine.FindFirst(" ", commandStart);
+                BString commandToken;
+                
+                if (commandEnd != B_ERROR) {
+                    cleanLine.CopyInto(commandToken, commandStart, commandEnd - commandStart);
+                } else {
+                    cleanLine.CopyInto(commandToken, commandStart, cleanLine.Length() - commandStart);
+                }
+
+                // Strictly validate the isolated command token
+                if (commandToken == "CAP" || commandToken == "903" || commandToken == "904") {
+                    isRegistrationLine = true;
+                }
+            }
+
+            if (isRegistrationLine) {
+                if (cfg.debugEnable) printf("[DEBUG_LOOP] [%s] Forwarding to UI Handler -> '%s'\n", targetNode->Text(), cleanLine.String());                
+
+                // If the UI handler drops messages flagged as CAP/903/904,  
+                // explicitly flag this BMessage so the UI window knows, 
+                // it's a registration command or handle it here.
+
+            }
+            // =========================================================================
 
             BMessage* reply = new BMessage(MSG_IRC_RECEIVED);
             reply->AddString("text", cleanLine.String());
             reply->AddPointer("server_node", targetNode);
             window->PostMessage(reply);
+
         }
     }        
      
