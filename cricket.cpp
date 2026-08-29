@@ -144,7 +144,7 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.62 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.63 (Haiku OS)";
 }
 
 
@@ -985,7 +985,11 @@ static int32 BackgroundUpdateChecker(void* data) {
     const char* targetUrl = "https://raw.githubusercontent.com/ablyssx74/cricket/refs/heads/main/VERSION";
 
     BString shellCmdString;
-    shellCmdString.SetToFormat("curl -sL \"%s\"", targetUrl);
+    #if defined(__x86_64__)
+        shellCmdString.SetToFormat("curl -sL \"%s\"", targetUrl);
+    #else
+        shellCmdString.SetToFormat("curl-x86 -sL \"%s\"", targetUrl);
+    #endif
 
     BString remoteVersionStr = "";
     
