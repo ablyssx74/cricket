@@ -2,7 +2,7 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.63
+VERSION = 0.0.64
 REVISION = 1
 
 # --- 2. Architecture & Paths ---

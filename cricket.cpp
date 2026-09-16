@@ -144,7 +144,7 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.63 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.64 (Haiku OS)";
 }
 
 
@@ -984,25 +984,27 @@ static int32 BackgroundUpdateChecker(void* data) {
 
     const char* targetUrl = "https://raw.githubusercontent.com/ablyssx74/cricket/refs/heads/main/VERSION";
 
-    BString shellCmdString;
-    #if defined(__x86_64__)
-        shellCmdString.SetToFormat("curl -sL \"%s\"", targetUrl);
-    #else
-        shellCmdString.SetToFormat("curl-x86 -sL \"%s\"", targetUrl);
-    #endif
-
     BString remoteVersionStr = "";
-    
-    FILE* pipeStream = popen(shellCmdString.String(), "r");
-    if (pipeStream != nullptr) {
-        char buffer[128] = {0};
-        if (fgets(buffer, sizeof(buffer), pipeStream) != nullptr) {
-            remoteVersionStr = buffer;
-        }
-        pclose(pipeStream);
+
+    CURL* curl = curl_easy_init();
+    if (curl != nullptr) {
+        curl_easy_setopt(curl, CURLOPT_URL, targetUrl);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &remoteVersionStr);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Cricket-Update-Checker/1.0");
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+        curl_easy_perform(curl);
+
+        // Intentionally NOT calling curl_easy_cleanup() here: on this build's libcurl,
+        // cleaning up a one-shot handle from a background thread reproducibly hangs
+        // (or crashes) after curl_easy_perform() has already completed successfully.
+        // Leaking a single small handle once per app launch is a fine tradeoff, since
+        // the process reclaims it at exit anyway.
     }
 
-    remoteVersionStr.Trim(); 
+    remoteVersionStr.Trim();
     if (cfg.debugEnable) printf("[DEBUG_UPDATE] Raw text received from GitHub: '%s'\n", remoteVersionStr.String());
 
     if (remoteVersionStr.Length() > 0) {
@@ -14586,7 +14588,15 @@ public:
 };
 
 int main() {
+    // curl_global_init() is not thread-safe against other threads that may already be
+    // running, so it is called explicitly here, once, at the very start of main() --
+    // this avoids an implicit lazy global init racing with the background update
+    // checker thread (or any other libcurl user) started later.
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
     Cricket app;
     app.Run();
+
+    curl_global_cleanup();
     return 0;
 }
