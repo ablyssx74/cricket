@@ -144,7 +144,7 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.64 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.65 (Haiku OS)";
 }
 
 
@@ -996,12 +996,7 @@ static int32 BackgroundUpdateChecker(void* data) {
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
         curl_easy_perform(curl);
-
-        // Intentionally NOT calling curl_easy_cleanup() here: on this build's libcurl,
-        // cleaning up a one-shot handle from a background thread reproducibly hangs
-        // (or crashes) after curl_easy_perform() has already completed successfully.
-        // Leaking a single small handle once per app launch is a fine tradeoff, since
-        // the process reclaims it at exit anyway.
+        curl_easy_cleanup(curl);
     }
 
     remoteVersionStr.Trim();
