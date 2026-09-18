@@ -46,7 +46,6 @@
 #include <PopUpMenu.h>
 #include <Roster.h>
 #include <ScrollView.h>
-#include <SecureSocket.h>
 #include <SeparatorView.h>
 #include <Slider.h> 
 #include <Socket.h>
@@ -70,6 +69,7 @@
 #include <openssl/ssl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
 
@@ -144,7 +144,7 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.65 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.66 (Haiku OS)";
 }
 
 
@@ -201,7 +201,7 @@ struct Config {
     int32 serverListFontSize = 12;
     int32 chatLogFontSize = 12;
     int32 userListFontSize = 12;
-    std::string quitMessage = "Quit: " + std::string(AppInfo::VERSION_STRING); 
+    std::string quitMessage = std::string(AppInfo::VERSION_STRING);
     std::string awayMessage = "I am away from my computer right now."; 
     bool useCustomDrawFunction = true;
     int32 timestampInterval = 30;
@@ -437,21 +437,32 @@ void load_config() {
                 json j = json::parse(infile);
                 
 
-                BString savedQuit = j.value("quitMessage", "App Quit").c_str();
-                
+                BString savedQuit = j.value("quitMessage", "").c_str();
+
                 int32 legacyColonIdx = savedQuit.FindFirst(": Cricket IRC Client");
                 if (legacyColonIdx != B_ERROR) {
                     savedQuit.Truncate(legacyColonIdx);
                 }
-                
+
                 int32 legacyBracketIdx = savedQuit.FindFirst(" [Cricket IRC Client");
                 if (legacyBracketIdx != B_ERROR) {
                     savedQuit.Truncate(legacyBracketIdx);
                 }
                 savedQuit.Trim();
-                
+
+                // Migrate old installs whose saved reason is just the leftover word
+                // "Quit"/"Quit:" (a prior default) -- otherwise it reads "Quit [version]",
+                // redundantly restating that this is a quit message.
+                if (savedQuit.ICompare("Quit") == 0 || savedQuit.ICompare("Quit:") == 0) {
+                    savedQuit = "";
+                }
+
                 BString finalQuitMsg;
-                finalQuitMsg << savedQuit << " [" << AppInfo::VERSION_STRING << "]";
+                if (savedQuit.Length() > 0) {
+                    finalQuitMsg << savedQuit << " [" << AppInfo::VERSION_STRING << "]";
+                } else {
+                    finalQuitMsg << "[" << AppInfo::VERSION_STRING << "]";
+                }
                 cfg.quitMessage = finalQuitMsg.String();
 
                 cfg.awayMessage = j.value("awayMessage", "I am away from my computer right now.");
@@ -3350,7 +3361,7 @@ struct ChannelDataRecord {
 
 class IRCChannelListWindow : public BWindow {
 public:
-    IRCChannelListWindow(BWindow* owner, BSecureSocket* targetSocket, ServerTreeItem* serverItem, IRCChannelListWindow** tracker) 
+    IRCChannelListWindow(BWindow* owner, BNetEndpoint* targetSocket, ServerTreeItem* serverItem, IRCChannelListWindow** tracker)
         : BWindow(BRect(150, 150, 800, 650), "Network Channel List", 
                   B_DOCUMENT_WINDOW, B_ASYNCHRONOUS_CONTROLS) {
 
@@ -3384,13 +3395,13 @@ public:
                 SSL_write(activeSslHandle, "LIST\r\n", 6);
             } else if (fSocket != nullptr) {
                 // Flat native fallback path for unmanaged legacy connections
-                fSocket->Write("LIST\r\n", 6);
+                fSocket->Send("LIST\r\n", 6);
             }
         }
         // =========================================================================
     }
 
-    BSecureSocket* GetTargetSocket() const { return fSocket; }
+    BNetEndpoint* GetTargetSocket() const { return fSocket; }
     ServerTreeItem* GetServerContext() const { return fServerContext; }
     
     void FrameResized(float newWidth, float newHeight) override {
@@ -3546,7 +3557,7 @@ public:
                         if (activeSslHandle != nullptr) {
                             SSL_write(activeSslHandle, joinCmd.String(), joinCmd.Length());
                         } else if (fSocket != nullptr) {
-                            fSocket->Write(joinCmd.String(), joinCmd.Length());
+                            fSocket->Send(joinCmd.String(), joinCmd.Length());
                         }
                         // =========================================================================
                         
@@ -3602,7 +3613,7 @@ private:
     BWindow*                      fOwnerWindow;
     BListView*                    fListView;
     BTextControl*                 fFilterControl; 
-    BSecureSocket*                fSocket;
+    BNetEndpoint*                 fSocket;
     ServerTreeItem*               fServerContext; 
     IRCChannelListWindow**        fTracker;
     std::vector<ChannelDataRecord> fMasterRecords; 
@@ -6760,12 +6771,39 @@ public:
         BString quitPayload;
         quitPayload << "QUIT :" << cfg.quitMessage.c_str() << "\r\n";
 
-        std::vector<std::pair<thread_id, BSecureSocket*>> shutdownSnapshot;
+        std::vector<std::pair<thread_id, BNetEndpoint*>> shutdownSnapshot;
         
         Lock();
         for (auto const& [serverNode, socketPtr] : fServerSockets) {
             if (socketPtr != nullptr) {
-                socketPtr->Write(quitPayload.String(), quitPayload.Length());
+                SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(serverNode)];
+                if (activeSslHandle != nullptr) {
+                    ssize_t written = SSL_write(activeSslHandle, quitPayload.String(), quitPayload.Length());
+                    if (cfg.debugEnable) {
+                        printf("[DEBUG_QUIT] [%s] SSL_write wrote %ld of %d bytes: %s",
+                               serverNode->Text(), (long)written, quitPayload.Length(), quitPayload.String());
+                    }
+                } else {
+                    ssize_t written = socketPtr->Send(quitPayload.String(), quitPayload.Length());
+                    if (cfg.debugEnable) {
+                        printf("[DEBUG_QUIT] [%s] socket Send wrote %ld of %d bytes: %s",
+                               serverNode->Text(), (long)written, quitPayload.Length(), quitPayload.String());
+                    }
+                }
+
+                // Half-close the write side now, instead of a full close a moment later:
+                // if there's still unread inbound data sitting in this socket's receive
+                // buffer when we hard-close it (very likely -- the reader thread is still
+                // alive and other users' traffic/PINGs keep arriving), the kernel sends a
+                // RST instead of a clean FIN, and that RST discards the QUIT bytes we just
+                // wrote before the peer ever sees them. Closing only the write side lets
+                // the QUIT go out as a proper FIN without racing that unread data.
+                int rawFd = gServerRawSockets.count(static_cast<void*>(serverNode)) > 0
+                                ? gServerRawSockets[static_cast<void*>(serverNode)] : -1;
+                if (rawFd >= 0) {
+                    shutdown(rawFd, SHUT_WR);
+                }
+
                 thread_id tid = (fServerThreads.count(serverNode) > 0) ? fServerThreads[serverNode] : -1;
                 shutdownSnapshot.push_back({tid, socketPtr});
             }
@@ -6778,7 +6816,7 @@ public:
         // 2. Disconnect all sockets to tell the threads to drop out of their loops
         for (auto const& [tid, socketPtr] : shutdownSnapshot) {
             if (socketPtr != nullptr) {
-                socketPtr->Disconnect(); 
+                socketPtr->Close();
             }
         }
 
@@ -8082,10 +8120,10 @@ private:
                 BString syncWho; syncWho << "WHO " << channelJoined << "\r\n";
                 SSL_write(activeSslHandle, syncWho.String(), syncWho.Length());
             } else {
-                BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                BNetEndpoint* activeSocket = GetActiveSocket(contextServer);
                 if (activeSocket != nullptr) {
                     BString syncWho; syncWho << "WHO " << channelJoined << "\r\n";
-                    activeSocket->Write(syncWho.String(), syncWho.Length());
+                    activeSocket->Send(syncWho.String(), syncWho.Length());
                 }
             }
 
@@ -8152,10 +8190,10 @@ private:
                             BString autoOpPayload; autoOpPayload << "MODE " << channelJoined << " +o " << userWhoJoined << "\r\n";
                             SSL_write(activeSslHandle, autoOpPayload.String(), autoOpPayload.Length());
                         } else {
-                            BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                            BNetEndpoint* activeSocket = GetActiveSocket(contextServer);
                             if (activeSocket != nullptr) {
                                 BString autoOpPayload; autoOpPayload << "MODE " << channelJoined << " +o " << userWhoJoined << "\r\n";
-                                activeSocket->Write(autoOpPayload.String(), autoOpPayload.Length());
+                                activeSocket->Send(autoOpPayload.String(), autoOpPayload.Length());
                             }
                         }
                     }
@@ -8587,7 +8625,7 @@ private:
         if (command == "432") {
             if (contextServer == nullptr) return;
 
-            BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+            BNetEndpoint* activeSocket = GetActiveSocket(contextServer);
             if (activeSocket != nullptr) {
                 // Generate a randomized guest name configuration as an emergency fallback
                 uint32 randomSeed = static_cast<uint32>(real_time_clock_usecs() & 0xFFFF);
@@ -8599,7 +8637,7 @@ private:
 
                 BString nickCmd;
                 nickCmd << "NICK " << emergencyNick << "\r\n";
-                activeSocket->Write(nickCmd.String(), nickCmd.Length());
+                activeSocket->Send(nickCmd.String(), nickCmd.Length());
 
                 BStringItem* serverLogNode = FindServerLogNode(contextServer);
                 BString itemNotice = "--- Illegal or blocked nickname encountered! Falling back onto emergency label: ";
@@ -8866,10 +8904,10 @@ private:
                            contextServer->Text());
                 } else {
                     // Legacy unmanaged socket fallback path
-                    BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                    BNetEndpoint* activeSocket = GetActiveSocket(contextServer);
                     if (activeSocket != nullptr) {
-                        activeSocket->Write(nickPayload.String(), nickPayload.Length());
-                        activeSocket->Write(capReleasePayload.String(), capReleasePayload.Length());
+                        activeSocket->Send(nickPayload.String(), nickPayload.Length());
+                        activeSocket->Send(capReleasePayload.String(), capReleasePayload.Length());
                     }
                 }
 
@@ -9065,9 +9103,9 @@ private:
                     if (activeSslHandle != nullptr && activeFd >= 0) {
                         SSL_write(activeSslHandle, joinCommand.String(), joinCommand.Length());
                     } else {
-                        BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                        BNetEndpoint* activeSocket = GetActiveSocket(contextServer);
                         if (activeSocket != nullptr) {
-                            activeSocket->Write(joinCommand.String(), joinCommand.Length());
+                            activeSocket->Send(joinCommand.String(), joinCommand.Length());
                         }
                     }
                     
@@ -9120,9 +9158,9 @@ private:
                     if (activeSslHandle != nullptr && activeFd >= 0) {
                         SSL_write(activeSslHandle, rawCommand.String(), rawCommand.Length());
                     } else {
-                        BSecureSocket* activeSocket = GetActiveSocket(contextServer);
+                        BNetEndpoint* activeSocket = GetActiveSocket(contextServer);
                         if (activeSocket != nullptr) {
-                            activeSocket->Write(rawCommand.String(), rawCommand.Length());
+                            activeSocket->Send(rawCommand.String(), rawCommand.Length());
                         }
                     }
                     
@@ -9188,7 +9226,7 @@ private:
 
             if (targetWindow != nullptr) {
                 // FIX 2: FETCH THE ACTIVE NETWORK PIPELINE STREAM SOCKET SECURELY
-                BSecureSocket* activeNetworkSocket = nullptr;
+                BNetEndpoint* activeNetworkSocket = nullptr;
                 if (fServerSockets.count(contextServer) > 0) {
                     activeNetworkSocket = fServerSockets[contextServer];
                 } else if (contextServer == fOftcNode) {
@@ -9496,13 +9534,19 @@ private:
         // Live PART & QUIT Handlers (Safely removes users dynamically when they depart or disconnect)
         if (command == "PART" || command == "QUIT") {
             if (contextServer == nullptr) return;
-            
+
             BString userWhoLeft = prefix;
             int32 exclamIdx = userWhoLeft.FindFirst("!");
             if (exclamIdx != B_ERROR) userWhoLeft.Truncate(exclamIdx);
-            
-	       // // WILDCARD IGNORE FUNCTION 
-           
+
+            if (cfg.debugEnable) {
+                printf("[DEBUG_QUITPART] [%s] command=%s prefix='%s' userWhoLeft='%s' line='%s' trailing='%s'\n",
+                       contextServer->Text(), command.String(), prefix.String(), userWhoLeft.String(),
+                       line.String(), trailing.String());
+            }
+
+	       // // WILDCARD IGNORE FUNCTION
+
 	       if (userWhoLeft.Length() > 0 && !contextServer->fRuntimeIgnoreList.empty()) {
 	           bool shouldDrop = false;
 	           for (const auto& ignoredNick : contextServer->fRuntimeIgnoreList) {
@@ -9512,6 +9556,10 @@ private:
 	               }
 	           }
 	           if (shouldDrop) {
+	               if (cfg.debugEnable) {
+	                   printf("[DEBUG_QUITPART] [%s] DROPPED '%s' -- matched an entry in fRuntimeIgnoreList\n",
+	                          contextServer->Text(), userWhoLeft.String());
+	               }
 	               return; // SILENTLY DROP PACKET PAYLOAD MESSAGES
 	           }
 	       }
@@ -9523,6 +9571,8 @@ private:
             // Clean out everything after the first space to isolate the channel name
             int32 spacePos = targetChannel.FindFirst(" ");
             if (spacePos != B_ERROR) targetChannel.Truncate(spacePos);
+
+            bool matchedAnyUser = false;
 
             // Safe Haiku BOutlineListView Sub-Item Traversal
             int32 totalTreeItems = fChannelTree->CountItems();
@@ -9570,7 +9620,8 @@ private:
                             itemTxt.Remove(0, 1);
                         }
                         
-                        if (itemTxt == userWhoLeft) {
+                        if (itemTxt.ICompare(userWhoLeft) == 0) {
+                            matchedAnyUser = true;
                             // Using RemoveItemAt(i) for indexed loop as per BObjectList API.
                             // Since the list is "Owning" (true), this automatically calls delete for you.
                             userVector->RemoveItemAt(i);
@@ -9607,11 +9658,17 @@ private:
                                 RefreshUserListUI();
                             }
                             
-                            if (command == "PART") break; 
+                            if (command == "PART") break;
                         }
                     }
                 }
             }
+
+            if (cfg.debugEnable && !matchedAnyUser) {
+                printf("[DEBUG_QUITPART] [%s] '%s' matched no user in any tracked channel list -- notice was NOT displayed\n",
+                       contextServer->Text(), userWhoLeft.String());
+            }
+
             return;
         }
 
@@ -10757,12 +10814,12 @@ static status_t NetworkLoop(void* data) {
 
 
     window->Lock(); 
-    window->fServerSockets[targetNode] = reinterpret_cast<BSecureSocket*>(localSocket);
+    window->fServerSockets[targetNode] = localSocket;
     gServerSslHandles[static_cast<void*>(targetNode)] = globalSslHandle;
     gServerRawSockets[static_cast<void*>(targetNode)] = localSocket->Socket();
     
-    if (targetNode == window->fLiberaNode) window->fLiberaSocket = reinterpret_cast<BSecureSocket*>(localSocket);
-    if (targetNode == window->fOftcNode)   window->fOftcSocket = reinterpret_cast<BSecureSocket*>(localSocket);
+    if (targetNode == window->fLiberaNode) window->fLiberaSocket = localSocket;
+    if (targetNode == window->fOftcNode)   window->fOftcSocket = localSocket;
     window->Unlock();
 
       // 4. Outbound Handshake Registrations
@@ -12669,11 +12726,11 @@ public:
                         SSL_write(activeSslHandle, quitPayload.String(), quitPayload.Length());
                     } else {
                         BString quitPayload = "QUIT :Disconnecting from client\r\n";
-                        fServerSockets[srvItem]->Write(quitPayload.String(), quitPayload.Length());
+                        fServerSockets[srvItem]->Send(quitPayload.String(), quitPayload.Length());
                     }
                     
                     // 2. Forcefully close the network pipe descriptor to wake up background loops
-                    fServerSockets[srvItem]->Disconnect();
+                    fServerSockets[srvItem]->Close();
                     
                     // =========================================================================
                     //  INSTANT COMPREHENSIVE MAP PURGE (PREVENTS RACING CONTEXT MENUS)
@@ -12732,13 +12789,13 @@ public:
                 // 1. Thread Cleanup Stage (No blocking wait loops inside UI lock space)
                 Lock();
                 thread_id tid = (fServerThreads.count(srvItem) > 0) ? fServerThreads[srvItem] : -1;
-                BSecureSocket* socketPtr = (fServerSockets.count(srvItem) > 0) ? fServerSockets[srvItem] : nullptr;
+                BNetEndpoint* socketPtr = (fServerSockets.count(srvItem) > 0) ? fServerSockets[srvItem] : nullptr;
                 
                 if (socketPtr != nullptr) {
                     BString quitPayload;
                     quitPayload << "QUIT :Server entry deleted by user\r\n";
-                    socketPtr->Write(quitPayload.String(), quitPayload.Length());
-                    socketPtr->Disconnect(); 
+                    socketPtr->Send(quitPayload.String(), quitPayload.Length());
+                    socketPtr->Close(); 
                 }
 
                 // Clean the internal key trackers immediately to prevent reuse conflicts
@@ -12897,9 +12954,9 @@ public:
                 SSL_write(activeSslHandle, partCmd.String(), partCmd.Length());
             } else {
                 // Fallback for unmanaged sockets
-                BSecureSocket* activeSocket = GetActiveSocket(parentServer);
+                BNetEndpoint* activeSocket = GetActiveSocket(parentServer);
                 if (activeSocket != nullptr) {
-                    activeSocket->Write(partCmd.String(), partCmd.Length());
+                    activeSocket->Send(partCmd.String(), partCmd.Length());
                 }
             }
         }
@@ -13227,7 +13284,7 @@ public:
                 
                 // MULTI-SERVER: Trust dynamic socket array map completely. 
                 // This cleanly accommodates unlimited concurrent custom network servers!
-                BSecureSocket* activeSocket = nullptr;
+                BNetEndpoint* activeSocket = nullptr;
                 auto it = fServerSockets.find(serverItem);
                 if (it != fServerSockets.end()) {
                     activeSocket = it->second;
@@ -13857,7 +13914,7 @@ public:
                 }
                 
                 // 2. MULTI-SERVER: Trust dynamic socket array map completely
-                BSecureSocket* activeSocket = nullptr;
+                BNetEndpoint* activeSocket = nullptr;
                 if (contextServer != nullptr) {
                     auto it = fServerSockets.find(contextServer);
                     if (it != fServerSockets.end()) {
@@ -14043,7 +14100,7 @@ public:
                             }
                         } else if (activeSocket != nullptr) {
                             // Legacy native path for unmanaged stock connections
-                            activeSocket->Write(rawPayload.String(), rawPayload.Length());
+                            activeSocket->Send(rawPayload.String(), rawPayload.Length());
                         }
 
                         if (cfg.debugEnable) {
@@ -14342,7 +14399,7 @@ private:
 
 	
 	
-	BSecureSocket*
+	BNetEndpoint*
 	GetActiveSocket(ServerTreeItem* contextServer)
 	{
 	    if (contextServer == nullptr)
@@ -14489,7 +14546,7 @@ private:
 	    std::map<BStringItem*, BObjectList<UserListItem, true>*> fChannelUsers;
 	    std::map<BStringItem*, bigtime_t> fLastTimestampTime;
 	    std::map<ServerTreeItem*, thread_id> fServerThreads;
-	    std::map<ServerTreeItem*, BSecureSocket*> fServerSockets;
+	    std::map<ServerTreeItem*, BNetEndpoint*> fServerSockets;
 		std::map<ServerTreeItem*, int32> fNickAttempts;
 	
 		BTextControl*     fTopicView;
@@ -14499,8 +14556,8 @@ private:
 	    
 	    thread_id         fLiberaThread;
 	    thread_id         fOftcThread;
-	    BSecureSocket*    fLiberaSocket;
-	    BSecureSocket*    fOftcSocket;
+	    BNetEndpoint*     fLiberaSocket;
+	    BNetEndpoint*     fOftcSocket;
 	    
 	    IRCChannelListWindow* fActiveListWindow;
 	
