@@ -1,0 +1,23 @@
+PortMapper.cpp / PortMapper.h were staged from HiShare:
+  https://github.com/atomozero/HiShare
+
+Per HiShare's LICENSE file:
+
+  HiShare is the modernized edition of BeShare 3.04 by Jeremy Friesner.
+
+  1. BeShare / HiShare application code (source/hishare/*, excluding the
+     santa/ subdirectory)
+
+     The original BeShare code was placed in the public domain by its
+     author, Jeremy Friesner (1999-2012). The HiShare modernization (2026,
+     atomozero) is likewise released into the public domain: do with it
+     what you want.
+
+PortMapper.cpp/.h fall under that application-code grant (they are not part
+of HiShare's vendored MUSCLE library), so they are public domain.
+
+Not yet wired into cricket -- staged here ahead of the DCC/NAT-traversal
+work. Still to resolve before it compiles as part of cricket: PortMapper's
+public interface uses muscle::String (from MUSCLE's util/String.h) rather
+than Haiku's BString, which would need to either be adapted to BString or
+have that one MUSCLE utility header/source pulled in alongside it.
