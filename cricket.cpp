@@ -144,7 +144,7 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.66 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.67 (Haiku OS)";
 }
 
 
@@ -153,11 +153,14 @@ using json = nlohmann::json;
 const std::string DEFAULT_BG_PATH = "";
 
 struct ServerConfig {
-    bool enableLiveTranslation = false;
+    bool enableInboundTranslation = false;
     std::string geminiApiKey = "";
     std::string geminiModel = "gemini-3.5-flash-lite";
     std::string sourceLanguage = "Auto-Detect";
     std::string targetLanguage = "French";    //
+    bool enableOutboundTranslation = false;
+    std::string outboundTargetLanguage = "French";
+    bool autoSendTranslatedOutbound = false;
     std::string name;
     std::string host;
     uint16 port;
@@ -276,10 +279,13 @@ void save_config() {
         s["chatLogFontSize"] = srv.chatLogFontSize;
         s["userListFontSize"] = srv.userListFontSize;        
 	 
-        s["enableLiveTranslation"] = srv.enableLiveTranslation;
+        s["enableLiveTranslation"] = srv.enableInboundTranslation;
         s["gemini_api_key"]        = srv.geminiApiKey;
         s["target_language"]       = srv.targetLanguage;
         s["gemini_model"]          = srv.geminiModel;
+        s["enableOutboundTranslation"]     = srv.enableOutboundTranslation;
+        s["outbound_target_language"]      = srv.outboundTargetLanguage;
+        s["auto_send_translated_outbound"] = srv.autoSendTranslatedOutbound;
 
         json ajArray = json::array();
         for (const auto& chan : srv.autojoin) {
@@ -359,10 +365,13 @@ void save_config() {
         s["chatLogFontSize"] = srv.chatLogFontSize;
         s["userListFontSize"] = srv.userListFontSize;
 
-        s["enableLiveTranslation"] = srv.enableLiveTranslation;
+        s["enableLiveTranslation"] = srv.enableInboundTranslation;
         s["gemini_api_key"]        = srv.geminiApiKey;
         s["target_language"]       = srv.targetLanguage;
         s["gemini_model"]          = srv.geminiModel;
+        s["enableOutboundTranslation"]     = srv.enableOutboundTranslation;
+        s["outbound_target_language"]      = srv.outboundTargetLanguage;
+        s["auto_send_translated_outbound"] = srv.autoSendTranslatedOutbound;
 
         json ajArray = json::array();
         for (const auto& chan : srv.autojoin) {
@@ -504,10 +513,13 @@ void load_config() {
                         srv.certFileName = s.value("cert_file_name", "");                    
                         srv.keyFileName = s.value("key_file_name", "");                           
 						
-				        srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
+				        srv.enableInboundTranslation = s.value("enableLiveTranslation", false);
 				        srv.geminiApiKey           = s.value("gemini_api_key", "");
 				        srv.targetLanguage         = s.value("target_language", "French");
-				        srv.geminiModel            = s.value("gemini_model", "gemini-3.5-flash-lite");                        
+				        srv.geminiModel            = s.value("gemini_model", "gemini-3.5-flash-lite");
+				        srv.enableOutboundTranslation  = s.value("enableOutboundTranslation", false);
+				        srv.outboundTargetLanguage     = s.value("outbound_target_language", "French");
+				        srv.autoSendTranslatedOutbound = s.value("auto_send_translated_outbound", false);
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
                         srv.userListFontSize   = s.value("userListFontSize", cfg.userListFontSize);
@@ -584,10 +596,13 @@ void load_config() {
                         srv.certFileName = s.value("cert_file_name", "");                    
                         srv.keyFileName = s.value("key_file_name", "");                          
                         
-                        srv.enableLiveTranslation = s.value("enableLiveTranslation", false);
+                        srv.enableInboundTranslation = s.value("enableLiveTranslation", false);
 				        srv.geminiApiKey           = s.value("gemini_api_key", "");
 				        srv.targetLanguage         = s.value("target_language", "French");
 				        srv.geminiModel            = s.value("gemini_model", "gemini-3.5-flash-lite");
+				        srv.enableOutboundTranslation  = s.value("enableOutboundTranslation", false);
+				        srv.outboundTargetLanguage     = s.value("outbound_target_language", "French");
+				        srv.autoSendTranslatedOutbound = s.value("auto_send_translated_outbound", false);
 				        
                         srv.serverListFontSize = s.value("serverListFontSize", cfg.serverListFontSize);
                         srv.chatLogFontSize    = s.value("chatLogFontSize", cfg.chatLogFontSize);
@@ -697,10 +712,13 @@ void load_config() {
         libera.chatLogFontSize    = cfg.chatLogFontSize;
         libera.userListFontSize   = cfg.userListFontSize;           
          
-        libera.enableLiveTranslation = false;
+        libera.enableInboundTranslation = false;
         libera.geminiApiKey = "";
         libera.targetLanguage = "French";
         libera.geminiModel = "gemini-3.5-flash-lite";
+        libera.enableOutboundTranslation = false;
+        libera.outboundTargetLanguage = "French";
+        libera.autoSendTranslatedOutbound = false;
         
         cfg.servers.push_back(libera);
 
@@ -740,10 +758,13 @@ void load_config() {
         oftc.chatLogFontSize    = cfg.chatLogFontSize;
         oftc.userListFontSize   = cfg.userListFontSize;
         
-        oftc.enableLiveTranslation = false;
+        oftc.enableInboundTranslation = false;
         oftc.geminiApiKey = "";
         oftc.targetLanguage = "French";
         oftc.geminiModel = "gemini-3.5-flash-lite";
+        oftc.enableOutboundTranslation = false;
+        oftc.outboundTargetLanguage = "French";
+        oftc.autoSendTranslatedOutbound = false;
                
         cfg.servers.push_back(oftc);        
         
@@ -768,7 +789,9 @@ using namespace BPrivate::Network;
 
 enum {
     MSG_TRANSLATE_LINE_QUEUE = 'TLQU',
-    MSG_TRANSLATION_COMPLETE = 'TRCO'
+    MSG_TRANSLATION_COMPLETE = 'TRCO',
+    MSG_TRANSLATE_OUTBOUND_QUEUE = 'TLOQ',
+    MSG_OUTBOUND_TRANSLATION_COMPLETE = 'TROC'
 };
 
 class GeminiTranslationService : public BLooper {
@@ -968,6 +991,141 @@ public:
                 if (cfg.debugEnable) printf("[GeminiDebug] ==================================================\n");
                 break;
 
+            }
+
+            // =========================================================================
+            // --- TRANSLATOR RUNTIME: OUTBOUND (WHAT-YOU-TYPE) TRANSLATION ---
+            // =========================================================================
+            case MSG_TRANSLATE_OUTBOUND_QUEUE: {
+                if (cfg.debugEnable) {
+                    printf("\n[GeminiDebug] ==================================================\n");
+                    printf("[GeminiDebug] Outbound Pipeline Triggered: Processing typed message for translation.\n");
+                }
+
+                BString originalText;
+                BString targetName;
+                void* nodePtr = nullptr;
+                void* configPtr = nullptr;
+                void* looperPtr = nullptr;
+                bool autoSend = false;
+
+                if (message->FindString("original_text", &originalText) != B_OK ||
+                    message->FindString("target_name", &targetName) != B_OK ||
+                    message->FindPointer("server_node", &nodePtr) != B_OK ||
+                    message->FindPointer("server_config", &configPtr) != B_OK ||
+                    message->FindPointer("window_looper", &looperPtr) != B_OK) {
+                    if (cfg.debugEnable) printf("[GeminiDebug] CRITICAL ERROR: Failed to unpack outbound tracking parameters from BMessage container!\n");
+                    break;
+                }
+                message->FindBool("auto_send", &autoSend);
+
+                BLooper* targetLooper = static_cast<BLooper*>(looperPtr);
+                ServerConfig* srv = static_cast<ServerConfig*>(configPtr);
+
+                std::string srvModel  = srv->geminiModel;
+                std::string outLang   = srv->outboundTargetLanguage;
+                std::string srvApiKey = srv->geminiApiKey;
+
+                BString msgPayload = originalText;
+                msgPayload.ReplaceAll("\r", " ");
+                msgPayload.ReplaceAll("\n", " ");
+                msgPayload.ReplaceAll("\"", "\\\"");
+
+                BString jsonPayload;
+                jsonPayload << "{\n"
+                            << "  \"contents\": [{\n"
+                            << "    \"parts\": [{\n"
+                            << "      \"text\": \"" << msgPayload << "\"\n"
+                            << "    }]\n"
+                            << "  }],\n"
+                            << "  \"systemInstruction\": {\n"
+                            << "    \"parts\": [{\n"
+                            << "      \"text\": \"Translate the input chat message to " << outLang.c_str() << ". Keep the tone identical. Respond ONLY with the translation.\"\n"
+                            << "    }]\n"
+                            << "  }\n"
+                            << "}";
+
+                if (cfg.debugEnable) {
+                    printf("[GeminiDebug] Outbound Target Translation Language: %s\n", outLang.c_str());
+                    printf("[GeminiDebug] Assembled Outbound JSON Body Payload Data Block:\n%s\n", jsonPayload.String());
+                }
+
+                BString jsonResponse = "";
+
+                CURL* curl = curl_easy_init();
+                if (curl != nullptr) {
+                    struct curl_slist* headers = nullptr;
+
+                    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+                    BString authHeader = "x-goog-api-key: ";
+                    authHeader << srvApiKey.c_str();
+                    headers = curl_slist_append(headers, authHeader.String());
+
+                    BString targetUrl = "https://generativelanguage.googleapis.com/v1beta/models/";
+                    targetUrl << srvModel.c_str() << ":generateContent";
+
+                    curl_easy_setopt(curl, CURLOPT_URL, targetUrl.String());
+                    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+                    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+
+                    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonPayload.String());
+                    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, jsonPayload.Length());
+
+                    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCallback);
+                    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &jsonResponse);
+
+                    CURLcode res = curl_easy_perform(curl);
+                    if (res != CURLE_OK) {
+                        if (cfg.debugEnable) printf("[GeminiDebug] Native libcurl Socket Connection Error: %s\n", curl_easy_strerror(res));
+                    }
+
+                    curl_slist_free_all(headers);
+                    curl_easy_cleanup(curl);
+                } else {
+                    if (cfg.debugEnable) printf("[GeminiDebug] CRITICAL ERROR: libcurl subsystem failed to initialize library handles!\n");
+                }
+
+                if (cfg.debugEnable) printf("[GeminiDebug] Raw Outbound Network JSON Response block received from Google:\n%s\n", jsonResponse.String());
+
+                BString translatedText;
+                bool success = false;
+
+                if (jsonResponse.Length() > 0) {
+                    BString searchToken = "\"text\":\"";
+                    int32 startPos = jsonResponse.FindFirst(searchToken);
+
+                    if (startPos == B_ERROR) {
+                        searchToken = "\"text\": \"";
+                        startPos = jsonResponse.FindFirst(searchToken);
+                    }
+
+                    if (startPos != B_ERROR) {
+                        startPos += searchToken.Length();
+                        int32 endPos = jsonResponse.FindFirst('"', startPos);
+                        if (endPos != B_ERROR) {
+                            jsonResponse.CopyInto(translatedText, startPos, endPos - startPos);
+                            translatedText.ReplaceAll("\\\"", "\"");
+                            success = true;
+                        }
+                    }
+                }
+
+                if (cfg.debugEnable) {
+                    printf("[GeminiDebug] Outbound translation %s.\n", success ? "SUCCEEDED" : "FAILED (likely a quota limit or parsing error)");
+                    printf("[GeminiDebug] ==================================================\n");
+                }
+
+                BMessage reply(MSG_OUTBOUND_TRANSLATION_COMPLETE);
+                reply.AddBool("success", success);
+                reply.AddString("original_text", originalText);
+                reply.AddString("target_name", targetName);
+                reply.AddBool("auto_send", autoSend);
+                reply.AddPointer("server_node", nodePtr);
+                if (success) reply.AddString("translated_text", translatedText);
+
+                targetLooper->PostMessage(&reply);
+                break;
             }
 
             default:
@@ -4366,10 +4524,10 @@ public:
         translatorTab->SetName("Translator");
 
         // 1. Live Translation Toggle Checkbox
-        fEnableLiveTranslationCheck = new BCheckBox("enable_live_translation", 
-            "Enable Real-Time Live AI Translation", new BMessage('tltg'));
+        fEnableLiveTranslationCheck = new BCheckBox("enable_live_translation",
+            "Enable Real-Time Live AI Inbound Translation", new BMessage('tltg'));
         // UPDATED: Now pulls right out of your active server structural references
-        fEnableLiveTranslationCheck->SetValue(srv.enableLiveTranslation ? B_CONTROL_ON : B_CONTROL_OFF);
+        fEnableLiveTranslationCheck->SetValue(srv.enableInboundTranslation ? B_CONTROL_ON : B_CONTROL_OFF);
         fEnableLiveTranslationCheck->SetToolTip("Automatically translates incoming chat foreign languages to your chosen language.");
 
         // 2. Gemini API Key Input Field
@@ -4424,6 +4582,35 @@ public:
         }
         fLanguageMenuField = new BMenuField("lang_field", "Target Language:", langPopUp);
 
+        // 3c. Outbound Translation Toggle Checkbox
+        fEnableOutboundTranslationCheck = new BCheckBox("enable_outbound_translation",
+            "Enable Real-Time Live AI Outbound Translation", new BMessage('tlog'));
+        fEnableOutboundTranslationCheck->SetValue(srv.enableOutboundTranslation ? B_CONTROL_ON : B_CONTROL_OFF);
+        fEnableOutboundTranslationCheck->SetToolTip("Translates what you type into the language below before it's sent. "
+            "By default the translation is placed in the input box for you to review or edit before sending; "
+            "enable auto-send below to skip that step.");
+
+        // 3d. Outbound Target Language Picker Dropdown List (shares the same language list as inbound)
+        BPopUpMenu* outboundLangPopUp = new BPopUpMenu("outbound_lang_popup");
+        for (int i = 0; i < 17; i++) {
+            BMessage* outLangMsg = new BMessage('tolg');
+            outLangMsg->AddString("language", languages[i]);
+            BMenuItem* outLangItem = new BMenuItem(languages[i], outLangMsg);
+
+            if (srv.outboundTargetLanguage == languages[i]) {
+                outLangItem->SetMarked(true);
+            }
+            outboundLangPopUp->AddItem(outLangItem);
+        }
+        fOutboundLanguageMenuField = new BMenuField("outbound_lang_field", "Outgoing Target Language:", outboundLangPopUp);
+
+        // 3e. Auto-Send Translated Outgoing Messages Checkbox
+        fAutoSendTranslatedCheck = new BCheckBox("auto_send_translated",
+            "Automatically Send Translated Outgoing Messages (skip review)", new BMessage('tlas'));
+        fAutoSendTranslatedCheck->SetValue(srv.autoSendTranslatedOutbound ? B_CONTROL_ON : B_CONTROL_OFF);
+        fAutoSendTranslatedCheck->SetToolTip("When off (default), the translated text is placed in the input box "
+            "for you to review or edit before sending. When on, the translation is sent immediately with no review step.");
+
         // 4. User Helper / Instructions Text Notice
         BStringView* studioLinkNotice = new BStringView("studio_notice", 
             "💡 You can generate an API key for free at: https://aistudio.google.com/api-keys");
@@ -4451,6 +4638,15 @@ public:
                 .Add(fLanguageMenuField->CreateLabelLayoutItem(), 0, 2)
                 .Add(fLanguageMenuField->CreateMenuBarLayoutItem(), 1, 2)
             .End()
+            .AddStrut(15.0f)
+            .Add(fEnableOutboundTranslationCheck)
+            .AddStrut(5.0f)
+            .AddGrid(5.0f, 5.0f)
+                .Add(fOutboundLanguageMenuField->CreateLabelLayoutItem(), 0, 0)
+                .Add(fOutboundLanguageMenuField->CreateMenuBarLayoutItem(), 1, 0)
+            .End()
+            .AddStrut(5.0f)
+            .Add(fAutoSendTranslatedCheck)
             .AddStrut(5.0f)
             .Add(studioLinkNotice);
 
@@ -4557,13 +4753,49 @@ public:
             break;
         }
 
-        case 'tltg': { // Toggle translation checkbox event
+        case 'tltg': { // Toggle inbound translation checkbox event
             if (fEnableLiveTranslationCheck != nullptr) {
-                srv.enableLiveTranslation = (fEnableLiveTranslationCheck->Value() == B_CONTROL_ON); 
-                save_config(); 
+                srv.enableInboundTranslation = (fEnableLiveTranslationCheck->Value() == B_CONTROL_ON);
+                save_config();
                 if (cfg.debugEnable) {
-                    printf("[GeminiDebug] [%s] Translation Checkbox Toggled: %s\n", 
-                        srv.name.c_str(), srv.enableLiveTranslation ? "ON" : "OFF");
+                    printf("[GeminiDebug] [%s] Inbound Translation Checkbox Toggled: %s\n",
+                        srv.name.c_str(), srv.enableInboundTranslation ? "ON" : "OFF");
+                }
+            }
+            break;
+        }
+
+        case 'tlog': { // Toggle outbound translation checkbox event
+            if (fEnableOutboundTranslationCheck != nullptr) {
+                srv.enableOutboundTranslation = (fEnableOutboundTranslationCheck->Value() == B_CONTROL_ON);
+                save_config();
+                if (cfg.debugEnable) {
+                    printf("[GeminiDebug] [%s] Outbound Translation Checkbox Toggled: %s\n",
+                        srv.name.c_str(), srv.enableOutboundTranslation ? "ON" : "OFF");
+                }
+            }
+            break;
+        }
+
+        case 'tolg': { // Outbound Language Selection Changed Event
+            const char* chosenOutLang;
+            if (message->FindString("language", &chosenOutLang) == B_OK) {
+                srv.outboundTargetLanguage = chosenOutLang;
+                save_config();
+                if (cfg.debugEnable) {
+                    printf("[GeminiDebug] [%s] Outbound Language Updated to: %s\n", srv.name.c_str(), srv.outboundTargetLanguage.c_str());
+                }
+            }
+            break;
+        }
+
+        case 'tlas': { // Toggle auto-send translated outbound checkbox event
+            if (fAutoSendTranslatedCheck != nullptr) {
+                srv.autoSendTranslatedOutbound = (fAutoSendTranslatedCheck->Value() == B_CONTROL_ON);
+                save_config();
+                if (cfg.debugEnable) {
+                    printf("[GeminiDebug] [%s] Auto-Send Translated Outbound Toggled: %s\n",
+                        srv.name.c_str(), srv.autoSendTranslatedOutbound ? "ON" : "OFF");
                 }
             }
             break;
@@ -5239,6 +5471,13 @@ public:
 	                }
 	            }
 
+	            if (fOutboundLanguageMenuField != nullptr && fOutboundLanguageMenuField->Menu() != nullptr) {
+	                BMenuItem* markedOutLang = fOutboundLanguageMenuField->Menu()->FindMarked();
+	                if (markedOutLang != nullptr) {
+	                    srv.outboundTargetLanguage = markedOutLang->Label();
+	                }
+	            }
+
 	            // =========================================================================
 
 
@@ -5408,7 +5647,10 @@ private:
 	BCheckBox*    fEnableLiveTranslationCheck;
 	BTextControl* fTranslationKeyInput;
 	BMenuField* fLanguageMenuField;
-	BMenuField*     fModelMenuField; 
+	BMenuField*     fModelMenuField;
+	BCheckBox*    fEnableOutboundTranslationCheck;
+	BMenuField*   fOutboundLanguageMenuField;
+	BCheckBox*    fAutoSendTranslatedCheck;
 
 	// Spellcheck
 	BCheckBox*    fEnableSpellCheck;
@@ -13232,10 +13474,9 @@ public:
                 		  << "By Kris Beazley (ablyss)\n"
                 		  << "Copyright 2026 The MIT License\n\n"
 
-                          << "A lightweight, multi-server IRC client built natively "
-                          << "for the Haiku Operating System utilizing BSplitView layout architectures.\n\n"
-                          << "Features JSON configuration saving, automated services identification, "
-                          << "custom spreadsheet channel list navigators, and dynamic dark mode adaptability.";
+                          << "A multi-server IRC client built natively "
+                          << "for the Haiku Operating System.\n\n"
+                          << "Enjoy!";
 
                 // Instantiate a native Haiku informational dialog modal box
                 BAlert* aboutAlert = new BAlert("About Cricket", aboutText.String(), "OK", 
@@ -14048,8 +14289,54 @@ public:
                             BString warning = "System Error: Use slash commands (like /JOIN) when typing inside the server status log.\n";
                             LogToItemBuffer(fActiveBufferItem, warning);
                         } else if (activeTarget.Length() > 0) {
+
+                            // =========================================================================
+                            // OUTBOUND LIVE TRANSLATION GATE
+                            // =========================================================================
+                            ServerConfig* outSrv = nullptr;
+                            if (contextServer != nullptr) {
+                                bool custom = contextServer->IsCustom();
+                                size_t idx = contextServer->GetIndex();
+                                if (custom) {
+                                    if (idx < cfg.customServers.size()) outSrv = &cfg.customServers[idx];
+                                } else {
+                                    if (idx < cfg.servers.size()) outSrv = &cfg.servers[idx];
+                                }
+                            }
+
+                            bool isReviewedResend = (fPendingReviewedTranslation.Length() > 0 && text == fPendingReviewedTranslation);
+
+                            if (cfg.debugEnable) {
+                                printf("[DEBUG_OUTTRANS] Gate check for text '%s' -> isReviewedResend=%d pending='%s' outSrv=%p enabled=%d hasKey=%d translatorAlive=%d\n",
+                                    text.String(), (int)isReviewedResend, fPendingReviewedTranslation.String(), (void*)outSrv,
+                                    outSrv ? (int)outSrv->enableOutboundTranslation : -1,
+                                    outSrv ? (int)!outSrv->geminiApiKey.empty() : -1,
+                                    (int)(gTranslatorService != nullptr));
+                            }
+
+                            if (!isReviewedResend && outSrv != nullptr && outSrv->enableOutboundTranslation
+                                && !outSrv->geminiApiKey.empty() && gTranslatorService != nullptr) {
+
+                                BMessage queueMsg(MSG_TRANSLATE_OUTBOUND_QUEUE);
+                                queueMsg.AddString("original_text", text);
+                                queueMsg.AddString("target_name", activeTarget);
+                                queueMsg.AddPointer("server_config", (void*)outSrv);
+                                queueMsg.AddPointer("server_node", (void*)contextServer);
+                                queueMsg.AddPointer("window_looper", this);
+                                queueMsg.AddBool("auto_send", outSrv->autoSendTranslatedOutbound);
+                                gTranslatorService->PostMessage(&queueMsg);
+
+                                // Leave the typed text visible while translation runs in the
+                                // background; MSG_OUTBOUND_TRANSLATION_COMPLETE takes it from here.
+                                fInputControl->MakeFocus(true);
+                                break;
+                            }
+
+                            fPendingReviewedTranslation = "";
+                            // =========================================================================
+
                             rawPayload << "PRIVMSG " << activeTarget << " :" << text << "\r\n";
-                            
+
                             BString timestampPrefix = "";
                             bigtime_t currentTime = real_time_clock_usecs();
                             bigtime_t thirtyMinutesInUsecs = (bigtime_t)30 * 60 * 1000000;
@@ -14121,15 +14408,82 @@ public:
 	    case MSG_TRANSLATION_COMPLETE: {
 	        BString translatedLine;
 	        void* nodePtr = nullptr;
-	        
+
 	        if (message->FindString("translated_line", &translatedLine) == B_OK &&
 	            message->FindPointer("server_node", &nodePtr) == B_OK) {
-	            
+
 	            ServerTreeItem* targetNode = static_cast<ServerTreeItem*>(nodePtr);
-	            
+
 	            // Hand the fully translated text line straight to your renderer!
 	            ParseAndDisplayIRC(translatedLine, targetNode);
 	        }
+	        break;
+	    }
+
+	    case MSG_OUTBOUND_TRANSLATION_COMPLETE: {
+	        bool success = false;
+	        BString originalText, targetName, translatedText;
+	        bool autoSend = false;
+	        void* nodePtr = nullptr;
+
+	        message->FindBool("success", &success);
+	        message->FindString("original_text", &originalText);
+	        message->FindString("target_name", &targetName);
+	        message->FindBool("auto_send", &autoSend);
+	        message->FindPointer("server_node", &nodePtr);
+	        message->FindString("translated_text", &translatedText);
+
+	        ServerTreeItem* srcNode = static_cast<ServerTreeItem*>(nodePtr);
+
+	        if (cfg.debugEnable) {
+	            printf("[DEBUG_OUTTRANS] Reply received -> success=%d autoSend=%d original='%s' translated='%s'\n",
+	                (int)success, (int)autoSend, originalText.String(), translatedText.String());
+	        }
+
+	        if (!success) {
+	            BString warning = "System Error: Outbound translation failed; your message was not sent. "
+	                "Edit and press Enter to try again, or turn off outbound translation to send as-is.\n";
+	            LogToItemBuffer(fActiveBufferItem, warning);
+	            fInputControl->SetText(originalText.String());
+	            fInputControl->MakeFocus(true);
+	            break;
+	        }
+
+	        if (autoSend) {
+	            // Send the translated text through the same connection this request was queued against.
+	            BString rawPayload;
+	            rawPayload << "PRIVMSG " << targetName << " :" << translatedText << "\r\n";
+
+	            SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(srcNode)];
+	            int activeFd = gServerRawSockets[static_cast<void*>(srcNode)];
+
+	            if (activeSslHandle != nullptr && activeFd >= 0) {
+	                SSL_write(activeSslHandle, rawPayload.String(), rawPayload.Length());
+	            } else {
+	                auto it = fServerSockets.find(srcNode);
+	                if (it != fServerSockets.end() && it->second != nullptr) {
+	                    it->second->Send(rawPayload.String(), rawPayload.Length());
+	                }
+	            }
+
+	            if (cfg.debugEnable) {
+	                LogDebugStream(srcNode != nullptr ? srcNode->Text() : "?", "OUTGOING", rawPayload.String(), rawPayload.Length());
+	            }
+
+	            BString echoStr;
+	            echoStr << "<" << fMyNick << "> " << translatedText << "\n";
+	            LogToItemBuffer(fActiveBufferItem, echoStr);
+
+	            fInputControl->SetText("");
+	        } else {
+	            // Review mode: hand the translation back for the user to look over or edit.
+	            // Pressing Enter on this exact text sends it verbatim (see fPendingReviewedTranslation);
+	            // editing it or typing something else instead goes through translation again.
+	            fPendingReviewedTranslation = translatedText;
+	            fInputControl->SetText(translatedText.String());
+	        }
+
+	        fInputControl->MakeFocus(true);
 	        break;
 	    }
 
@@ -14338,7 +14692,7 @@ public:
                 }
 
                 // Checked per-server values instead of old global tags
-                if (srvPtr != nullptr && srvPtr->enableLiveTranslation && !srvPtr->geminiApiKey.empty() 
+                if (srvPtr != nullptr && srvPtr->enableInboundTranslation && !srvPtr->geminiApiKey.empty() 
                     && rawLine.FindFirst(" PRIVMSG ") != B_ERROR && gTranslatorService != nullptr) {
                     
                     BMessage queueMsg(MSG_TRANSLATE_LINE_QUEUE);
@@ -14545,6 +14899,11 @@ private:
 	
 	    std::map<BStringItem*, BObjectList<UserListItem, true>*> fChannelUsers;
 	    std::map<BStringItem*, bigtime_t> fLastTimestampTime;
+	    // Holds the exact text of the last translation placed in fInputControl for review.
+	    // At send time, translation is skipped ONLY if the current input text still matches
+	    // this exactly -- any edit, or an unrelated fresh message, goes through translation
+	    // again instead of silently going out untranslated. Empty = nothing pending review.
+	    BString fPendingReviewedTranslation;
 	    std::map<ServerTreeItem*, thread_id> fServerThreads;
 	    std::map<ServerTreeItem*, BNetEndpoint*> fServerSockets;
 		std::map<ServerTreeItem*, int32> fNickAttempts;
