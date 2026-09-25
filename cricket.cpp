@@ -3983,9 +3983,11 @@ public:
     bool fEnableColorCodes;
     BString fSupportedCaps;
     bool fSASLSuccess;
-  
-    
-    
+
+    bool fUserRequestedDisconnect = false; // set by MSG_DISCONNECT_SERVER; suppresses auto-reconnect for that one drop
+    int32 fReconnectAttempts = 0;          // consecutive failed auto-reconnect attempts, for backoff/give-up
+
+
     std::vector<std::string> fRuntimeIgnoreList;
     std::vector<std::string> fRuntimeColorNicks;
     std::vector<rgb_color>   fRuntimeColorValues;
@@ -7616,7 +7618,8 @@ private:
 	    targetNode->fHasFinalizedCap = false;          // Unlocks the CAP engine gate
 	    targetNode->fSASLSuccess = false;              // Resets SASL flag metrics
 	    targetNode->fHasIdentifiedThisSession = false; // Unlocks NickServ text backup script
-	    
+	    targetNode->fUserRequestedDisconnect = false;  // Fresh attempt; nothing pending to suppress
+
 	    if (targetNode->fSupportedCaps.Length() > 0) {
 	        targetNode->fSupportedCaps.Truncate(0);    // Flushes old capabilities buffer
 	    }
@@ -10944,7 +10947,8 @@ static status_t NetworkLoop(void* data) {
     targetNode->fHasFinalizedCap = false;
     targetNode->fHasIdentifiedThisSession = false;
     targetNode->fSASLSuccess = false;
-	 
+    targetNode->fUserRequestedDisconnect = false;
+
     BNetworkAddress address(targetNode->GetHost().String(), targetNode->GetPort());
     
     // 1. Thread-Safe Profiling Lookups (Executed once safely at the entryway!)
@@ -11049,6 +11053,8 @@ static status_t NetworkLoop(void* data) {
                 if (cfg.debugEnable) printf("[DEBUG_LOOP] [%s] SSL Handshake Failed via OpenSSL pipeline.\n", targetNode->Text());
             } else {
                 if (cfg.debugEnable) printf("[DEBUG_LOOP] [%s] Secure TLS encryption handshake fully completed.\n", targetNode->Text());
+                // A real connection made it up; reset the auto-reconnect backoff/give-up counter.
+                targetNode->fReconnectAttempts = 0;
             }
         }
     }
@@ -11204,25 +11210,72 @@ static status_t NetworkLoop(void* data) {
     }        
      
 
-    bool triggerReconnect = targetNode->IsAutoReconnect();
+    // A disconnect the user asked for (the "Disconnect" menu action) must never trigger
+    // auto-reconnect, even though it unblocks this same read loop just like a real drop
+    // does. Consume the flag here either way so it can't leak into a later, real drop.
+    bool wasUserRequestedDisconnect = targetNode->fUserRequestedDisconnect;
+    targetNode->fUserRequestedDisconnect = false;
+
+    bool triggerReconnect = targetNode->IsAutoReconnect() && !wasUserRequestedDisconnect;
+
+    if (cfg.debugEnable && wasUserRequestedDisconnect) {
+        printf("[DEBUG_RECONN] [%s] Disconnect was user-requested; auto-reconnect suppressed for this drop.\n", targetNode->Text());
+    }
+
     if (be_app->CountWindows() > 0 && be_app->WindowAt(0) == window) {
-        if (window->Lock()) { 
+        if (window->Lock()) {
             window->fServerSockets.erase(targetNode);
             window->fServerThreads.erase(targetNode);
             gServerSslHandles.erase(static_cast<void*>(targetNode));
             gServerRawSockets.erase(static_cast<void*>(targetNode));
             if (targetNode == window->fLiberaNode) { window->fLiberaThread = -1; window->fLiberaSocket = nullptr; }
             if (targetNode == window->fOftcNode)   { window->fOftcThread = -1;   window->fOftcSocket = nullptr; }
-            window->Unlock(); 
+            window->Unlock();
         }
     }
 
-    if (triggerReconnect && be_app->CountWindows() > 0 && be_app->WindowAt(0) == window) {
-        if (window->Lock()) {
-            BMessage* reconnectMessage = new BMessage(MSG_RECONNECT_SERVER);
-            reconnectMessage->AddPointer("server_item", targetNode);
-            window->PostMessage(reconnectMessage);
-            window->Unlock();
+    if (triggerReconnect) {
+        // --- RECONNECT BACKOFF / GIVE-UP GATE ---
+        // Escalating delay per consecutive failed attempt (capped), and give up after a
+        // fixed number of tries instead of hammering a dead server/network forever.
+        targetNode->fReconnectAttempts++;
+
+        const int kReconnectDelaysSecs[] = {5, 10, 20, 30, 60};
+        const int kMaxDelayIndex = (int)(sizeof(kReconnectDelaysSecs) / sizeof(kReconnectDelaysSecs[0])) - 1;
+        const int32 kMaxReconnectAttempts = 8;
+
+        if (targetNode->fReconnectAttempts > kMaxReconnectAttempts) {
+            if (be_app->CountWindows() > 0 && be_app->WindowAt(0) == window && window->Lock()) {
+                BMessage* reply = new BMessage(MSG_IRC_RECEIVED);
+                BString giveUpMsg;
+                giveUpMsg << "--- [Auto-Reconnect] Gave up after " << kMaxReconnectAttempts
+                          << " failed attempts. Use Connect to try again manually.\n";
+                reply->AddString("text", giveUpMsg);
+                reply->AddPointer("server_node", targetNode);
+                window->PostMessage(reply);
+                window->Unlock();
+            }
+            targetNode->fReconnectAttempts = 0;
+        } else {
+            int delayIdx = (int)targetNode->fReconnectAttempts - 1;
+            if (delayIdx > kMaxDelayIndex) delayIdx = kMaxDelayIndex;
+            int delaySecs = kReconnectDelaysSecs[delayIdx];
+
+            if (cfg.debugEnable) {
+                printf("[DEBUG_RECONN] [%s] Auto-reconnect attempt %d of %d: waiting %ds before retrying.\n",
+                    targetNode->Text(), (int)targetNode->fReconnectAttempts, (int)kMaxReconnectAttempts, delaySecs);
+            }
+
+            // Safe to block here: this is the background connection thread on its way out,
+            // not the UI thread, and it has already removed itself from every tracking map.
+            snooze((bigtime_t)delaySecs * 1000000);
+
+            if (be_app->CountWindows() > 0 && be_app->WindowAt(0) == window && window->Lock()) {
+                BMessage* reconnectMessage = new BMessage(MSG_RECONNECT_SERVER);
+                reconnectMessage->AddPointer("server_item", targetNode);
+                window->PostMessage(reconnectMessage);
+                window->Unlock();
+            }
         }
     }
 
@@ -12960,7 +13013,12 @@ public:
                 // Enforce proper thread-safe local window lock boundaries
                 Lock();
                 if (fServerSockets.count(srvItem) > 0 && fServerSockets[srvItem] != nullptr) {
-                    
+
+                    // Mark this drop as user-requested so the background thread's own
+                    // end-of-connection cleanup doesn't treat it as an unexpected loss
+                    // and fire auto-reconnect right back on top of a deliberate disconnect.
+                    srvItem->fUserRequestedDisconnect = true;
+
                     // 1. Send an optional quick QUIT message down the live OpenSSL context if available
                     SSL* activeSslHandle = gServerSslHandles[static_cast<void*>(srvItem)];
                     if (activeSslHandle != nullptr) {
