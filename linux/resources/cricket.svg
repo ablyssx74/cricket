@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7ed957"/>
+      <stop offset="1" stop-color="#2e8b3e"/>
+    </linearGradient>
+    <linearGradient id="bubble" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dfe8f5"/>
+    </linearGradient>
+  </defs>
+  <!-- speech bubble -->
+  <path d="M34 4h22a6 6 0 0 1 6 6v12a6 6 0 0 1-6 6h-12l-7 6v-6h-3a6 6 0 0 1-6-6V10a6 6 0 0 1 6-6z"
+        fill="url(#bubble)" stroke="#5a6b85" stroke-width="1.5"/>
+  <circle cx="38" cy="16" r="2.2" fill="#5a6b85"/>
+  <circle cx="45" cy="16" r="2.2" fill="#5a6b85"/>
+  <circle cx="52" cy="16" r="2.2" fill="#5a6b85"/>
+  <!-- antennae -->
+  <path d="M16 30 C10 18 6 14 2 12" fill="none" stroke="#1f5e2a" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M19 29 C17 16 16 10 13 5" fill="none" stroke="#1f5e2a" stroke-width="1.8" stroke-linecap="round"/>
+  <!-- hind leg -->
+  <path d="M40 44 L52 30 L58 52" fill="none" stroke="#1f5e2a" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- front legs -->
+  <path d="M22 46 L16 56" stroke="#1f5e2a" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M30 48 L28 58" stroke="#1f5e2a" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- body -->
+  <ellipse cx="34" cy="42" rx="20" ry="9" fill="url(#body)" stroke="#1f5e2a" stroke-width="1.5"/>
+  <!-- wing -->
+  <path d="M26 36 Q40 30 54 40 Q42 42 28 41 z" fill="#a5e887" stroke="#1f5e2a" stroke-width="1"/>
+  <!-- head -->
+  <circle cx="18" cy="38" r="8" fill="url(#body)" stroke="#1f5e2a" stroke-width="1.5"/>
+  <circle cx="15.5" cy="36" r="2.3" fill="#10240f"/>
+  <circle cx="14.8" cy="35.3" r="0.8" fill="#ffffff"/>
+</svg>

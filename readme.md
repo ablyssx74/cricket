@@ -25,6 +25,12 @@ make release
 
 ```
 
+### Linux (KDE Plasma / Wayland)
+A native Qt 6 port lives in [`linux/`](linux/README.md). On CachyOS / Arch:
+```
+cd linux/packaging && makepkg -si
+```
+
 ### Screenshots
 <img align="left" width="700" height="400" alt="Image" src="https://github.com/user-attachments/assets/d4c47f8c-17c5-455f-8a46-cb59d696a829" />
 

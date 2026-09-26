@@ -1,0 +1,37 @@
+# Maintainer: ablyss <cricket@epluribusunix.net>
+# Arch Linux / CachyOS package for the Qt6 port of Cricket.
+# Build with:  makepkg -si
+pkgname=cricket-irc-git
+pkgver=0.0.67
+pkgrel=1
+pkgdesc="Lightweight multi-server IRC client (Qt6 port of the Haiku IRC client)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ablyssx74/cricket"
+license=('MIT')
+depends=('qt6-base' 'qt6-wayland' 'aspell' 'openssl' 'hicolor-icon-theme')
+optdepends=('aspell-en: English spell checking dictionary'
+            'noto-fonts-emoji: colour emoticons')
+makedepends=('git' 'cmake')
+provides=('cricket-irc')
+conflicts=('cricket-irc')
+source=("cricket::git+https://github.com/ablyssx74/cricket.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd cricket
+    local v
+    v=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' VERSION)
+    printf "%s.r%s.%s" "$v" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cmake -S cricket/linux -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr
+    cmake --build build
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install build
+    install -Dm644 cricket/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
