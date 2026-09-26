@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Cricket
+GenericName=IRC Client
+Comment=Lightweight multi-server IRC client
+Exec=cricket
+Icon=cricket
+Terminal=false
+Categories=Network;Chat;IRCClient;Qt;
+Keywords=irc;chat;libera;oftc;
+StartupWMClass=cricket
