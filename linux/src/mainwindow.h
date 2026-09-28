@@ -22,6 +22,7 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QSplitter;
+class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QToolButton;
@@ -45,6 +46,7 @@ struct Buffer {
     QMap<QString, ChannelUser> users; // keyed by lower-case nick
     QMap<QString, ChannelUser> pendingNames; // collecting 353 replies
     bool namesInProgress = false;
+    bool whoPending = false;       // send WHO once NAMES finishes (away status)
     QString topic;
     QString modes, key, limit;
     bool joined = false;
@@ -145,6 +147,7 @@ private:
     void openSearch(const QString& text, bool translate);
     void showAbout();
     void registerFingerprint(Session* s, const QString& sha1, const QString& sha512);
+    void pollAwayStatus();
 
     QList<Session*> fSessions;
     Buffer* fActive = nullptr;
@@ -161,6 +164,7 @@ private:
     QLabel* fStatusLabel = nullptr;
     QAction* fAwayAction = nullptr;
     QPointer<ChannelModesDialog> fModesDialog;
+    QTimer* fAwayPollTimer = nullptr;
 
     Translator* fTranslator = nullptr;
     UpdateChecker* fUpdates = nullptr;

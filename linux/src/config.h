@@ -76,7 +76,9 @@ struct Config {
     bool showUpdateNotifications = true;
     QString spellLanguage = "en_US";
 
-    QString fullQuitMessage() const;
+    // Quit reason with the version suffix always appended, e.g.
+    // "bye [Cricket IRC Client v.0.0.67 (Linux)]". Uses quitMessage when reason is empty.
+    QString fullQuitMessage(const QString& reason = QString()) const;
 };
 
 extern Config cfg;

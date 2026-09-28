@@ -90,6 +90,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     });
     fUpdates->checkLater();
 
+    fAwayPollTimer = new QTimer(this);
+    fAwayPollTimer->setInterval(5 * 60 * 1000);
+    connect(fAwayPollTimer, &QTimer::timeout, this, &MainWindow::pollAwayStatus);
+    fAwayPollTimer->start();
+
     printStatus(fSessions.value(0), QString("--- Welcome to %1. Double-click a network to connect.").arg(AppInfo::VERSION_STRING));
 }
 
@@ -854,7 +859,7 @@ void MainWindow::processCommand(Session* s, Buffer* b, const QString& input)
     if (cmd == "reconnect") { disconnectSession(s); QTimer::singleShot(1500, this, [this, s]() { if (fSessions.contains(s)) connectSession(s); }); return; }
     if (cmd == "disconnect") { disconnectSession(s); return; }
     if (cmd == "quit") {
-        c->disconnectFromServer(args.isEmpty() ? cfg.fullQuitMessage() : args);
+        c->disconnectFromServer(cfg.fullQuitMessage(args));
         return;
     }
     if (cmd == "close") {
@@ -1102,9 +1107,8 @@ void MainWindow::onMessage(Session* s, const IrcMessage& m)
             b->users.clear();
             print(b, tr("--- Joined channel %1").arg(chan).toHtmlEscaped(), LineKind::Join);
             updateTreeItem(b);
+            b->whoPending = true;
             c->sendRaw("MODE " + chan);
-            if (c->hasCap("away-notify"))
-                c->sendRaw("WHO " + chan);
             return;
         }
         if (isIgnored(s, nick))
@@ -1302,8 +1306,12 @@ void MainWindow::onMessage(Session* s, const IrcMessage& m)
     case 276: case 671: case 320: case 307: case 314: case 369:
         handleWhois(s, m);
         return;
-    case 315: // end of WHO
+    case 315: { // end of WHO: redraw once per batch rather than per reply
+        Buffer* b = findBuffer(s, m.param(1));
+        if (b && b == fActive)
+            refreshUserList();
         return;
+    }
     case 321:
         return;
     case 322:
@@ -1378,11 +1386,8 @@ void MainWindow::onMessage(Session* s, const IrcMessage& m)
         if (!b)
             return;
         auto it = b->users.find(m.param(5).toLower());
-        if (it != b->users.end()) {
+        if (it != b->users.end())
             it->away = m.param(6).startsWith('G');
-            if (b == fActive)
-                refreshUserList();
-        }
         return;
     }
     case 353:
@@ -1400,6 +1405,12 @@ void MainWindow::onMessage(Session* s, const IrcMessage& m)
             b->namesInProgress = false;
             if (b == fActive)
                 refreshUserList();
+        }
+        // Load everyone's away state on every network. Networks without
+        // away-notify (e.g. OFTC) are refreshed later by pollAwayStatus().
+        if (b && b->whoPending) {
+            b->whoPending = false;
+            c->sendRaw("WHO " + b->name);
         }
         return;
     }
@@ -1752,6 +1763,32 @@ void MainWindow::configureSession(Session* s)
         refreshTopic();
     }
     refreshStatus();
+}
+
+void MainWindow::pollAwayStatus()
+{
+    // Networks with away-notify push AWAY changes to us; the rest need an
+    // occasional WHO. Space the requests out and skip very large channels so
+    // this never floods the server.
+    const int kMaxUsers = 300;
+    int delay = 0;
+    for (Session* s : fSessions) {
+        if (!s->conn->isRegistered() || s->conn->hasCap("away-notify"))
+            continue;
+        for (Buffer* b : s->buffers) {
+            if (b->type != Buffer::Channel || !b->joined || b->users.size() > kMaxUsers)
+                continue;
+            const QString chan = b->name;
+            QTimer::singleShot(delay, this, [this, s, chan]() {
+                if (!fSessions.contains(s) || !s->conn->isRegistered())
+                    return;
+                Buffer* target = findBuffer(s, chan);
+                if (target && target->joined)
+                    s->conn->sendRaw("WHO " + chan);
+            });
+            delay += 2000;
+        }
+    }
 }
 
 void MainWindow::registerFingerprint(Session* s, const QString& sha1, const QString& sha512)

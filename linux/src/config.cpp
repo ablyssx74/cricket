@@ -47,11 +47,12 @@ static QString configFilePath()
     return configDir() + "/cricketConfig.txt";
 }
 
-QString Config::fullQuitMessage() const
+QString Config::fullQuitMessage(const QString& reason) const
 {
-    if (quitMessage.trimmed().isEmpty())
+    const QString text = reason.trimmed().isEmpty() ? quitMessage.trimmed() : reason.trimmed();
+    if (text.isEmpty())
         return QString("[%1]").arg(AppInfo::VERSION_STRING);
-    return QString("%1 [%2]").arg(quitMessage.trimmed(), AppInfo::VERSION_STRING);
+    return QString("%1 [%2]").arg(text, AppInfo::VERSION_STRING);
 }
 
 ServerConfig* serverProfile(bool custom, int index)
