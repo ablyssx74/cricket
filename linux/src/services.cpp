@@ -19,6 +19,7 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
+#include <QDBusPendingCallWatcher>
 #endif
 
 #ifdef CRICKET_HAVE_ASPELL
@@ -99,6 +100,8 @@ void UpdateChecker::check()
             return;
         if (flattenVersion(remote) > flattenVersion(AppInfo::VERSION_NUMBER))
             emit updateAvailable(remote);
+        else if (cfg.debugEnable)
+            qDebug().noquote() << "[Update] up to date";
     });
 }
 
@@ -106,19 +109,40 @@ void UpdateChecker::check()
 // Notifier
 // ---------------------------------------------------------------------------
 
-void Notifier::notify(const QString& title, const QString& body)
+void Notifier::notify(const QString& title, const QString& body, std::function<void(bool shown)> done)
 {
 #ifdef CRICKET_HAVE_DBUS
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) {
+        if (cfg.debugEnable)
+            qDebug().noquote() << "[Notify] no session bus; notification not shown";
+        if (done)
+            done(false);
+        return;
+    }
     QDBusMessage msg = QDBusMessage::createMethodCall("org.freedesktop.Notifications",
         "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "Notify");
     QVariantMap hints;
     hints["desktop-entry"] = QString("cricket");
     msg << QString("Cricket IRC") << uint(0) << QString("cricket") << title << body
         << QStringList() << hints << int(-1);
-    QDBusConnection::sessionBus().asyncCall(msg);
+    QDBusPendingCall call = bus.asyncCall(msg, 5000);
+    if (!done)
+        return;
+    auto* watcher = new QDBusPendingCallWatcher(call);
+    QObject::connect(watcher, &QDBusPendingCallWatcher::finished, watcher,
+        [done](QDBusPendingCallWatcher* w) {
+            bool shown = !w->isError();
+            if (!shown && cfg.debugEnable)
+                qDebug().noquote() << "[Notify] notification not shown:" << w->error().message();
+            w->deleteLater();
+            done(shown);
+        });
 #else
     Q_UNUSED(title);
     Q_UNUSED(body);
+    if (done)
+        done(false);
 #endif
 }
 

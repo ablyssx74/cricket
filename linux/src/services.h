@@ -41,9 +41,13 @@ private:
 };
 
 // Desktop notifications through org.freedesktop.Notifications (KDE Plasma,
-// GNOME, etc.). Falls back to nothing if no notification server is running.
+// GNOME, etc.).
 namespace Notifier {
-void notify(const QString& title, const QString& body);
+// `done`, if given, is told whether a notification server actually took the
+// notification. There may be none running (notifications disabled, a bare
+// compositor, or plasmashell not up), so callers can fall back to a dialog.
+void notify(const QString& title, const QString& body,
+    std::function<void(bool shown)> done = nullptr);
 }
 
 // Optional aspell-backed spell checker. Compiles to a no-op when aspell
