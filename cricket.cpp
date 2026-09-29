@@ -137,6 +137,7 @@ enum {
     MSG_DCC_FILE_CHOSEN = 'dcFC',    // file panel result for MSG_DCC_PICK_FILE
     MSG_DCC_BROWSE_DIR = 'dcBD',     // settings: choose the DCC download folder
     MSG_DCC_DIR_CHOSEN = 'dcDC',
+    MSG_DCC_OFFER_CHAT = 'dcOC',     // "target_nick", "context_server": start a DCC CHAT
 
 };
 
@@ -12898,6 +12899,13 @@ public:
                     sendFileMsg->AddString("target_nick", cleanNick);
                     sendFileMsg->AddPointer("context_server", parentServer);
                     contextMenu->AddItem(new BMenuItem(sendFileLabel.String(), sendFileMsg));
+
+                    BString chatLabel;
+                    chatLabel << "DCC Chat with " << cleanNick;
+                    BMessage* chatMsg = new BMessage(MSG_DCC_OFFER_CHAT);
+                    chatMsg->AddString("target_nick", cleanNick);
+                    chatMsg->AddPointer("context_server", parentServer);
+                    contextMenu->AddItem(new BMenuItem(chatLabel.String(), chatMsg));
                 }
 
                 
@@ -13420,6 +13428,13 @@ public:
         }
 
         ServerTreeItem* parentServer = static_cast<ServerTreeItem*>(fChannelTree->Superitem(chanItem));
+
+        // Closing a "=nick" buffer hangs up that DCC CHAT.
+        if (parentServer != nullptr && targetChanName.StartsWith("=") && gDccManager != nullptr) {
+            BString chatNick(targetChanName);
+            chatNick.Remove(0, 1);
+            gDccManager->CloseChat(parentServer, chatNick);
+        }
         
         if (parentServer != nullptr && isActualIrcChannel) {
             // =========================================================================
@@ -14393,6 +14408,36 @@ public:
                 if (contextServer == nullptr) {
                     contextServer = fCurrentServerNode;
                 }
+
+                // =========================================================================
+                // DCC CHAT buffers ("=nick"): text and /me go over the direct connection,
+                // not to the IRC server. Other /commands still go to the server below.
+                // =========================================================================
+                if (activeTarget.StartsWith("=") && activeTarget.Length() > 1 && gDccManager != nullptr
+                    && (!text.StartsWith("/") || text.ICompare("/me ", 4) == 0)) {
+                    BString chatNick(activeTarget);
+                    chatNick.Remove(0, 1);
+                    bool isAction = text.ICompare("/me ", 4) == 0;
+                    BString body(text);
+                    if (isAction)
+                        body.Remove(0, 4);
+                    if (body.Length() > 0) {
+                        if (gDccManager->ChatSend(contextServer, chatNick, body, isAction)) {
+                            BString echo;
+                            if (isAction)
+                                echo << "* " << fMyNick << " " << body << "\n";
+                            else
+                                echo << "<" << fMyNick << "> " << body << "\n";
+                            LogToItemBuffer(fActiveBufferItem, echo);
+                        } else {
+                            LogToItemBuffer(fActiveBufferItem,
+                                "--- [DCC] This DCC CHAT isn't connected. Use /dcc chat <nick> to start a new one.\n");
+                        }
+                    }
+                    fInputControl->SetText("");
+                    fInputControl->MakeFocus(true);
+                    break;
+                }
                 
                 // 2. MULTI-SERVER: Trust dynamic socket array map completely
                 BNetEndpoint* activeSocket = nullptr;
@@ -14537,10 +14582,15 @@ public:
                                     gDccManager->OfferFile(contextServer, dccNick, dccPath);
                                 }
                             } else if (dccArgs.ICompare("chat", 4) == 0) {
-                                LogToItemBuffer(fActiveBufferItem, "--- [DCC] DCC CHAT isn't supported yet.\n");
+                                dccArgs.Remove(0, 4);
+                                dccArgs.Trim();
+                                if (dccArgs.Length() == 0 || dccArgs.FindFirst(' ') >= 0)
+                                    LogToItemBuffer(fActiveBufferItem, "Usage: /dcc chat <nick>\n");
+                                else if (gDccManager != nullptr)
+                                    gDccManager->OfferChat(contextServer, dccArgs);
                             } else {
                                 LogToItemBuffer(fActiveBufferItem,
-                                    "Usage: /dcc  (open transfers)   or   /dcc send <nick> [file path]\n");
+                                    "Usage: /dcc  (transfers)  |  /dcc send <nick> [file]  |  /dcc chat <nick>\n");
                             }
                         } else if (commandLine.ICompare("list", 4) == 0) {
                             bool windowIsValid = false;
@@ -14881,6 +14931,70 @@ public:
                 BPath path;
                 if (entry.GetPath(&path) == B_OK)
                     gDccManager->OfferFile(serverPtr, nick, path.Path());
+            }
+            break;
+        }
+
+        case MSG_DCC_OFFER_CHAT: {
+            BString nick;
+            void* serverPtr = nullptr;
+            if (gDccManager == nullptr || message->FindString("target_nick", &nick) != B_OK
+                || message->FindPointer("context_server", &serverPtr) != B_OK || serverPtr == nullptr)
+                break;
+            gDccManager->OfferChat(serverPtr, nick);
+            break;
+        }
+
+        case MSG_DCC_CHAT_OPENED:
+        case MSG_DCC_CHAT_LINE:
+        case MSG_DCC_CHAT_CLOSED: {
+            void* serverPtr = nullptr;
+            BString nick;
+            if (message->FindPointer("server", &serverPtr) != B_OK || serverPtr == nullptr
+                || message->FindString("nick", &nick) != B_OK)
+                break;
+            ServerTreeItem* server = static_cast<ServerTreeItem*>(serverPtr);
+            if (!fChannelTree->HasItem(server))
+                break;
+
+            // Find or create the "=nick" buffer under this server.
+            BString bufferName("=");
+            bufferName << nick;
+            ChannelTreeItem* chatNode = FindChannelNode(server, bufferName);
+            if (chatNode == nullptr) {
+                if (message->what == MSG_DCC_CHAT_CLOSED)
+                    break;  // nothing was ever shown for it
+                chatNode = new ChannelTreeItem(bufferName.String(), server->GetIndex(), server->IsCustom());
+                fChannelTree->AddUnder(chatNode, server);
+                fChannelTree->Expand(server);
+                fChannelUsers[chatNode] = new BObjectList<UserListItem, true>(20);
+            }
+
+            BString line;
+            if (message->what == MSG_DCC_CHAT_OPENED) {
+                line << "--- DCC CHAT with " << nick << " connected. Messages here go directly to "
+                     << nick << ", not through the IRC server.\n";
+            } else if (message->what == MSG_DCC_CHAT_CLOSED) {
+                BString reason;
+                message->FindString("reason", &reason);
+                line << "--- DCC CHAT with " << nick << " closed (" << reason << ").\n";
+            } else {
+                BString text;
+                bool action = false;
+                message->FindString("text", &text);
+                message->FindBool("action", &action);
+                if (action)
+                    line << "* " << nick << " " << text << "\n";
+                else
+                    line << "<" << nick << "> " << text << "\n";
+            }
+            LogToItemBuffer(chatNode, line);
+
+            if (fActiveBufferItem != chatNode) {
+                chatNode->SetUnread(true);
+                int32 idx = fChannelTree->IndexOf(chatNode);
+                if (idx >= 0)
+                    fChannelTree->InvalidateItem(idx);
             }
             break;
         }
