@@ -151,7 +151,7 @@ static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.67 (Haiku OS)";
+    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.68 (Haiku OS)";
 }
 
 
