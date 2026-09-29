@@ -1,20 +1,18 @@
-// PortMapper.cpp -- automatic NAT port forwarding for BeShare.
+// PortMapper.cpp -- automatic NAT port forwarding (used for Cricket's DCC).
 //
-// Staged from HiShare (github.com/atomozero/HiShare), the modernized edition
+// Adapted from HiShare (github.com/atomozero/HiShare), the modernized edition
 // of BeShare 3.04 by Jeremy Friesner. HiShare's application code (this file
 // included) is public domain -- see HiShare's LICENSE for details.
-// Not yet wired into cricket; staged here ahead of the DCC/NAT-traversal work.
+// Cricket changes: muscle::String replaced with Haiku's BString, optional
+// automatic reachability probe, DCC wording in the status messages.
 //
-// Implements NAT-PMP (RFC 6886) with a UPnP-IGD (SSDP + SOAP) fallback so that
-// a BeShare user sitting behind a home NAT router can be reached directly by
-// downloaders out on the Internet, without manually configuring a port forward
-// or resorting to "I'm Firewalled" mode.
+// Implements PCP (RFC 6887) and NAT-PMP (RFC 6886) with a UPnP-IGD (SSDP +
+// SOAP) fallback so that a user sitting behind a home NAT router can be
+// reached directly from the Internet (for DCC transfers), without manually
+// configuring a port forward.
 //
-// It opens a hole in the *router* only; it does not change one byte of the
-// MUSCLE wire protocol BeShare speaks to the server and to its peers.
-//
-// Networking is done with plain BSD sockets so this file does not depend on any
-// particular MUSCLE version's socket API.
+// It opens a hole in the *router* only. Networking is done with plain BSD
+// sockets.
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -33,13 +31,11 @@
 
 #include "PortMapper.h"
 
-namespace beshare {
+namespace cricket {
 
-using namespace muscle;
-
-// Opt-in tracing: set BESHARE_PORTMAP_DEBUG=1 in the environment to see what the
+// Opt-in tracing: set CRICKET_PORTMAP_DEBUG=1 in the environment to see what the
 // mapper is doing on stderr.  Silent otherwise.
-static bool PMDebugEnabled() { static int e = -1; if (e < 0) e = (getenv("BESHARE_PORTMAP_DEBUG") != NULL) ? 1 : 0; return e != 0; }
+static bool PMDebugEnabled() { static int e = -1; if (e < 0) e = (getenv("CRICKET_PORTMAP_DEBUG") != NULL) ? 1 : 0; return e != 0; }
 #define PMLOG(...) do { if (PMDebugEnabled()) { fprintf(stderr, "[portmap] " __VA_ARGS__); fprintf(stderr, "\n"); } } while(0)
 
 static const uint16 NATPMP_SERVER_PORT = 5351;
@@ -56,6 +52,19 @@ static inline uint16 Peek16(const uint8* p) { return (uint16)((p[0] << 8) | p[1]
 static inline uint32 Peek32(const uint8* p) { return ((uint32)p[0] << 24) | ((uint32)p[1] << 16) | ((uint32)p[2] << 8) | (uint32)p[3]; }
 
 static inline uint64 NowMicros() { return (uint64)system_time(); }
+
+// muscle::String-style helpers on top of BString (whose Trim()/ToLower()
+// modify in place and which has no Substring()).
+// Characters [start, end) of s; end < 0 means "to the end".
+static BString Sub(const BString& s, int32 start, int32 end = -1)
+{
+	if (end < 0 || end > s.Length()) end = s.Length();
+	BString out;
+	if (start >= 0 && start < end) s.CopyInto(out, start, end - start);
+	return out;
+}
+static BString Lower(const BString& s) { BString c(s); c.ToLower(); return c; }
+static BString Trimmed(const BString& s) { BString c(s); c.Trim(); return c; }
 
 // Wait up to timeoutMicros for fd to become readable.
 static bool WaitReadable(int fd, int64 timeoutMicros)
@@ -76,13 +85,13 @@ static void SetNonBlocking(int fd)
 }
 
 // Format a host-order IPv4 address as "a.b.c.d".
-static String IpToString(uint32 hostOrderIP)
+static BString IpToString(uint32 hostOrderIP)
 {
 	char buf[24];
 	snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
 	         (hostOrderIP >> 24) & 0xFF, (hostOrderIP >> 16) & 0xFF,
 	         (hostOrderIP >> 8) & 0xFF, hostOrderIP & 0xFF);
-	return String(buf);
+	return BString(buf);
 }
 
 // TCP-connect to a dotted-quad (or hostname) with a timeout; returns fd or -1.
@@ -94,7 +103,7 @@ static int ConnectTCP(const char* host, uint16 port, int timeoutMs)
 		netIP = addr.s_addr;
 	} else {
 		// Use getaddrinfo(), NOT gethostbyname(): the latter returns libc's shared static
-		// hostent and is not thread-safe, so it races muscle's DNS lookups (and this probe
+		// hostent and is not thread-safe, so it races other threads' DNS lookups (and this probe
 		// runs on its own thread) -> segfault.  getaddrinfo() allocates a per-call result.
 		struct addrinfo hints; memset(&hints, 0, sizeof(hints));
 		hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
@@ -127,9 +136,12 @@ static int ConnectTCP(const char* host, uint16 port, int timeoutMs)
 }
 
 // ---------------------------------------------------------------------------
-PortMapper::PortMapper(const BMessenger& target, uint16 internalPort)
+PortMapper::PortMapper(const BMessenger& target, uint16 internalPort,
+                       const char* description, bool autoProbe)
 	: _target(target)
 	, _internalPort(internalPort)
+	, _description(description ? description : "Cricket")
+	, _autoProbe(autoProbe)
 	, _thread(-1)
 	, _keepRunning(false)
 	, _localIP(0)
@@ -157,7 +169,7 @@ PortMapper::Start()
 {
 	if (_thread >= 0) return B_NO_ERROR;
 	_keepRunning = true;
-	_thread = spawn_thread(_ThreadEntryHook, "beshare port mapper", B_LOW_PRIORITY, this);
+	_thread = spawn_thread(_ThreadEntryHook, "cricket port mapper", B_LOW_PRIORITY, this);
 	if (_thread < 0) { _keepRunning = false; return _thread; }
 	return resume_thread(_thread);
 }
@@ -179,16 +191,16 @@ PortMapper::_ThreadEntryHook(void* self)
 	return 0;
 }
 
-String PortMapper::GetExternalIP() const   { BAutolock l(_stateLock); return _externalIP; }
+BString PortMapper::GetExternalIP() const   { BAutolock l(_stateLock); return _externalIP; }
 int    PortMapper::GetReachability() const  { BAutolock l(_stateLock); return _reachability; }
-String PortMapper::GetInternetIP() const    { BAutolock l(_stateLock); return _internetIP; }
+BString PortMapper::GetInternetIP() const    { BAutolock l(_stateLock); return _internetIP; }
 void   PortMapper::ProbeReachability()      { _probeRequested = true; }
 uint16 PortMapper::GetExternalPort() const { BAutolock l(_stateLock); return _externalPort; }
 bool   PortMapper::IsMapped() const        { BAutolock l(_stateLock); return _isMapped; }
 
 void
 PortMapper::_Report(int32 state, const char* method, const char* message,
-                    const String& externalIP, uint16 externalPort, bool verified)
+                    const BString& externalIP, uint16 externalPort, bool verified)
 {
 	{
 		BAutolock l(_stateLock);
@@ -201,10 +213,10 @@ PortMapper::_Report(int32 state, const char* method, const char* message,
 		}
 	}
 
-	BMessage msg(BESHARE_PORT_MAP_REPORT);
+	BMessage msg(PORT_MAP_REPORT);
 	msg.AddInt32("state", state);
 	msg.AddString("method", method ? method : "");
-	msg.AddString("external_ip", externalIP.Cstr());
+	msg.AddString("external_ip", externalIP.String());
 	msg.AddInt32("external_port", externalPort);
 	msg.AddInt32("internal_port", _internalPort);
 	msg.AddBool("verified", verified);
@@ -220,7 +232,7 @@ PortMapper::_ThreadLoop()
 
 	_DiscoverGatewayAndLocalIP();
 	PMLOG("discovery: gateway=%s localIP=%s internalPort=%u",
-	      IpToString(_gatewayIP).Cstr(), IpToString(_localIP).Cstr(), _internalPort);
+	      IpToString(_gatewayIP).String(), IpToString(_localIP).String(), _internalPort);
 
 	uint64 nextAttempt    = 0;
 	bool   everMapped     = false;
@@ -228,7 +240,7 @@ PortMapper::_ThreadLoop()
 
 	while (_keepRunning) {
 		if (NowMicros() >= nextAttempt) {
-			String extIP;
+			BString extIP;
 			uint16 extPort = 0;
 			uint32 lease   = LEASE_SECONDS;
 			bool ok = false;
@@ -245,7 +257,7 @@ PortMapper::_ThreadLoop()
 				PMLOG("NAT-PMP/PCP not available; trying UPnP IGD...");
 				if (_UPnPMap(LEASE_SECONDS, extIP, extPort)) {
 					ok = true; method = "UPnP"; _activeMethod = METHOD_UPNP; lease = LEASE_SECONDS;
-					PMLOG("UPnP succeeded: external port %u (extIP=%s)", extPort, extIP.Cstr());
+					PMLOG("UPnP succeeded: external port %u (extIP=%s)", extPort, extIP.String());
 				} else PMLOG("UPnP mapping failed");
 			}
 
@@ -262,14 +274,14 @@ PortMapper::_ThreadLoop()
 				         verified ? "  Mapping confirmed on the router."
 				                  : "  WARNING: the router did not confirm the mapping, incoming transfers may still fail.");
 				_Report(PORT_MAP_STATE_MAPPED, method, buf, extIP, extPort, verified);
-				if (!currentlyMapped) _probeRequested = true;  // fresh map => check real reachability
+				if (!currentlyMapped && _autoProbe) _probeRequested = true;  // fresh map => check real reachability
 				everMapped = currentlyMapped = true;
 				uint32 renewIn = (lease > 60) ? (lease / 2) : 30;
 				nextAttempt = NowMicros() + (uint64)renewIn * 1000000ULL;
 			} else if (currentlyMapped) {
 				// We had a working mapping and just failed to renew it: the router
-				// probably rebooted or dropped it.  Tell the UI so it can restore
-				// "I'm Firewalled".  We keep retrying in the background.
+				// probably rebooted or dropped it.  Tell the UI so it can fall back
+				// to passive DCC.  We keep retrying in the background.
 				currentlyMapped = false;
 				_activeMethod = METHOD_NONE;
 				_mappedExternalPort = 0;
@@ -344,7 +356,7 @@ PortMapper::_DiscoverGatewayAndLocalIP()
 // 36-byte MAP opcode block.  We send version 2; a NAT-PMP-only router will not
 // answer a version-2 packet, so we simply fall back to legacy NAT-PMP.
 bool
-PortMapper::_PCPMap(uint32 lifetimeSecs, String& outExternalIP,
+PortMapper::_PCPMap(uint32 lifetimeSecs, BString& outExternalIP,
                     uint16& outExternalPort, uint32& outLeaseSecs)
 {
 	if (_localIP == 0) _DiscoverGatewayAndLocalIP();
@@ -475,7 +487,7 @@ static int NatPMPTransact(int sock, uint32 gatewayHostIP,
 }
 
 bool
-PortMapper::_NatPMPMap(uint32 lifetimeSecs, String& outExternalIP,
+PortMapper::_NatPMPMap(uint32 lifetimeSecs, BString& outExternalIP,
                        uint16& outExternalPort, uint32& outLeaseSecs)
 {
 	int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -532,43 +544,45 @@ PortMapper::_NatPMPUnmap()
 // ---------------------------------------------------------------------------
 // UPnP IGD helpers
 // ---------------------------------------------------------------------------
-static String HttpHeaderValue(const String& response, const char* headerName)
+static BString HttpHeaderValue(const BString& response, const char* headerName)
 {
-	String lower = response.ToLowerCase();
-	String key   = String(headerName).ToLowerCase();
-	int idx = lower.IndexOf(key);
+	BString lower = Lower(response);
+	BString key   = Lower(BString(headerName));
+	int32 idx = lower.FindFirst(key);
 	if (idx < 0) return "";
-	idx += (int)key.Length();
-	int eol = response.IndexOf('\n', idx);
-	if (eol < 0) eol = (int)response.Length();
-	return response.Substring((uint32)idx, (uint32)eol).Trim();
+	idx += key.Length();
+	int32 eol = response.FindFirst('\n', idx);
+	if (eol < 0) eol = response.Length();
+	return Trimmed(Sub(response, idx, eol));
 }
 
-static String XmlTagValue(const String& xml, const char* tag)
+static BString XmlTagValue(const BString& xml, const char* tag)
 {
-	String open = String("<") + tag;
-	int s = xml.IndexOf(open);
+	BString open("<");
+	open << tag;
+	int32 s = xml.FindFirst(open);
 	if (s < 0) return "";
-	s = xml.IndexOf('>', s);
+	s = xml.FindFirst('>', s);
 	if (s < 0) return "";
 	s += 1;
-	String close = String("</") + tag + ">";
-	int e = xml.IndexOf(close, s);
+	BString close("</");
+	close << tag << ">";
+	int32 e = xml.FindFirst(close, s);
 	if (e < 0) return "";
-	return xml.Substring((uint32)s, (uint32)e).Trim();
+	return Trimmed(Sub(xml, s, e));
 }
 
-static bool ParseHttpURL(const String& url, String& outHost, uint16& outPort, String& outPath)
+static bool ParseHttpURL(const BString& url, BString& outHost, uint16& outPort, BString& outPath)
 {
 	if (url.StartsWith("http://") == false) return false;
-	String u = url.Substring(7);
-	int slash = u.IndexOf('/');
-	String hostport = (slash >= 0) ? u.Substring(0, (uint32)slash) : u;
-	outPath = (slash >= 0) ? u.Substring((uint32)slash) : String("/");
-	int colon = hostport.IndexOf(':');
+	BString u = Sub(url, 7);
+	int32 slash = u.FindFirst('/');
+	BString hostport = (slash >= 0) ? Sub(u, 0, slash) : u;
+	outPath = (slash >= 0) ? Sub(u, slash) : BString("/");
+	int32 colon = hostport.FindFirst(':');
 	if (colon >= 0) {
-		outHost = hostport.Substring(0, (uint32)colon);
-		outPort = (uint16)atoi(hostport.Substring((uint32)colon + 1).Cstr());
+		outHost = Sub(hostport, 0, colon);
+		outPort = (uint16)atoi(Sub(hostport, colon + 1).String());
 	} else {
 		outHost = hostport;
 		outPort = 80;
@@ -578,13 +592,13 @@ static bool ParseHttpURL(const String& url, String& outHost, uint16& outPort, St
 
 bool
 PortMapper::_HttpRequest(const char* host, uint16 port, const char* method,
-                         const char* path, const String& extraHeaders,
-                         const String& body, String& outBody)
+                         const char* path, const BString& extraHeaders,
+                         const BString& body, BString& outBody)
 {
 	int sock = ConnectTCP(host, port, 6000);
 	if (sock < 0) return false;
 
-	String req;
+	BString req;
 	char line[512];
 	snprintf(line, sizeof(line), "%s %s HTTP/1.1\r\n", method, path); req += line;
 	snprintf(line, sizeof(line), "HOST: %s:%u\r\n", host, port);      req += line;
@@ -594,8 +608,8 @@ PortMapper::_HttpRequest(const char* host, uint16 port, const char* method,
 	req += "\r\n";
 	req += body;
 
-	const char* out = req.Cstr();
-	uint32 remaining = req.Length();
+	const char* out = req.String();
+	uint32 remaining = (uint32)req.Length();
 	uint64 sendDeadline = NowMicros() + 6000000ULL;
 	while (remaining > 0 && NowMicros() < sendDeadline) {
 		int sent = send(sock, out, remaining, 0);
@@ -605,7 +619,7 @@ PortMapper::_HttpRequest(const char* host, uint16 port, const char* method,
 	}
 	if (remaining > 0) { close(sock); return false; }
 
-	String response;
+	BString response;
 	char buf[2048];
 	uint64 recvDeadline = NowMicros() + 8000000ULL;
 	while (NowMicros() < recvDeadline) {
@@ -619,8 +633,8 @@ PortMapper::_HttpRequest(const char* host, uint16 port, const char* method,
 	close(sock);
 	if (response.Length() == 0) return false;
 
-	int hdrEnd = response.IndexOf("\r\n\r\n");
-	outBody = (hdrEnd >= 0) ? response.Substring((uint32)hdrEnd + 4) : response;
+	int32 hdrEnd = response.FindFirst("\r\n\r\n");
+	outBody = (hdrEnd >= 0) ? Sub(response, hdrEnd + 4) : response;
 	return true;
 }
 
@@ -629,9 +643,9 @@ PortMapper::_HttpRequest(const char* host, uint16 port, const char* method,
 
 // Finds the first well-formed IPv4 dotted-quad in (text).
 bool
-PortMapper::_ExtractIPv4(const String& text, String& outIP)
+PortMapper::_ExtractIPv4(const BString& text, BString& outIP)
 {
-	const char* s = text.Cstr();
+	const char* s = text.String();
 	for (const char* p = s; *p; ++p) {
 		if (*p < '0' || *p > '9') continue;
 		if (p != s && (p[-1] == '.' || (p[-1] >= '0' && p[-1] <= '9'))) continue; // mid-number
@@ -653,10 +667,10 @@ PortMapper::_ExtractIPv4(const String& text, String& outIP)
 
 // True if (ip) is a non-internet-routable address (RFC1918 / CGNAT / link-local / loopback).
 bool
-PortMapper::_IsPrivateIPv4(const String& ip)
+PortMapper::_IsPrivateIPv4(const BString& ip)
 {
 	unsigned a, b, c, d;
-	if (sscanf(ip.Cstr(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return false;
+	if (sscanf(ip.String(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return false;
 	if (a == 10)                       return true;   // 10.0.0.0/8
 	if (a == 172 && b >= 16 && b <= 31) return true;  // 172.16.0.0/12
 	if (a == 192 && b == 168)          return true;   // 192.168.0.0/16
@@ -670,7 +684,7 @@ PortMapper::_IsPrivateIPv4(const String& ip)
 // Fetches our internet-visible IP from a public IP-echo service (plain HTTP, so it
 // works with PortMapper's raw-socket client).  Tries several in case one is down.
 bool
-PortMapper::_GetInternetIP(String& outIP)
+PortMapper::_GetInternetIP(BString& outIP)
 {
 	static const struct { const char* host; const char* path; } kServices[] = {
 		{ "api.ipify.org",         "/"   },
@@ -680,11 +694,11 @@ PortMapper::_GetInternetIP(String& outIP)
 	};
 	for (size_t i = 0; i < sizeof(kServices) / sizeof(kServices[0]); ++i) {
 		if (!_keepRunning) return false;
-		String body;
+		BString body;
 		if (_HttpRequest(kServices[i].host, 80, "GET", kServices[i].path,
-		                 "User-Agent: BeShare\r\n", "", body)
+		                 "User-Agent: Cricket\r\n", "", body)
 		    && _ExtractIPv4(body, outIP)) {
-			PMLOG("internet IP %s (via %s)", outIP.Cstr(), kServices[i].host);
+			PMLOG("internet IP %s (via %s)", outIP.String(), kServices[i].host);
 			return true;
 		}
 	}
@@ -695,10 +709,10 @@ PortMapper::_GetInternetIP(String& outIP)
 void
 PortMapper::_RunReachabilityProbe()
 {
-	String internetIP;
+	BString internetIP;
 	bool gotNet = _GetInternetIP(internetIP);
 
-	String routerExt;
+	BString routerExt;
 	uint16 extPort;
 	bool   mapped;
 	{
@@ -707,7 +721,7 @@ PortMapper::_RunReachabilityProbe()
 		extPort   = _externalPort;
 		mapped    = _isMapped;
 	}
-	String localIP = IpToString(_localIP);
+	BString localIP = IpToString(_localIP);
 
 	int  reach;
 	char buf[416];
@@ -722,32 +736,32 @@ PortMapper::_RunReachabilityProbe()
 		snprintf(buf, sizeof(buf),
 		         "Reachability check: NOT reachable from the internet. Your router's WAN address "
 		         "(%s) is itself a private / carrier-grade-NAT address, so forwarding a port on it "
-		         "cannot expose you. Your real public IP is %s. Ask your ISP for a public IP, or "
-		         "keep 'I'm Firewalled' on.", routerExt.Cstr(), internetIP.Cstr());
+		         "cannot expose you. Your real public IP is %s. Cricket will use passive DCC; ask "
+		         "your ISP for a public IP to receive direct connections.", routerExt.String(), internetIP.String());
 	} else if (routerExt.Length() > 0 && routerExt != internetIP) {
 		reach = 0;
 		snprintf(buf, sizeof(buf),
 		         "Reachability check: NOT reachable from the internet. Carrier-grade / double NAT "
 		         "detected: your router's WAN IP (%s) is not your real public IP (%s), so the "
-		         "forwarded port isn't reachable from outside. Keep 'I'm Firewalled' on.",
-		         routerExt.Cstr(), internetIP.Cstr());
+		         "forwarded port isn't reachable from outside. Cricket will use passive DCC.",
+		         routerExt.String(), internetIP.String());
 	} else if (routerExt.Length() > 0) {   // routerExt == internetIP
 		reach = 1;
 		snprintf(buf, sizeof(buf),
 		         "Reachability check: reachable! Your public address %s:%u is open to the internet; "
-		         "external users can download from you.",
-		         internetIP.Cstr(), (unsigned)(extPort ? extPort : _internalPort));
+		         "other users can connect to your DCC transfers.",
+		         internetIP.String(), (unsigned)(extPort ? extPort : _internalPort));
 	} else if (internetIP == localIP) {    // no mapping, but we hold a public IP directly
 		reach = 1;
 		snprintf(buf, sizeof(buf),
-		         "Reachability check: you appear to be directly on the internet (public IP %s, no NAT). "
-		         "With 'I'm Firewalled' off, external users can reach you.", internetIP.Cstr());
+		         "Reachability check: you appear to be directly on the internet (public IP %s, no NAT); "
+		         "other users can connect to your DCC transfers.", internetIP.String());
 	} else {                               // no mapping and behind NAT
 		reach = 0;
 		snprintf(buf, sizeof(buf),
 		         "Reachability check: you are behind NAT (local %s, public %s) with no active port "
-		         "forwarding; external users likely cannot reach you unless you forward the port "
-		         "manually or enable UPnP/NAT-PMP.", localIP.Cstr(), internetIP.Cstr());
+		         "forwarding; other users likely cannot connect to you unless you forward the DCC "
+		         "ports manually or enable UPnP/NAT-PMP. Cricket will use passive DCC.", localIP.String(), internetIP.String());
 	}
 
 	{
@@ -756,20 +770,20 @@ PortMapper::_RunReachabilityProbe()
 		_internetIP   = internetIP;
 	}
 
-	BMessage report(BESHARE_PORT_MAP_REPORT);
+	BMessage report(PORT_MAP_REPORT);
 	report.AddInt32("state", mapped ? PORT_MAP_STATE_MAPPED : PORT_MAP_STATE_IDLE);
 	report.AddInt32("reachable", reach);
-	report.AddString("internet_ip", internetIP.Cstr());
+	report.AddString("internet_ip", internetIP.String());
 	report.AddInt32("external_port", extPort);
 	report.AddInt32("internal_port", _internalPort);
 	report.AddString("message", buf);
 	_target.SendMessage(&report);
-	PMLOG("reachability verdict=%d internetIP=%s routerExt=%s", reach, internetIP.Cstr(), routerExt.Cstr());
+	PMLOG("reachability verdict=%d internetIP=%s routerExt=%s", reach, internetIP.String(), routerExt.String());
 }
 
 bool
-PortMapper::_UPnPDiscover(String& outControlURL, String& outServiceType,
-                          String& outBaseHost, uint16& outBasePort)
+PortMapper::_UPnPDiscover(BString& outControlURL, BString& outServiceType,
+                          BString& outBaseHost, uint16& outBasePort)
 {
 	_upnpRouterResponded = false;
 
@@ -802,7 +816,7 @@ PortMapper::_UPnPDiscover(String& outControlURL, String& outServiceType,
 	// Collect every distinct LOCATION we hear (routers can announce several,
 	// and the first one is not always the one whose description is reachable).
 	enum { MAX_LOCATIONS = 4 };
-	String locations[MAX_LOCATIONS];
+	BString locations[MAX_LOCATIONS];
 	uint32 numLocations = 0;
 	int    sendFailures = 0, sendAttempts = 0;
 
@@ -832,7 +846,7 @@ PortMapper::_UPnPDiscover(String& outControlURL, String& outServiceType,
 			int n = recvfrom(sock, resp, sizeof(resp) - 1, 0, NULL, NULL);
 			if (n <= 0) continue;
 			resp[n] = '\0';
-			String loc = HttpHeaderValue(String(resp), "\nlocation:");
+			BString loc = HttpHeaderValue(BString(resp), "\nlocation:");
 			if (loc.StartsWith("http://") == false) continue;
 			bool known = false;
 			for (uint32 k = 0; k < numLocations; k++) if (locations[k] == loc) { known = true; break; }
@@ -854,28 +868,28 @@ PortMapper::_UPnPDiscover(String& outControlURL, String& outServiceType,
 		"urn:schemas-upnp-org:service:WANPPPConnection:1"
 	};
 	for (uint32 li = 0; li < numLocations && _keepRunning; li++) {
-		PMLOG("SSDP: IGD LOCATION = %s", locations[li].Cstr());
+		PMLOG("SSDP: IGD LOCATION = %s", locations[li].String());
 
-		String host, path; uint16 port = 80;
+		BString host, path; uint16 port = 80;
 		if (!ParseHttpURL(locations[li], host, port, path)) continue;
 
-		String xml;
-		if (!_HttpRequest(host.Cstr(), port, "GET", path.Cstr(), "", "", xml)) { PMLOG("HTTP GET description failed"); continue; }
+		BString xml;
+		if (!_HttpRequest(host.String(), port, "GET", path.String(), "", "", xml)) { PMLOG("HTTP GET description failed"); continue; }
 		PMLOG("device description fetched (%lu bytes)", (unsigned long)xml.Length());
 
 		for (uint32 s = 0; s < 2; s++) {
-			int svcIdx = xml.IndexOf(svcTypes[s]);
+			int32 svcIdx = xml.FindFirst(svcTypes[s]);
 			if (svcIdx < 0) continue;
-			int ctlIdx = xml.IndexOf("<controlURL>", (uint32)svcIdx);
+			int32 ctlIdx = xml.FindFirst("<controlURL>", svcIdx);
 			if (ctlIdx < 0) continue;
-			int open  = xml.IndexOf('>', (uint32)ctlIdx) + 1;
-			int close = xml.IndexOf("</controlURL>", (uint32)open);
+			int32 open  = xml.FindFirst('>', ctlIdx) + 1;
+			int32 close = xml.FindFirst("</controlURL>", open);
 			if (close < 0) continue;
-			outControlURL  = xml.Substring((uint32)open, (uint32)close).Trim();
+			outControlURL  = Trimmed(Sub(xml, open, close));
 			outServiceType = svcTypes[s];
 			if (outControlURL.Length() > 0) {
 				outBaseHost = host; outBasePort = port;
-				PMLOG("found service %s controlURL=%s", svcTypes[s], outControlURL.Cstr());
+				PMLOG("found service %s controlURL=%s", svcTypes[s], outControlURL.String());
 				return true;
 			}
 		}
@@ -886,48 +900,50 @@ PortMapper::_UPnPDiscover(String& outControlURL, String& outServiceType,
 }
 
 bool
-PortMapper::_UPnPSoap(const char* action, const String& argsXml, String& outResponse)
+PortMapper::_UPnPSoap(const char* action, const BString& argsXml, BString& outResponse)
 {
-	String host = _upnpHost, path = _upnpControlURL; uint16 port = _upnpPort;
+	BString host = _upnpHost, path = _upnpControlURL; uint16 port = _upnpPort;
 	if (_upnpControlURL.StartsWith("http://"))
 		ParseHttpURL(_upnpControlURL, host, port, path);
-	else if (_upnpControlURL.StartsWith("/") == false)
-		path = String("/") + _upnpControlURL;
+	else if (_upnpControlURL.StartsWith("/") == false) {
+		path = "/";
+		path << _upnpControlURL;
+	}
 
-	String bodyXml;
-	bodyXml += "<?xml version=\"1.0\"?>\r\n";
-	bodyXml += "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">";
-	bodyXml += "<s:Body>";
-	bodyXml += String("<u:") + action + " xmlns:u=\"" + _upnpServiceType + "\">";
-	bodyXml += argsXml;
-	bodyXml += String("</u:") + action + ">";
-	bodyXml += "</s:Body></s:Envelope>";
+	BString bodyXml;
+	bodyXml << "<?xml version=\"1.0\"?>\r\n";
+	bodyXml << "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">";
+	bodyXml << "<s:Body>";
+	bodyXml << "<u:" << action << " xmlns:u=\"" << _upnpServiceType << "\">";
+	bodyXml << argsXml;
+	bodyXml << "</u:" << action << ">";
+	bodyXml << "</s:Body></s:Envelope>";
 
-	String headers;
-	headers += "Content-Type: text/xml; charset=\"utf-8\"\r\n";
-	headers += String("SOAPAction: \"") + _upnpServiceType + "#" + action + "\"\r\n";
+	BString headers;
+	headers << "Content-Type: text/xml; charset=\"utf-8\"\r\n";
+	headers << "SOAPAction: \"" << _upnpServiceType << "#" << action << "\"\r\n";
 
-	return _HttpRequest(host.Cstr(), port, "POST", path.Cstr(), headers, bodyXml, outResponse);
+	return _HttpRequest(host.String(), port, "POST", path.String(), headers, bodyXml, outResponse);
 }
 
 // Extracts the numeric <errorCode> from a SOAP fault body (0 if absent).
-static int SoapErrorCode(const String& resp)
+static int SoapErrorCode(const BString& resp)
 {
-	String ec = XmlTagValue(resp, "errorCode");
-	return (ec.Length() > 0) ? atoi(ec.Cstr()) : 0;
+	BString ec = XmlTagValue(resp, "errorCode");
+	return (ec.Length() > 0) ? atoi(ec.String()) : 0;
 }
 
 bool
-PortMapper::_UPnPMap(uint32 lifetimeSecs, String& outExternalIP, uint16& outExternalPort)
+PortMapper::_UPnPMap(uint32 lifetimeSecs, BString& outExternalIP, uint16& outExternalPort)
 {
 	if (!_UPnPDiscover(_upnpControlURL, _upnpServiceType, _upnpHost, _upnpPort))
 		return false;
 
 	if (_localIP == 0) _DiscoverGatewayAndLocalIP();
 	if (_localIP == 0) return false;
-	String localIpStr = IpToString(_localIP);
+	BString localIpStr = IpToString(_localIP);
 
-	String resp;
+	BString resp;
 	if (_UPnPSoap("GetExternalIPAddress", "", resp))
 		outExternalIP = XmlTagValue(resp, "NewExternalIPAddress");
 
@@ -954,17 +970,17 @@ PortMapper::_UPnPMap(uint32 lifetimeSecs, String& outExternalIP, uint16& outExte
 			         "<NewInternalPort>%u</NewInternalPort>"
 			         "<NewInternalClient>%s</NewInternalClient>"
 			         "<NewEnabled>1</NewEnabled>"
-			         "<NewPortMappingDescription>BeShare</NewPortMappingDescription>"
+			         "<NewPortMappingDescription>%s</NewPortMappingDescription>"
 			         "<NewLeaseDuration>%lu</NewLeaseDuration>",
-			         candidates[c], _internalPort, localIpStr.Cstr(), (unsigned long)lease);
+			         candidates[c], _internalPort, localIpStr.String(), _description.String(), (unsigned long)lease);
 
-			String mapResp;
-			bool sent = _UPnPSoap("AddPortMapping", String(args), mapResp);
+			BString mapResp;
+			bool sent = _UPnPSoap("AddPortMapping", BString(args), mapResp);
 			if (!sent) { PMLOG("AddPortMapping: SOAP transport failed"); return false; }
 
-			if (mapResp.IndexOfIgnoreCase("AddPortMappingResponse") >= 0
-			         && mapResp.IndexOf("<s:Fault>") < 0
-			         && mapResp.IndexOfIgnoreCase("faultstring") < 0) {
+			if (mapResp.IFindFirst("AddPortMappingResponse") >= 0
+			         && mapResp.FindFirst("<s:Fault>") < 0
+			         && mapResp.IFindFirst("faultstring") < 0) {
 				outExternalPort = candidates[c];
 				PMLOG("AddPortMapping ok: external port %u (lease=%lu)", candidates[c], (unsigned long)lease);
 				return true;
@@ -996,8 +1012,8 @@ PortMapper::_UPnPUnmap()
 	         "<NewProtocol>TCP</NewProtocol>",
 	         _mappedExternalPort);
 
-	String resp;
-	(void)_UPnPSoap("DeletePortMapping", String(args), resp);
+	BString resp;
+	(void)_UPnPSoap("DeletePortMapping", BString(args), resp);
 }
 
 bool
@@ -1012,15 +1028,15 @@ PortMapper::_UPnPVerify()
 	         "<NewProtocol>TCP</NewProtocol>",
 	         _mappedExternalPort);
 
-	String resp;
-	if (!_UPnPSoap("GetSpecificPortMappingEntry", String(args), resp)) return false;
+	BString resp;
+	if (!_UPnPSoap("GetSpecificPortMappingEntry", BString(args), resp)) return false;
 
 	// The router should echo back our internal port and (usually) our LAN IP.
-	String gotPort   = XmlTagValue(resp, "NewInternalPort");
-	String gotClient = XmlTagValue(resp, "NewInternalClient");
-	bool portOk   = (gotPort.Length() > 0) && ((uint16)atoi(gotPort.Cstr()) == _internalPort);
+	BString gotPort   = XmlTagValue(resp, "NewInternalPort");
+	BString gotClient = XmlTagValue(resp, "NewInternalClient");
+	bool portOk   = (gotPort.Length() > 0) && ((uint16)atoi(gotPort.String()) == _internalPort);
 	bool clientOk = (gotClient.Length() == 0) || (_localIP == 0) || (gotClient == IpToString(_localIP));
 	return portOk && clientOk;
 }
 
-};  // namespace beshare
+};  // namespace cricket

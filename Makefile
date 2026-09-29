@@ -25,10 +25,10 @@ DEFINES := $(DEFINES)
 
 # OPTIMIZED CXXFLAGS: Aggressive loop optimizations (-O3), dead-code section generation,
 # and warning suppressions to guarantee a clean, flawless compilation terminal output.
-CXXFLAGS = -Wall -O3 -fdata-sections -ffunction-sections -Wno-reorder -Wno-unused-but-set-variable -I/boot/system/develop/headers/private/netservices2 
+CXXFLAGS = -Wall -O3 -fdata-sections -ffunction-sections -Wno-reorder -Wno-unused-but-set-variable -I/boot/system/develop/headers/private/netservices2 -Iportmapper 
 
 # Source files, objects, and resources
-SRCS = cricket.cpp icons.cpp
+SRCS = cricket.cpp icons.cpp dcc.cpp portmapper/PortMapper.cpp
 OBJS = $(SRCS:.cpp=.o)
 RDEFS = cricket.rdef
 RSRCS = $(RDEFS:.rdef=.rsrc)
