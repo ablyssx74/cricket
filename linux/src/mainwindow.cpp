@@ -16,6 +16,7 @@
 #include <QCloseEvent>
 #include <QColorDialog>
 #include <QDateTime>
+#include <QDebug>
 #include <QDesktopServices>
 #include <QFile>
 #include <QGridLayout>
@@ -84,9 +85,25 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         if (!cfg.showUpdateNotifications)
             return;
         QString text = tr("A newer version of Cricket is available! (%1)").arg(version);
-        Notifier::notify(tr("Update Available"), text);
         if (!fSessions.isEmpty())
             printStatus(fSessions.first(), "--- " + text);
+        // A desktop notification first; if no notification server answers,
+        // show Cricket's own alert instead so the update is never missed.
+        QPointer<MainWindow> self(this);
+        Notifier::notify(tr("Update Available"), text, [self, text](bool shown) {
+            if (cfg.debugEnable)
+                qDebug().noquote() << "[Update] notification" << (shown ? "shown" : "failed, showing an alert");
+            if (shown || !self)
+                return;
+            QMessageBox box(QMessageBox::Information, tr("Update Available"),
+                text + "\n\n" + tr("You are running %1.").arg(AppInfo::VERSION_STRING), QMessageBox::NoButton, self);
+            box.addButton(tr("Later"), QMessageBox::RejectRole);
+            QPushButton* open = box.addButton(tr("Open GitHub"), QMessageBox::AcceptRole);
+            box.setDefaultButton(open);
+            box.exec();
+            if (box.clickedButton() == open)
+                QDesktopServices::openUrl(QUrl("https://github.com/ablyssx74/cricket"));
+        });
     });
     fUpdates->checkLater();
 
