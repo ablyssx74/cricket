@@ -19,6 +19,7 @@ option(CRICKET_WITH_ASPELL "Enable aspell spell checking" ON)
 option(CRICKET_WITH_DBUS "Enable desktop notifications via D-Bus" ON)
 
 find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets Network)
+find_package(Threads REQUIRED)
 if(CRICKET_WITH_DBUS)
     find_package(Qt6 COMPONENTS DBus)
 endif()
@@ -34,11 +35,13 @@ add_executable(cricket
     src/chatview.cpp
     src/dialogs.cpp
     src/mainwindow.cpp
+    src/dcc.cpp
+    src/portmapper.cpp
     resources/resources.qrc
 )
 
 target_compile_definitions(cricket PRIVATE CRICKET_VERSION="${CRICKET_VERSION}")
-target_link_libraries(cricket PRIVATE Qt6::Widgets Qt6::Network)
+target_link_libraries(cricket PRIVATE Qt6::Widgets Qt6::Network Threads::Threads)
 
 if(CRICKET_WITH_DBUS AND Qt6DBus_FOUND)
     target_link_libraries(cricket PRIVATE Qt6::DBus)

@@ -16,19 +16,22 @@
 * Color Highlight keywords.
 * Ignore keywords.
 * Emots.
-* DCC file transfers (send and receive, passive DCC, resume), with automatic
-  router port forwarding (UPnP / NAT-PMP / PCP).
+* DCC file transfers (send and receive, passive DCC, resume) and DCC CHAT, with
+  automatic router port forwarding (UPnP / NAT-PMP / PCP).
 
 
 
-### DCC file transfers
+### DCC file transfers and chat
 * Right-click a user and choose **Send File to …**, or type `/dcc send <nick> [path]`.
+* **DCC Chat with …** (or `/dcc chat <nick>`) opens a direct chat in a `=nick`
+  buffer; what you type there goes straight to the other person, not through
+  the server. Remove the buffer to hang up.
 * `/dcc` (or **DCC Transfers…** on a server's right-click menu) opens the transfers window.
 * Incoming files always ask first and are saved to `~/Downloads` (change it in
   Server Settings → DCC). Partial downloads can be resumed.
 * Cricket listens on 5 ports starting at 59200 and asks your router to forward
   them. If you still can't be reached from the internet (e.g. carrier-grade
-  NAT), it offers files with passive DCC instead. DCC CHAT isn't supported yet.
+  NAT), it offers files and chats with passive DCC instead.
 * Set `CRICKET_PORTMAP_DEBUG=1` to see what the port mapper is doing.
 
 ### Build 64bit / 32bit

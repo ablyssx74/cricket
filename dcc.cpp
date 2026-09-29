@@ -359,7 +359,8 @@ WaitFd(int fd, bool write, bigtime_t timeout, volatile bool* cancel)
 
 // Sends all of buf on a non-blocking socket. False on error, stall or cancel.
 bool
-SendAll(int fd, const char* buf, size_t len, volatile bool* cancel)
+SendAll(int fd, const char* buf, size_t len, volatile bool* cancel,
+	bigtime_t stallTimeout = kStallTimeout)
 {
 	while (len > 0) {
 		ssize_t n = send(fd, buf, len, 0);
@@ -370,7 +371,7 @@ SendAll(int fd, const char* buf, size_t len, volatile bool* cancel)
 		}
 		if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
 			return false;
-		if (WaitFd(fd, true, kStallTimeout, cancel) != 1)
+		if (WaitFd(fd, true, stallTimeout, cancel) != 1)
 			return false;
 	}
 	return true;
@@ -1102,6 +1103,8 @@ DccManager::_ThreadEntry(void* data)
 	}
 	if (dir == DCC_SEND)
 		self->_RunSend(id);
+	else if (dir == DCC_CHAT)
+		self->_RunChat(id);
 	else
 		self->_RunReceive(id);
 
@@ -1589,8 +1592,36 @@ DccManager::HandleCtcp(void* server, const BString& nick, const BString& ctcp)
 	}
 
 	if (type == "CHAT") {
-		_Log(server, BString("--- [DCC] ") << nick
-			<< " offered a DCC CHAT. DCC CHAT isn't supported yet, so it was ignored.");
+		// DCC CHAT chat <ip> <port> [token]
+		if (args.size() < 2) {
+			_Log(server, BString("--- [DCC] Ignored a malformed DCC CHAT from ") << nick);
+			return true;
+		}
+		BString host = DccHostToString(args[0]);
+		uint32 portValue = (uint32)strtoul(args[1].String(), nullptr, 10);
+		BString token = args.size() >= 3 ? args[2] : BString();
+		if (portValue > 65535)
+			return true;
+		uint16 port = (uint16)portValue;
+
+		// Reply to our passive chat offer: the peer is listening, connect to it.
+		if (token.Length() > 0 && port != 0) {
+			BAutolock lock(fLock);
+			for (Transfer* t : fTransfers) {
+				if (t->info.direction == DCC_CHAT && t->info.passive
+					&& t->info.state == DCC_STATE_WAITING && !t->threadRunning
+					&& t->token == token && t->info.nick.ICompare(nick) == 0) {
+					if (port < 1024)
+						return true;
+					t->remoteHost = host;
+					t->remotePort = port;
+					t->listenMode = false;
+					_StartThread(t);
+					return true;
+				}
+			}
+		}
+		_HandleIncomingChat(server, nick, host, port, token);
 		return true;
 	}
 
@@ -1878,6 +1909,356 @@ DccManager::ForgetServer(void* server)
 
 
 // -----------------------------------------------------------------------------
+// DCC CHAT
+// -----------------------------------------------------------------------------
+
+void
+DccManager::_PostChat(uint32 what, void* server, const BString& nick, const char* key,
+	const BString& value, bool action)
+{
+	BMessage msg(what);
+	msg.AddPointer("server", server);
+	msg.AddString("nick", nick);
+	if (key != nullptr)
+		msg.AddString(key, value);
+	if (what == MSG_DCC_CHAT_LINE)
+		msg.AddBool("action", action);
+	fHost.SendMessage(&msg, (BHandler*)nullptr, 1000000);
+}
+
+
+void
+DccManager::OfferChat(void* server, const BString& nick)
+{
+	bool passive = _UsePassive();
+	BString ip = _AdvertisedIP();
+	if (!passive && ip.Length() == 0)
+		passive = true;
+
+	BString ctcp;
+	{
+		BAutolock lock(fLock);
+		if (fShuttingDown)
+			return;
+		for (Transfer* t : fTransfers) {
+			if (t->info.direction == DCC_CHAT && t->server == server
+				&& t->info.nick.ICompare(nick) == 0
+				&& (t->info.state == DCC_STATE_WAITING || t->info.state == DCC_STATE_CONNECTING
+					|| t->info.state == DCC_STATE_ACTIVE)) {
+				_Log(server, BString("--- [DCC] A DCC CHAT with ") << nick << " is already open or pending.");
+				return;
+			}
+		}
+		Transfer* t = _NewTransfer(DCC_CHAT, server, nick);
+		t->info.fileName = "DCC CHAT";
+		t->info.passive = passive;
+		if (passive) {
+			char token[16];
+			snprintf(token, sizeof(token), "%u", (unsigned)((system_time() / 7 + t->info.id * 7919) % 100000000));
+			t->token = token;
+			uint32 advertised = ParseIPv4(ip);
+			if (advertised == 0)
+				advertised = _LocalIPv4();
+			ctcp << "DCC CHAT chat " << advertised << " 0 " << t->token;
+		} else {
+			uint16 port;
+			int fd;
+			if (!_AllocListenPort(port, fd)) {
+				t->info.state = DCC_STATE_FAILED;
+				t->info.error = "No free DCC port (all listen ports are busy)";
+			} else {
+				t->listenPort = port;
+				t->listenFd = fd;
+				t->listenMode = true;
+				ctcp << "DCC CHAT chat " << ParseIPv4(ip) << " " << port;
+				_StartThread(t);
+			}
+		}
+	}
+	if (ctcp.Length() == 0) {
+		_Log(server, BString("--- [DCC] Can't start a DCC CHAT: all DCC listen ports are busy."));
+		return;
+	}
+	_SendCtcp(server, nick, ctcp);
+	_Log(server, BString("--- [DCC] Offering a DCC CHAT to ") << nick
+		<< (passive ? " (passive DCC)" : "") << ". Waiting for them to accept\xE2\x80\xA6");
+}
+
+
+void
+DccManager::_HandleIncomingChat(void* server, const BString& nick, const BString& host,
+	uint16 port, const BString& token)
+{
+	bool passive = (port == 0);
+	if (!passive && port < 1024) {
+		_Log(server, BString("--- [DCC] Refused a DCC CHAT from ") << nick
+			<< ": it pointed at a privileged port (" << port << ").");
+		return;
+	}
+	if (passive && token.Length() == 0)
+		return;
+
+	int32 id;
+	BString text;
+	{
+		BAutolock lock(fLock);
+		if (fShuttingDown)
+			return;
+		int32 pending = 0;
+		for (Transfer* t : fTransfers) {
+			if (t->info.state == DCC_STATE_OFFERED && t->info.nick.ICompare(nick) == 0)
+				pending++;
+		}
+		if (pending >= kMaxPendingPerNick)
+			return;
+
+		Transfer* t = _NewTransfer(DCC_CHAT, server, nick);
+		t->info.state = DCC_STATE_OFFERED;
+		t->info.fileName = "DCC CHAT";
+		t->info.passive = passive;
+		t->token = token;
+		t->remoteHost = host;
+		t->remotePort = port;
+		id = t->info.id;
+
+		text << nick << " wants to chat with you directly (DCC CHAT).\n\n"
+			<< "The chat bypasses the IRC server and connects your computers directly, "
+			"so each of you learns the other's IP address.";
+		if (!passive)
+			text << "\n\nFrom " << host << ":" << port;
+	}
+
+	_Log(server, BString("--- [DCC] ") << nick << " offers a DCC CHAT.");
+	BAlert* alert = new BAlert("DCC Chat Offer", text.String(), "Decline", "Accept", nullptr,
+		B_WIDTH_AS_USUAL, B_OFFSET_SPACING, B_INFO_ALERT);
+	alert->SetShortcut(0, B_ESCAPE);
+	BMessage* reply = new BMessage(MSG_DCC_ALERT_REPLY);
+	reply->AddInt32("id", id);
+	reply->AddBool("chat", true);
+	alert->Go(new BInvoker(reply, BMessenger(this)));
+}
+
+
+void
+DccManager::_AcceptChat(int32 id)
+{
+	void* server = nullptr;
+	BString nick, reply;
+	bool passive;
+	{
+		BAutolock lock(fLock);
+		Transfer* t = _Find(id);
+		if (t == nullptr || t->info.state != DCC_STATE_OFFERED)
+			return;
+		server = t->server;
+		nick = t->info.nick;
+		passive = t->info.passive;
+		t->info.state = DCC_STATE_WAITING;
+		if (!passive) {
+			t->listenMode = false;
+			_StartThread(t);
+			return;
+		}
+		uint16 port;
+		int fd;
+		if (!_AllocListenPort(port, fd)) {
+			t->info.state = DCC_STATE_FAILED;
+			t->info.error = "No free DCC port";
+		} else {
+			t->listenPort = port;
+			t->listenFd = fd;
+			t->listenMode = true;
+		}
+	}
+
+	// Passive offer: we listen and tell the peer where to connect.
+	BString ip = _AdvertisedIP();
+	if (ip.Length() == 0)
+		ip = IPv4ToString(_LocalIPv4());
+	BAutolock lock(fLock);
+	Transfer* t = _Find(id);
+	if (t == nullptr || t->listenFd < 0) {
+		_Log(server, BString("--- [DCC] Could not accept the DCC CHAT from ") << nick
+			<< ": all DCC listen ports are busy.");
+		return;
+	}
+	reply << "DCC CHAT chat " << ParseIPv4(ip) << " " << t->listenPort << " " << t->token;
+	_SendCtcp(server, nick, reply);
+	_StartThread(t);
+}
+
+
+void
+DccManager::_RunChat(int32 id)
+{
+	volatile bool* cancel;
+	bool listenMode;
+	BString host, nick;
+	uint16 port;
+	int listenFd;
+	void* server;
+	{
+		BAutolock lock(fLock);
+		Transfer* t = _Find(id);
+		if (t == nullptr)
+			return;
+		cancel = &t->cancel;
+		listenMode = t->listenMode;
+		host = t->remoteHost;
+		port = t->remotePort;
+		listenFd = t->listenFd;
+		nick = t->info.nick;
+		server = t->server;
+		t->info.state = listenMode ? DCC_STATE_WAITING : DCC_STATE_CONNECTING;
+	}
+
+	int sock;
+	BString error;
+	if (listenMode) {
+		sock = AcceptPeer(listenFd, cancel);
+		if (sock < 0)
+			error = "they never connected (timed out)";
+		BAutolock lock(fLock);
+		Transfer* t = _Find(id);
+		if (t != nullptr && t->listenFd >= 0) {
+			close(t->listenFd);
+			t->listenFd = -1;
+			_ReleaseListenPort(t->listenPort);
+		}
+	} else {
+		bool usedLoopback = false;
+		sock = _ConnectPeer(host, port, cancel, error, usedLoopback);
+	}
+	if (sock < 0) {
+		if (!*cancel)
+			_Log(server, BString("--- [DCC] The DCC CHAT with ") << nick << " could not be opened: " << error << ".");
+		_Finish(id, DCC_STATE_FAILED, error.String());
+		return;
+	}
+
+	{
+		BAutolock lock(fLock);
+		Transfer* t = _Find(id);
+		if (t != nullptr) {
+			t->sockFd = sock;
+			t->info.state = DCC_STATE_ACTIVE;
+			t->info.startTime = system_time();
+			server = t->server;
+		}
+	}
+	_PostChat(MSG_DCC_CHAT_OPENED, server, nick);
+
+	// Read newline-terminated lines until either side hangs up.
+	BString pending;
+	char buffer[4096];
+	const char* reason = "the other side closed the chat";
+	while (!*cancel) {
+		int ready = WaitFd(sock, false, 3600 * 1000000LL, cancel);
+		if (ready == 0)
+			continue;   // idle for an hour; chats may sit quietly
+		if (ready < 0)
+			break;
+		ssize_t n = recv(sock, buffer, sizeof(buffer), 0);
+		if (n == 0)
+			break;
+		if (n < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+				continue;
+			reason = "the connection was lost";
+			break;
+		}
+		pending.Append(buffer, (int32)n);
+		int32 nl;
+		while ((nl = pending.FindFirst('\n')) >= 0 || pending.Length() > 8192) {
+			BString line;
+			if (nl < 0) {
+				nl = 8192;  // no newline in a long run: pass it on in pieces
+				pending.CopyInto(line, 0, nl);
+				pending.Remove(0, nl);
+			} else {
+				pending.CopyInto(line, 0, nl);
+				pending.Remove(0, nl + 1);
+			}
+			line.RemoveAll("\r");
+			bool action = false;
+			if (line.StartsWith("\x01" "ACTION ")) {
+				line.Remove(0, 8);
+				line.RemoveAll("\x01");
+				action = true;
+			} else if (line.StartsWith("\x01")) {
+				continue;  // other CTCP inside a chat: ignore
+			}
+			BAutolock lock(fLock);
+			Transfer* t = _Find(id);
+			server = t != nullptr ? t->server : nullptr;
+			lock.Unlock();
+			_PostChat(MSG_DCC_CHAT_LINE, server, nick, "text", line, action);
+		}
+	}
+	if (*cancel)
+		reason = "you closed the chat";
+	{
+		BAutolock lock(fLock);
+		Transfer* t = _Find(id);
+		if (t != nullptr)
+			server = t->server;
+	}
+	_PostChat(MSG_DCC_CHAT_CLOSED, server, nick, "reason", reason);
+	_Finish(id, *cancel ? DCC_STATE_CANCELLED : DCC_STATE_DONE, nullptr);
+}
+
+
+bool
+DccManager::ChatSend(void* server, const BString& nick, const BString& text, bool action)
+{
+	BString line(text);
+	line.RemoveAll("\r");
+	line.RemoveAll("\n");
+	if (action) {
+		line.Prepend("\x01" "ACTION ");
+		line.Append("\x01");
+	}
+	line.Append("\n");
+
+	BAutolock lock(fLock);
+	for (Transfer* t : fTransfers) {
+		if (t->info.direction == DCC_CHAT && t->server == server && t->info.state == DCC_STATE_ACTIVE
+			&& t->sockFd >= 0 && t->info.nick.ICompare(nick) == 0) {
+			// Short stall limit: this runs on the chat window's thread.
+			return SendAll(t->sockFd, line.String(), line.Length(), &t->cancel, 5 * 1000000LL);
+		}
+	}
+	return false;
+}
+
+
+void
+DccManager::CloseChat(void* server, const BString& nick)
+{
+	BAutolock lock(fLock);
+	for (Transfer* t : fTransfers) {
+		if (t->info.direction != DCC_CHAT || t->server != server || t->info.nick.ICompare(nick) != 0)
+			continue;
+		if (t->info.state == DCC_STATE_DONE || t->info.state == DCC_STATE_FAILED
+			|| t->info.state == DCC_STATE_CANCELLED)
+			continue;
+		t->cancel = true;
+		if (t->sockFd >= 0)
+			shutdown(t->sockFd, SHUT_RDWR);
+		if (!t->threadRunning) {
+			t->info.state = DCC_STATE_CANCELLED;
+			t->info.endTime = system_time();
+			if (t->listenFd >= 0) {
+				close(t->listenFd);
+				t->listenFd = -1;
+				_ReleaseListenPort(t->listenPort);
+			}
+		}
+	}
+}
+
+
+// -----------------------------------------------------------------------------
 // Window support
 // -----------------------------------------------------------------------------
 
@@ -1886,8 +2267,10 @@ DccManager::Snapshot()
 {
 	BAutolock lock(fLock);
 	std::vector<DccTransferInfo> out;
-	for (Transfer* t : fTransfers)
-		out.push_back(t->info);
+	for (Transfer* t : fTransfers) {
+		if (t->info.direction != DCC_CHAT)
+			out.push_back(t->info);
+	}
 	return out;
 }
 
@@ -2037,10 +2420,15 @@ DccManager::MessageReceived(BMessage* message)
 
 		case MSG_DCC_ALERT_REPLY: {
 			int32 id = 0, which = 0;
-			bool canResume = false;
+			bool canResume = false, isChat = false;
 			message->FindInt32("id", &id);
 			message->FindInt32("which", &which);
 			message->FindBool("resume", &canResume);
+			message->FindBool("chat", &isChat);
+			if (isChat && which != 0) {
+				_AcceptChat(id);
+				break;
+			}
 			if (which == 0) {
 				void* server = nullptr;
 				BString nick, file;
@@ -2056,7 +2444,10 @@ DccManager::MessageReceived(BMessage* message)
 					nick = t->info.nick;
 					file = t->info.fileName;
 				}
-				_Log(server, BString("--- [DCC] Declined \"") << file << "\" from " << nick << ".");
+				if (isChat)
+					_Log(server, BString("--- [DCC] Declined a DCC CHAT from ") << nick << ".");
+				else
+					_Log(server, BString("--- [DCC] Declined \"") << file << "\" from " << nick << ".");
 				break;
 			}
 			bool resume = canResume && which == 1;
@@ -2078,6 +2469,8 @@ DccManager::MessageReceived(BMessage* message)
 				info = t->info;
 				server = t->server;
 			}
+			if (info.direction == DCC_CHAT)
+				break;
 			BString line("--- [DCC] ");
 			if (info.state == DCC_STATE_DONE) {
 				double secs = info.startTime > 0 ? (info.endTime - info.startTime) / 1000000.0 : 0;

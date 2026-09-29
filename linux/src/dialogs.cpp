@@ -13,6 +13,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QGroupBox>
+#include <QStandardPaths>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -466,11 +468,45 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     form->addRow(fUpdates);
     form->addRow(fDebug);
 
+    // --- DCC file transfers and chat ---
+    auto* dccBox = new QGroupBox(tr("DCC (direct file transfers and chat)"));
+    auto* dccForm = new QFormLayout(dccBox);
+    fDccDir = new QLineEdit(cfg.dccDownloadDir);
+    fDccDir->setPlaceholderText(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
+    auto* dccBrowse = new QPushButton(tr("Browse…"));
+    connect(dccBrowse, &QPushButton::clicked, this, [this]() {
+        QString dir = QFileDialog::getExistingDirectory(this, tr("DCC download folder"),
+            fDccDir->text().isEmpty() ? fDccDir->placeholderText() : fDccDir->text());
+        if (!dir.isEmpty())
+            fDccDir->setText(dir);
+    });
+    auto* dirRow = new QHBoxLayout;
+    dirRow->addWidget(fDccDir);
+    dirRow->addWidget(dccBrowse);
+    fDccPort = spin(1024, 65530, cfg.dccFirstPort);
+    fDccPort->setToolTip(tr("Cricket listens on this port and the next 4 for incoming DCC connections."));
+    fDccPortMap = new QCheckBox(tr("Forward the DCC ports on my router automatically (UPnP / NAT-PMP)"));
+    fDccPortMap->setChecked(cfg.dccUsePortMapping);
+    fDccPassive = new QCheckBox(tr("Always use passive DCC (the receiver listens and you connect to them)"));
+    fDccPassive->setChecked(cfg.dccForcePassive);
+    fDccExternalIP = new QLineEdit(cfg.dccExternalIP);
+    fDccExternalIP->setPlaceholderText(tr("automatic"));
+    fDccExternalIP->setToolTip(tr("Set only if you forwarded the ports by hand, or to a LAN address for transfers on your own network."));
+    auto* dccNote = new QLabel(tr("Incoming files and chats always ask first. If others can't reach you, Cricket switches to passive DCC."));
+    dccNote->setWordWrap(true);
+    dccForm->addRow(tr("Download folder:"), dirRow);
+    dccForm->addRow(tr("First listen port:"), fDccPort);
+    dccForm->addRow(tr("External IP override:"), fDccExternalIP);
+    dccForm->addRow(fDccPortMap);
+    dccForm->addRow(fDccPassive);
+    dccForm->addRow(dccNote);
+
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     auto* layout = new QVBoxLayout(this);
     layout->addLayout(form);
+    layout->addWidget(dccBox);
     layout->addWidget(buttons);
     resize(460, sizeHint().height());
 }
@@ -486,6 +522,11 @@ void SettingsDialog::apply()
         cfg.spellLanguage = lang;
     cfg.showUpdateNotifications = fUpdates->isChecked();
     cfg.debugEnable = fDebug->isChecked();
+    cfg.dccDownloadDir = fDccDir->text().trimmed();
+    cfg.dccFirstPort = fDccPort->value();
+    cfg.dccUsePortMapping = fDccPortMap->isChecked();
+    cfg.dccForcePassive = fDccPassive->isChecked();
+    cfg.dccExternalIP = fDccExternalIP->text().trimmed();
     saveConfig();
 }
 

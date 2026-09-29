@@ -6,7 +6,8 @@
 // DCC (Direct Client-to-Client) file transfers for Cricket.
 //
 // Supports DCC SEND in both directions, active and passive ("reverse", with a
-// token) variants, and DCC RESUME / ACCEPT. Listen ports come from a small
+// token) variants, DCC RESUME / ACCEPT, and DCC CHAT (direct line-based chat,
+// shown by the host as a "=nick" buffer). Listen ports come from a small
 // pool; each pool port is forwarded on the home router by a PortMapper
 // (NAT-PMP / PCP / UPnP). When the reachability check says we can't be reached
 // from the internet, outgoing offers switch to passive DCC automatically.
@@ -35,7 +36,11 @@ enum {
 	// "server" (pointer), "target" (string), "ctcp" (string, without the \x01 framing)
 	MSG_DCC_SEND_CTCP = 'dcSC',
 	// "server" (pointer, may be NULL for "active buffer"), "text" (string)
-	MSG_DCC_LOG = 'dcLG'
+	MSG_DCC_LOG = 'dcLG',
+	// DCC CHAT events. All carry "server" (pointer) and "nick" (string).
+	MSG_DCC_CHAT_OPENED = 'dcCO',
+	MSG_DCC_CHAT_LINE   = 'dcCT',   // + "text" (string), "action" (bool, a /me line)
+	MSG_DCC_CHAT_CLOSED = 'dcCX'    // + "reason" (string)
 };
 
 struct DccSettings {
@@ -49,7 +54,8 @@ struct DccSettings {
 
 enum DccDirection {
 	DCC_SEND = 0,
-	DCC_RECEIVE
+	DCC_RECEIVE,
+	DCC_CHAT
 };
 
 enum DccState {
@@ -107,6 +113,14 @@ public:
 
 	void ShowTransfersWindow();
 
+	// --- DCC CHAT (host thread) ---
+	// Offers `nick` a direct chat. The host gets MSG_DCC_CHAT_OPENED once connected.
+	void OfferChat(void* server, const BString& nick);
+	// Sends one line on an open chat; false if there is no open chat with nick.
+	bool ChatSend(void* server, const BString& nick, const BString& text, bool action);
+	// Hangs up a chat (open or still being set up).
+	void CloseChat(void* server, const BString& nick);
+
 	// --- Used by the transfers window ---
 	std::vector<DccTransferInfo> Snapshot();
 	BString StatusText();
@@ -125,6 +139,12 @@ private:
 	static int32 _ThreadEntry(void* data);
 	void      _RunSend(int32 id);
 	void      _RunReceive(int32 id);
+	void      _RunChat(int32 id);
+	void      _HandleIncomingChat(void* server, const BString& nick, const BString& host,
+	              uint16 port, const BString& token);
+	void      _AcceptChat(int32 id);
+	void      _PostChat(uint32 what, void* server, const BString& nick,
+	              const char* key = nullptr, const BString& value = BString(), bool action = false);
 	void      _Finish(int32 id, DccState state, const char* error);
 
 	void      _HandleIncomingSend(void* server, const BString& nick,

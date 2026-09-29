@@ -67,6 +67,21 @@ Command-line options:
 * Per-server background image and opacity, font sizes, and timestamp interval
 * Optional chat logging to `~/.local/share/cricket/logs`
 * Checks GitHub for new versions
+* DCC file transfers (send / receive, passive DCC, resume) and DCC CHAT, with
+  automatic router port forwarding (UPnP / NAT-PMP / PCP)
+
+## DCC file transfers and chat
+
+* Right-click a user → **Send File…** or **DCC Chat**, or use `/dcc send <nick> [file]`
+  and `/dcc chat <nick>`. `/dcc` (or **Server → DCC Transfers…**) shows transfers.
+* Incoming files and chats always ask first. Files go to `~/Downloads` (change it in
+  **Preferences → DCC**); a partial download can be resumed.
+* A DCC chat opens as a `=nick` buffer. What you type there goes straight to the other
+  person, not through the server. `/close` (or closing the buffer) hangs up.
+* Cricket listens on 5 ports starting at 59200 and asks your router to forward them.
+  If you still can't be reached from the internet (e.g. carrier-grade NAT), it uses
+  passive DCC. Clients without passive DCC (Vision, for example) can't take those;
+  on your own network set **External IP override** to this computer's LAN address.
 
 ## Files
 
