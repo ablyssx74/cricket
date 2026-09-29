@@ -436,8 +436,10 @@ ConnectTo(const BString& host, uint16 port, volatile bool* cancel, BString& erro
 		result = fd;
 	}
 	freeaddrinfo(res);
-	if (result < 0 && error.Length() == 0)
-		error = "Could not connect to the peer";
+	if (result < 0 && error.Length() == 0) {
+		error = "Could not connect to the peer at ";
+		error << host << ":" << port;
+	}
 	return result;
 }
 
@@ -814,6 +816,11 @@ DccManager::_StartPortMappers()
 		// Only the first mapper runs the internet reachability probe.
 		cricket::PortMapper* mapper = new cricket::PortMapper(BMessenger(this),
 			(uint16)(fSettings.firstPort + i), "Cricket DCC", i == 0);
+		if (i == 0) {
+			// Learn our public IP now rather than only after a successful
+			// mapping: it's needed to spot peers on this machine / LAN.
+			mapper->ProbeReachability();
+		}
 		mapper->Start();
 		fMappers.push_back(mapper);
 	}
@@ -961,6 +968,47 @@ DccManager::_AdvertisedIP()
 	if (local != 0 && !IsPrivateIPv4(local))
 		return IPv4ToString(local);
 	return "";
+}
+
+
+bool
+DccManager::_IsOwnPublicAddress(const BString& host)
+{
+	uint32 ip = ParseIPv4(host);
+	if (ip == 0 || IsPrivateIPv4(ip))
+		return false;
+	BAutolock lock(fLock);
+	return (fInternetIP.Length() > 0 && ParseIPv4(fInternetIP) == ip)
+		|| (fRouterIP.Length() > 0 && ParseIPv4(fRouterIP) == ip)
+		|| (fSettings.externalIP.Length() > 0 && ParseIPv4(fSettings.externalIP) == ip);
+}
+
+
+int
+DccManager::_ConnectPeer(const BString& host, uint16 port, volatile bool* cancel,
+	BString& error, bool& usedLoopback)
+{
+	usedLoopback = false;
+	int fd = ConnectTo(host, port, cancel, error);
+	if (fd >= 0 || (cancel != nullptr && *cancel))
+		return fd;
+
+	// The peer advertised our own public IP, so it sits on this machine (or
+	// behind the same router). Connecting to our public address from inside
+	// only works with "hairpin NAT" plus a forwarded port, which clients like
+	// Vision don't set up -- but on the same machine the loopback works.
+	if (_IsOwnPublicAddress(host)) {
+		BString loopError;
+		fd = ConnectTo("127.0.0.1", port, cancel, loopError);
+		if (fd >= 0) {
+			usedLoopback = true;
+			error = "";
+			return fd;
+		}
+		error << " (the peer uses your own public address; it is probably on your LAN, "
+			"and your router doesn't loop connections back)";
+	}
+	return -1;
 }
 
 
@@ -1137,8 +1185,9 @@ DccManager::_RunSend(int32 id)
 
 	int sock;
 	BString error;
+	bool usedLoopback = false;
 	if (connectMode) {
-		sock = ConnectTo(host, port, cancel, error);
+		sock = _ConnectPeer(host, port, cancel, error, usedLoopback);
 	} else {
 		sock = AcceptPeer(listenFd, cancel);
 		if (sock < 0)
@@ -1305,7 +1354,22 @@ DccManager::_RunReceive(int32 id)
 			_ReleaseListenPort(t->listenPort);
 		}
 	} else {
-		sock = ConnectTo(host, port, cancel, error);
+		bool usedLoopback = false;
+		sock = _ConnectPeer(host, port, cancel, error, usedLoopback);
+		if (usedLoopback) {
+			void* server = nullptr;
+			BString nick;
+			{
+				BAutolock lock(fLock);
+				Transfer* t = _Find(id);
+				if (t != nullptr) {
+					server = t->server;
+					nick = t->info.nick;
+				}
+			}
+			_Log(server, BString("--- [DCC] ") << nick << " advertised your own public address; "
+				"connected on this machine (127.0.0.1) instead.");
+		}
 	}
 	if (sock < 0) {
 		_Finish(id, DCC_STATE_FAILED, error.String());
@@ -1791,6 +1855,12 @@ DccManager::OfferFile(void* server, const BString& nick, const BString& path)
 	_SendCtcp(server, nick, ctcp);
 	_Log(server, BString("--- [DCC] Offering \"") << fileName << "\" (" << FormatSize(st.st_size)
 		<< ") to " << nick << (passive ? " using passive DCC" : "") << ". Waiting for them to accept\xE2\x80\xA6");
+	if (passive && !fSettings.forcePassive) {
+		_Log(server, BString("--- [DCC] You don't seem to be reachable from the internet, so this uses "
+			"passive DCC. Clients without passive DCC support (Vision, for one) can't receive it. "
+			"If ") << nick << " is on your own network, set Server Settings \xE2\x86\x92 DCC \xE2\x86\x92 "
+			"External IP override to this computer's LAN address (or 127.0.0.1 for the same computer).");
+	}
 	(void)id;
 	ShowTransfersWindow();
 }

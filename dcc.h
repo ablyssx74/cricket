@@ -139,6 +139,11 @@ private:
 	BString   _AdvertisedIP();   // "" when we think we can't be reached
 	bool      _UsePassive();
 	uint32    _LocalIPv4();      // host byte order, 0 if unknown
+	bool      _IsOwnPublicAddress(const BString& host);
+	// Connects to a peer; if that fails and the peer advertised our own public
+	// address (it is on this machine), retries on the loopback address.
+	int       _ConnectPeer(const BString& host, uint16 port, volatile bool* cancel,
+	              BString& error, bool& usedLoopback);
 
 	void      _StartPortMappers();  // caller holds fLock
 	void      _StopPortMappers();   // must NOT hold fLock (joins threads)
