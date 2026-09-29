@@ -16,8 +16,8 @@ Per HiShare's LICENSE file:
 PortMapper.cpp/.h fall under that application-code grant (they are not part
 of HiShare's vendored MUSCLE library), so they are public domain.
 
-Not yet wired into cricket -- staged here ahead of the DCC/NAT-traversal
-work. Still to resolve before it compiles as part of cricket: PortMapper's
-public interface uses muscle::String (from MUSCLE's util/String.h) rather
-than Haiku's BString, which would need to either be adapted to BString or
-have that one MUSCLE utility header/source pulled in alongside it.
+Adapted for cricket: muscle::String was replaced with Haiku's BString, the
+automatic reachability probe was made optional per instance, and the status
+messages were reworded for DCC. Used by dcc.cpp to forward cricket's DCC
+listen ports on the home router (PCP / NAT-PMP / UPnP IGD). The changes are
+likewise public domain.

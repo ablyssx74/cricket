@@ -5,6 +5,7 @@
 
 #include <aspell.h>
 #include "icons.h"
+#include "dcc.h"
 #include "nlohmann/json.hpp"
 #include <Alert.h>
 #include <Application.h>
@@ -131,6 +132,11 @@ enum {
     MSG_CONTEXT_IGNORE_FROM_TEXT = 'igft',
     MSG_TOGGLE_NICK_ALERT = 'tgna',
     MSG_TOGGLE_SHOW_UPDATES = 'thuc',
+    MSG_DCC_SHOW_TRANSFERS = 'dcST',
+    MSG_DCC_PICK_FILE = 'dcPF',      // "target_nick", "context_server": choose a file to send
+    MSG_DCC_FILE_CHOSEN = 'dcFC',    // file panel result for MSG_DCC_PICK_FILE
+    MSG_DCC_BROWSE_DIR = 'dcBD',     // settings: choose the DCC download folder
+    MSG_DCC_DIR_CHOSEN = 'dcDC',
 
 };
 
@@ -210,6 +216,13 @@ struct Config {
     int32 timestampInterval = 30;
     std::string searchEngine = "https://duckduckgo.com"; 
     bool showUpdateNotifications = true; 
+
+    // --- DCC file transfers (see dcc.h) ---
+    std::string dccDownloadDir = "";     // "" = ~/Downloads
+    int32 dccFirstPort = 59200;          // first of 5 listen ports
+    bool dccUsePortMapping = true;       // UPnP / NAT-PMP / PCP router forwarding
+    std::string dccExternalIP = "";      // manual advertised address override
+    bool dccForcePassive = false;        // always offer files with passive DCC
 } cfg;
 
 
@@ -233,6 +246,11 @@ void save_config() {
     j["chatLogFontSize"] = cfg.chatLogFontSize;
     j["userListFontSize"] = cfg.userListFontSize;
     j["show_update_notifications"] = cfg.showUpdateNotifications;
+    j["dcc_download_dir"] = cfg.dccDownloadDir;
+    j["dcc_first_port"] = cfg.dccFirstPort;
+    j["dcc_use_port_mapping"] = cfg.dccUsePortMapping;
+    j["dcc_external_ip"] = cfg.dccExternalIP;
+    j["dcc_force_passive"] = cfg.dccForcePassive;
 
     // --- STRIP THE VERSION SUFFIX BEFORE SAVING ---
     std::string cleanQuitMsg = cfg.quitMessage;
@@ -483,6 +501,11 @@ void load_config() {
                 cfg.useCustomDrawFunction = j.value("useCustomDrawFunction", true);
                 cfg.searchEngine = j.value("search_engine", "https://duckduckgo.com");
                 cfg.showUpdateNotifications = j.value("show_update_notifications", true);
+                cfg.dccDownloadDir = j.value("dcc_download_dir", "");
+                cfg.dccFirstPort = j.value("dcc_first_port", (int32)59200);
+                cfg.dccUsePortMapping = j.value("dcc_use_port_mapping", true);
+                cfg.dccExternalIP = j.value("dcc_external_ip", "");
+                cfg.dccForcePassive = j.value("dcc_force_passive", false);
                
                 if (j.contains("servers") && j["servers"].is_array()) {
                     for (const auto& s : j["servers"]) {
@@ -775,6 +798,32 @@ void load_config() {
 
 
 
+
+
+// DCC settings from the global config; an empty download folder means ~/Downloads.
+static DccSettings CurrentDccSettings()
+{
+    DccSettings s;
+    s.downloadDir = cfg.dccDownloadDir.c_str();
+    if (s.downloadDir.Length() == 0) {
+        BPath home;
+        if (find_directory(B_USER_DIRECTORY, &home) == B_OK) {
+            home.Append("Downloads");
+            s.downloadDir = home.Path();
+        } else {
+            s.downloadDir = "/boot/home/Downloads";
+        }
+    }
+    int32 port = cfg.dccFirstPort;
+    if (port < 1024 || port > 65530)
+        port = 59200;
+    s.firstPort = (uint16)port;
+    s.portCount = 5;
+    s.usePortMapping = cfg.dccUsePortMapping;
+    s.externalIP = cfg.dccExternalIP.c_str();
+    s.forcePassive = cfg.dccForcePassive;
+    return s;
+}
 
 
 static size_t CurlWriteCallback(void* contents, size_t size, size_t nmemb, void* userp)
@@ -4063,7 +4112,7 @@ private:
 
 class ServerConfigWindow : public BWindow {
 public:
-    virtual ~ServerConfigWindow() {}
+    virtual ~ServerConfigWindow() { delete fDccDirPanel; }
 
     ServerConfigWindow(BWindow* parent, ServerTreeItem* item, size_t serverIdx, bool isCustom = false)
         : BWindow(BRect(0, 0, 450, 600), "Server Properties", B_MODAL_WINDOW_LOOK, 
@@ -4659,12 +4708,57 @@ public:
             .AddGlue();
  
 
+        // --- TAB 6: DCC FILE TRANSFERS (global settings) ---
+        BGroupView* dccTab = new BGroupView(B_VERTICAL, 5);
+        dccTab->SetName("DCC");
+
+        DccSettings dccNow = CurrentDccSettings();
+        fDccDirInput = new BTextControl("dcc_dir", "Download folder:", dccNow.downloadDir.String(), nullptr);
+        fDccBrowseBtn = new BButton("dcc_browse", "Browse\xE2\x80\xA6", new BMessage(MSG_DCC_BROWSE_DIR));
+        BString portText;
+        portText << (int32)dccNow.firstPort;
+        fDccPortInput = new BTextControl("dcc_port", "First listen port:", portText.String(), nullptr);
+        fDccPortInput->SetToolTip("Cricket listens on this port and the next 4 for incoming DCC connections.");
+        fDccPortMapCheck = new BCheckBox("dcc_portmap",
+            "Forward the DCC ports on my router automatically (UPnP / NAT-PMP)", nullptr);
+        fDccPortMapCheck->SetValue(cfg.dccUsePortMapping ? B_CONTROL_ON : B_CONTROL_OFF);
+        fDccPassiveCheck = new BCheckBox("dcc_passive",
+            "Always offer files with passive DCC (the receiver listens and you connect to them)", nullptr);
+        fDccPassiveCheck->SetValue(cfg.dccForcePassive ? B_CONTROL_ON : B_CONTROL_OFF);
+        fDccExternalIPInput = new BTextControl("dcc_extip", "External IP override:", cfg.dccExternalIP.c_str(), nullptr);
+        fDccExternalIPInput->SetToolTip("Leave empty to detect it automatically. Set it only if you forwarded the ports by hand.");
+        BStringView* dccNote = new BStringView("dcc_note",
+            "Incoming files always ask before downloading. If others can't reach you, Cricket switches to passive DCC.");
+
+        BBox* dccBox = new BBox(B_FANCY_BORDER);
+        dccBox->SetLabel("DCC File Transfers");
+        BLayoutBuilder::Group<>(dccBox, B_VERTICAL, 6)
+            .SetInsets(10, 20, 10, 10)
+            .AddGrid(5.0f, 5.0f)
+                .Add(fDccDirInput->CreateLabelLayoutItem(), 0, 0)
+                .Add(fDccDirInput->CreateTextViewLayoutItem(), 1, 0)
+                .Add(fDccBrowseBtn, 2, 0)
+                .Add(fDccPortInput->CreateLabelLayoutItem(), 0, 1)
+                .Add(fDccPortInput->CreateTextViewLayoutItem(), 1, 1)
+                .Add(fDccExternalIPInput->CreateLabelLayoutItem(), 0, 2)
+                .Add(fDccExternalIPInput->CreateTextViewLayoutItem(), 1, 2)
+            .End()
+            .Add(fDccPortMapCheck)
+            .Add(fDccPassiveCheck)
+            .Add(dccNote);
+
+        BLayoutBuilder::Group<>(dccTab, B_VERTICAL, 8)
+            .SetInsets(10)
+            .Add(dccBox, 0.0)
+            .AddGlue();
+
         // --- Assemble ALL Tabs into the Master Tab Container ---
         tabView->AddTab(identityTab);
         tabView->AddTab(prefsTab);
         tabView->AddTab(autojoinTab);
         tabView->AddTab(filtersTab); 
         tabView->AddTab(translatorTab);
+        tabView->AddTab(dccTab);
 
 
 
@@ -5393,6 +5487,28 @@ public:
 
 
         	
+            case MSG_DCC_BROWSE_DIR: {
+                if (fDccDirPanel == nullptr) {
+                    BMessage chosen(MSG_DCC_DIR_CHOSEN);
+                    fDccDirPanel = new BFilePanel(B_OPEN_PANEL, new BMessenger(this), nullptr,
+                        B_DIRECTORY_NODE, false, &chosen);
+                    fDccDirPanel->SetButtonLabel(B_DEFAULT_BUTTON, "Select");
+                }
+                fDccDirPanel->Show();
+                break;
+            }
+
+            case MSG_DCC_DIR_CHOSEN: {
+                entry_ref ref;
+                if (message->FindRef("refs", &ref) == B_OK) {
+                    BEntry entry(&ref, true);
+                    BPath path;
+                    if (entry.GetPath(&path) == B_OK)
+                        fDccDirInput->SetText(path.Path());
+                }
+                break;
+            }
+
         	case 'adbg':
                 if (fFilePanel != nullptr) {
                     fFilePanel->Show();
@@ -5458,6 +5574,22 @@ public:
 	            cfg.searchEngine = fLocalSearchEngineChoice.String();                
 	            cfg.awayMessage = fAwayInput->Text();
 	            cfg.quitMessage = fQuitInput->Text();
+
+	            // DCC settings (global), applied immediately
+	            {
+	                BString dccDir(fDccDirInput->Text());
+	                dccDir.Trim();
+	                cfg.dccDownloadDir = dccDir.String();
+	                int32 dccPort = atoi(fDccPortInput->Text());
+	                cfg.dccFirstPort = (dccPort >= 1024 && dccPort <= 65530) ? dccPort : 59200;
+	                cfg.dccUsePortMapping = (fDccPortMapCheck->Value() == B_CONTROL_ON);
+	                cfg.dccForcePassive = (fDccPassiveCheck->Value() == B_CONTROL_ON);
+	                BString dccIP(fDccExternalIPInput->Text());
+	                dccIP.Trim();
+	                cfg.dccExternalIP = dccIP.String();
+	                if (gDccManager != nullptr)
+	                    gDccManager->ApplySettings(CurrentDccSettings());
+	            }
 	            
 	            // =========================================================================
 	            // --- INTEGRATED TRANSLATOR TAB RUNTIME SAVE PERSISTENCE (STEP 4) ---
@@ -5585,6 +5717,13 @@ private:
 
 	// Messages & Status
 	BTextControl*				fQuitInput;
+	BTextControl*				fDccDirInput = nullptr;
+	BButton*					fDccBrowseBtn = nullptr;
+	BTextControl*				fDccPortInput = nullptr;
+	BTextControl*				fDccExternalIPInput = nullptr;
+	BCheckBox*					fDccPortMapCheck = nullptr;
+	BCheckBox*					fDccPassiveCheck = nullptr;
+	BFilePanel*					fDccDirPanel = nullptr;
 	BTextControl*				fAwayInput;
 
 	// Connection Behavior
@@ -6724,6 +6863,13 @@ public:
        
         // 2. Load Config and Populate Servers Tree ONCE
         load_config(); 
+
+        // DCC file transfers: the manager runs its own looper and starts the
+        // router port mappers for its listen ports.
+        if (gDccManager == nullptr) {
+            gDccManager = new DccManager(BMessenger(this));
+            gDccManager->ApplySettings(CurrentDccSettings());
+        }
         
         
         // =========================================================================
@@ -7011,6 +7157,16 @@ public:
     int32 GetServerIndexFromNode(BStringItem* node);
 
     ~CricketWindow() {
+        // 0. Stop DCC first: cancels transfers and removes the router port mappings.
+        if (gDccManager != nullptr) {
+            gDccManager->Shutdown();
+            if (gDccManager->Lock())
+                gDccManager->Quit();
+            gDccManager = nullptr;
+        }
+        delete fDccFilePanel;
+        fDccFilePanel = nullptr;
+
         // 1. Prepare the custom sign-off message payload
         BString quitPayload;
         quitPayload << "QUIT :" << cfg.quitMessage.c_str() << "\r\n";
@@ -7592,6 +7748,8 @@ private:
 	        
 	            // About Option
 	        menu->AddSeparatorItem();
+	        menu->AddItem(new BMenuItem("DCC Transfers\xE2\x80\xA6", new BMessage(MSG_DCC_SHOW_TRANSFERS)));
+
 	        BMessage* aboutMsg = new BMessage(MSG_CONTEXT_ABOUT);
 	        menu->AddItem(new BMenuItem("About...", aboutMsg));    
 	        
@@ -10576,6 +10734,19 @@ private:
             targetRoom.ReplaceAll(" ", "");
 
             // =========================================================================
+            // DCC (file transfer) requests: handed to the DCC manager, never shown as chat.
+            // Only private requests count; a DCC "sent" to a whole channel is ignored.
+            // =========================================================================
+            if (command == "PRIVMSG" && trailing.StartsWith("\x01" "DCC ")) {
+                if (gDccManager != nullptr && !targetRoom.StartsWith("#") && !targetRoom.StartsWith("&")) {
+                    BString dccRequest = trailing;
+                    dccRequest.RemoveAll("\x01");
+                    gDccManager->HandleCtcp(contextServer, senderNick, dccRequest);
+                }
+                return;
+            }
+
+            // =========================================================================
             // OPENSSL INTEGRATED CTCP AUTOMATED RESPONSE ENGINE
             // =========================================================================
             if (command == "PRIVMSG" && trailing.StartsWith("\x01") && trailing.EndsWith("\x01")) {
@@ -12718,6 +12889,15 @@ public:
                     ignoreMsg->AddString("target_nick", cleanNick);
                     ignoreMsg->AddPointer("context_server", parentServer); 
                     contextMenu->AddItem(new BMenuItem(ignoreLabel.String(), ignoreMsg));
+
+                    // DCC: offer this user a file
+                    contextMenu->AddSeparatorItem();
+                    BString sendFileLabel;
+                    sendFileLabel << "Send File to " << cleanNick << "\xE2\x80\xA6";
+                    BMessage* sendFileMsg = new BMessage(MSG_DCC_PICK_FILE);
+                    sendFileMsg->AddString("target_nick", cleanNick);
+                    sendFileMsg->AddPointer("context_server", parentServer);
+                    contextMenu->AddItem(new BMenuItem(sendFileLabel.String(), sendFileMsg));
                 }
 
                 
@@ -13129,6 +13309,8 @@ public:
                 }
 
                 // 5. Remove the actual server item node from visual container
+                if (gDccManager != nullptr)
+                    gDccManager->ForgetServer(srvItem);
                 fChannelTree->RemoveItem(srvItem);
                 delete srvItem;
 
@@ -14316,6 +14498,50 @@ public:
                                 echoStr << "-> To " << dmTarget << ": " << msgBody << "\n";
                                 LogToItemBuffer(fActiveBufferItem, echoStr);
                             }
+                        } else if (commandLine.ICompare("dcc", 3) == 0
+                                   && (commandLine.Length() == 3 || commandLine[3] == ' ')) {
+                            // /dcc               -> open the transfers window
+                            // /dcc send nick [path]  (no path: choose one in a file panel)
+                            BString dccArgs = commandLine;
+                            dccArgs.Remove(0, 3);
+                            dccArgs.Trim();
+                            if (dccArgs.Length() == 0 || dccArgs.ICompare("list") == 0
+                                || dccArgs.ICompare("transfers") == 0) {
+                                if (gDccManager != nullptr)
+                                    gDccManager->ShowTransfersWindow();
+                            } else if (dccArgs.ICompare("send ", 5) == 0) {
+                                dccArgs.Remove(0, 5);
+                                dccArgs.Trim();
+                                BString dccNick = dccArgs, dccPath;
+                                int32 dccSpace = dccArgs.FindFirst(' ');
+                                if (dccSpace >= 0) {
+                                    dccArgs.CopyInto(dccNick, 0, dccSpace);
+                                    dccArgs.CopyInto(dccPath, dccSpace + 1, dccArgs.Length() - dccSpace - 1);
+                                    dccPath.Trim();
+                                }
+                                if (dccNick.Length() == 0) {
+                                    LogToItemBuffer(fActiveBufferItem, "Usage: /dcc send <nick> [file path]\n");
+                                } else if (dccPath.Length() == 0) {
+                                    BMessage pick(MSG_DCC_PICK_FILE);
+                                    pick.AddString("target_nick", dccNick);
+                                    pick.AddPointer("context_server", contextServer);
+                                    PostMessage(&pick);
+                                } else if (gDccManager != nullptr) {
+                                    if (dccPath.StartsWith("~/")) {
+                                        BPath home;
+                                        if (find_directory(B_USER_DIRECTORY, &home) == B_OK) {
+                                            dccPath.Remove(0, 1);
+                                            dccPath.Prepend(home.Path());
+                                        }
+                                    }
+                                    gDccManager->OfferFile(contextServer, dccNick, dccPath);
+                                }
+                            } else if (dccArgs.ICompare("chat", 4) == 0) {
+                                LogToItemBuffer(fActiveBufferItem, "--- [DCC] DCC CHAT isn't supported yet.\n");
+                            } else {
+                                LogToItemBuffer(fActiveBufferItem,
+                                    "Usage: /dcc  (open transfers)   or   /dcc send <nick> [file path]\n");
+                            }
                         } else if (commandLine.ICompare("list", 4) == 0) {
                             bool windowIsValid = false;
                             if (fActiveListWindow != nullptr) {
@@ -14546,6 +14772,119 @@ public:
 	    }
 
 
+        // =========================================================================
+        // DCC FILE TRANSFERS (the transfer logic lives in dcc.cpp)
+        // =========================================================================
+        case MSG_DCC_SEND_CTCP: {
+            // DccManager asks us to send a CTCP DCC line on one of our connections.
+            void* serverPtr = nullptr;
+            BString target, ctcp;
+            if (message->FindPointer("server", &serverPtr) != B_OK || serverPtr == nullptr
+                || message->FindString("target", &target) != B_OK
+                || message->FindString("ctcp", &ctcp) != B_OK)
+                break;
+            ServerTreeItem* server = static_cast<ServerTreeItem*>(serverPtr);
+            if (!fChannelTree->HasItem(server))
+                break;  // server entry was removed meanwhile
+            // Never let a nick or file name smuggle in extra protocol lines.
+            if (target.FindFirst(' ') >= 0 || target.FindFirst('\r') >= 0 || target.FindFirst('\n') >= 0)
+                break;
+            ctcp.RemoveAll("\r");
+            ctcp.RemoveAll("\n");
+            ctcp.RemoveAll("\x01");
+
+            BString payload;
+            payload << "PRIVMSG " << target << " :\x01" << ctcp << "\x01\r\n";
+            SSL* sslHandle = gServerSslHandles[static_cast<void*>(server)];
+            if (sslHandle != nullptr) {
+                SSL_write(sslHandle, payload.String(), payload.Length());
+            } else {
+                BNetEndpoint* socket = GetActiveSocket(server);
+                if (socket != nullptr)
+                    socket->Send(payload.String(), payload.Length());
+                else
+                    LogToItemBuffer(FindServerLogNode(server),
+                        "--- [DCC] Not connected; the DCC request could not be sent.\n");
+            }
+            if (cfg.debugEnable)
+                LogDebugStream(server->Text(), "OUTGOING", payload.String(), payload.Length());
+            break;
+        }
+
+        case MSG_DCC_LOG: {
+            // Show DCC status in the buffer being viewed when it's on the same
+            // network, otherwise in that network's server log.
+            void* serverPtr = nullptr;
+            BString text;
+            if (message->FindString("text", &text) != B_OK)
+                break;
+            message->FindPointer("server", &serverPtr);
+            ServerTreeItem* server = static_cast<ServerTreeItem*>(serverPtr);
+            if (server != nullptr && !fChannelTree->HasItem(server))
+                server = nullptr;
+
+            BStringItem* target = fActiveBufferItem;
+            if (server != nullptr) {
+                bool activeIsOnServer = fActiveBufferItem != nullptr
+                    && (fActiveBufferItem == server || fChannelTree->Superitem(fActiveBufferItem) == server);
+                if (!activeIsOnServer)
+                    target = FindServerLogNode(server);
+            }
+            if (target != nullptr) {
+                text << "\n";
+                LogToItemBuffer(target, text);
+            }
+            break;
+        }
+
+        case MSG_DCC_SHOW_TRANSFERS:
+            if (gDccManager != nullptr)
+                gDccManager->ShowTransfersWindow();
+            break;
+
+        case MSG_DCC_PICK_FILE: {
+            BString nick;
+            void* serverPtr = nullptr;
+            if (message->FindString("target_nick", &nick) != B_OK
+                || message->FindPointer("context_server", &serverPtr) != B_OK || serverPtr == nullptr)
+                break;
+            if (fDccFilePanel == nullptr) {
+                fDccFilePanel = new BFilePanel(B_OPEN_PANEL, new BMessenger(this), nullptr,
+                    B_FILE_NODE, true);
+            }
+            BMessage chosen(MSG_DCC_FILE_CHOSEN);
+            chosen.AddString("target_nick", nick);
+            chosen.AddPointer("context_server", serverPtr);
+            fDccFilePanel->SetMessage(&chosen);
+            if (fDccFilePanel->Window()->Lock()) {
+                BString title;
+                title << "Cricket: Send File to " << nick;
+                fDccFilePanel->Window()->SetTitle(title.String());
+                fDccFilePanel->Window()->Unlock();
+            }
+            fDccFilePanel->SetButtonLabel(B_DEFAULT_BUTTON, "Send");
+            fDccFilePanel->Show();
+            break;
+        }
+
+        case MSG_DCC_FILE_CHOSEN: {
+            BString nick;
+            void* serverPtr = nullptr;
+            if (gDccManager == nullptr || message->FindString("target_nick", &nick) != B_OK
+                || message->FindPointer("context_server", &serverPtr) != B_OK || serverPtr == nullptr)
+                break;
+            if (!fChannelTree->HasItem(static_cast<ServerTreeItem*>(serverPtr)))
+                break;
+            entry_ref ref;
+            for (int32 i = 0; message->FindRef("refs", i, &ref) == B_OK; i++) {
+                BEntry entry(&ref, true);
+                BPath path;
+                if (entry.GetPath(&path) == B_OK)
+                    gDccManager->OfferFile(serverPtr, nick, path.Path());
+            }
+            break;
+        }
+
         case MSG_IRC_RECEIVED: {   	        	
             BString rawLine;
             // 1. Intercept incoming raw text payload line
@@ -14575,7 +14914,9 @@ public:
 
                     // SAFETY FILTER: Only process lines that are public channel streams (contain '#')
                     // and ensure it's a real user message rather than a server log connection frame
-                    if (cmdIdx != B_ERROR && rawLine.FindFirst("#") != B_ERROR) {
+                    // (DCC requests are left alone: their sender nick must stay unmodified.)
+                    if (cmdIdx != B_ERROR && rawLine.FindFirst("#") != B_ERROR
+                        && rawLine.FindFirst(" :\x01" "DCC ") == B_ERROR) {
                         BString senderNick = "";
                         
                         // 1. Cleanly isolate the protocol routing block before PRIVMSG/NOTICE
@@ -14750,8 +15091,10 @@ public:
                 }
 
                 // Checked per-server values instead of old global tags
+                // DCC requests are never sent for translation (it would garble them).
                 if (srvPtr != nullptr && srvPtr->enableInboundTranslation && !srvPtr->geminiApiKey.empty() 
-                    && rawLine.FindFirst(" PRIVMSG ") != B_ERROR && gTranslatorService != nullptr) {
+                    && rawLine.FindFirst(" PRIVMSG ") != B_ERROR && rawLine.FindFirst(" :\x01" "DCC ") == B_ERROR
+                    && gTranslatorService != nullptr) {
                     
                     BMessage queueMsg(MSG_TRANSLATE_LINE_QUEUE);
                     queueMsg.AddString("raw_line", rawLine);
@@ -14964,6 +15307,7 @@ private:
 	    BString fPendingReviewedTranslation;
 	    std::map<ServerTreeItem*, thread_id> fServerThreads;
 	    std::map<ServerTreeItem*, BNetEndpoint*> fServerSockets;
+	    BFilePanel* fDccFilePanel = nullptr;   // "Send File…" chooser for DCC
 		std::map<ServerTreeItem*, int32> fNickAttempts;
 	
 		BTextControl*     fTopicView;
