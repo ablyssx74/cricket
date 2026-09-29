@@ -212,6 +212,11 @@ void saveConfig()
     j["quitMessage"] = cleanQuitMessage(cfg.quitMessage);
     j["awayMessage"] = cfg.awayMessage;
     j["spell_language"] = cfg.spellLanguage;
+    j["dcc_download_dir"] = cfg.dccDownloadDir;
+    j["dcc_first_port"] = cfg.dccFirstPort;
+    j["dcc_use_port_mapping"] = cfg.dccUsePortMapping;
+    j["dcc_external_ip"] = cfg.dccExternalIP;
+    j["dcc_force_passive"] = cfg.dccForcePassive;
 
     QJsonArray servers;
     for (const ServerConfig& srv : cfg.servers)
@@ -271,6 +276,11 @@ void loadConfig()
             cfg.searchEngine = j.value("search_engine").toString("https://duckduckgo.com");
             cfg.showUpdateNotifications = j.value("show_update_notifications").toBool(true);
             cfg.spellLanguage = j.value("spell_language").toString("en_US");
+            cfg.dccDownloadDir = j.value("dcc_download_dir").toString();
+            cfg.dccFirstPort = j.value("dcc_first_port").toInt(59200);
+            cfg.dccUsePortMapping = j.value("dcc_use_port_mapping").toBool(true);
+            cfg.dccExternalIP = j.value("dcc_external_ip").toString();
+            cfg.dccForcePassive = j.value("dcc_force_passive").toBool(false);
 
             for (const QJsonValue& v : j.value("servers").toArray())
                 cfg.servers << serverFromJson(v.toObject(), "Unknown Server");

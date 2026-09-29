@@ -68,6 +68,9 @@ public:
 private:
     QLineEdit *fQuit, *fAway, *fSearch, *fSpellLang;
     QCheckBox *fSpell, *fUpdates, *fDebug;
+    QLineEdit *fDccDir, *fDccExternalIP;
+    QSpinBox* fDccPort;
+    QCheckBox *fDccPortMap, *fDccPassive;
 };
 
 // Browser for the reply to LIST.

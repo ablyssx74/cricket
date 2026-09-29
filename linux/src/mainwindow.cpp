@@ -5,6 +5,7 @@
 #include "mainwindow.h"
 
 #include "chatview.h"
+#include "dcc.h"
 #include "dialogs.h"
 #include "inputedit.h"
 #include "ircconnection.h"
@@ -19,6 +20,8 @@
 #include <QDebug>
 #include <QDesktopServices>
 #include <QFile>
+#include <QDir>
+#include <QFileDialog>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -63,6 +66,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     setWindowTitle("Cricket");
     setWindowIcon(QIcon::fromTheme("cricket", QIcon(":/cricket.svg")));
     fTranslator = new Translator(this);
+    setupDcc();
     fUpdates = new UpdateChecker(this);
 
     buildUi();
@@ -261,6 +265,8 @@ void MainWindow::buildMenus()
         if (dlg.exec() == QDialog::Accepted) {
             dlg.apply();
             fInput->setSpellCheckEnabled(cfg.enableSpellCheck);
+            if (fDcc)
+                fDcc->applySettings();
         }
     });
     app->addSeparator();
@@ -291,6 +297,8 @@ void MainWindow::buildMenus()
         if (Session* s = currentSession()) configureSession(s);
     });
     server->addAction(QIcon::fromTheme("list-add"), tr("&Add Server…"), this, &MainWindow::addServer);
+    server->addSeparator();
+    server->addAction(QIcon::fromTheme("folder-download"), tr("DCC &Transfers…"), this, [this]() { fDcc->showTransfers(); });
 
     QMenu* view = menuBar()->addMenu(tr("&View"));
     QAction* users = view->addAction(tr("Show &User List"));
@@ -324,6 +332,7 @@ void MainWindow::buildMenus()
             "/nick newnick  /topic text  /whois nick  /notice target text  /ctcp nick VERSION",
             "/op /deop /voice /devoice nick  /kick nick [reason]  /ban nick  /mode ...  /invite nick",
             "/away [msg]  /back  /ignore mask  /unignore mask  /list  /names  /clear  /close",
+            "/dcc  (transfers)   /dcc send nick [file]   /dcc chat nick   (direct, not through the server)",
             "/connect  /disconnect  /reconnect  /quote RAW LINE  (anything else is sent as-is)",
         };
         for (const char* l : lines)
@@ -409,8 +418,11 @@ Buffer* MainWindow::ensureBuffer(Session* s, const QString& name, Buffer::Type t
         b->session = s;
         b->item = new QTreeWidgetItem(s->server->item, {name});
         b->item->setData(0, Qt::UserRole, QVariant::fromValue(b));
-        b->item->setIcon(0, QIcon::fromTheme(type == Buffer::Channel ? "irc-channel-active" : "im-user",
-            QIcon::fromTheme(type == Buffer::Channel ? "user-group-new" : "user-identity")));
+        if (type == Buffer::DccChat)
+            b->item->setIcon(0, QIcon::fromTheme("network-connect", QIcon::fromTheme("im-user")));
+        else
+            b->item->setIcon(0, QIcon::fromTheme(type == Buffer::Channel ? "irc-channel-active" : "im-user",
+                QIcon::fromTheme(type == Buffer::Channel ? "user-group-new" : "user-identity")));
         s->buffers << b;
         s->server->item->setExpanded(true);
         updateTreeItem(b);
@@ -467,10 +479,10 @@ void MainWindow::updateTreeItem(Buffer* b)
     QFont f = fTree->font();
     QBrush fg = fTree->palette().brush(QPalette::Text);
     bool inactive = (b->type == Buffer::Server && !b->session->conn->isConnected())
-        || (b->type == Buffer::Channel && !b->joined);
+        || ((b->type == Buffer::Channel || b->type == Buffer::DccChat) && !b->joined);
     if (inactive) {
         fg = fTree->palette().brush(QPalette::Disabled, QPalette::Text);
-        f.setItalic(b->type == Buffer::Channel);
+        f.setItalic(b->type != Buffer::Server);
     }
     if (b->highlighted) {
         fg = QBrush(QColor(0xE0, 0x40, 0x40));
@@ -498,7 +510,9 @@ void MainWindow::refreshUserList()
 {
     fUsers->clear();
     if (!fActive || fActive->type != Buffer::Channel) {
-        fUserCount->setText(fActive && fActive->type == Buffer::Query ? tr("Private chat") : QString());
+        fUserCount->setText(!fActive ? QString()
+            : fActive->type == Buffer::Query ? tr("Private chat")
+            : fActive->type == Buffer::DccChat ? tr("Direct chat (DCC)") : QString());
         return;
     }
     Session* s = fActive->session;
@@ -536,6 +550,9 @@ void MainWindow::refreshTopic()
         fTopic->setText(IrcFormat::stripCodes(fActive->topic));
     else if (fActive->type == Buffer::Query)
         fTopic->setText(tr("Private conversation with %1").arg(fActive->name));
+    else if (fActive->type == Buffer::DccChat)
+        fTopic->setText(tr("Direct DCC chat with %1 — messages don't go through the IRC server%2")
+            .arg(fActive->name.mid(1), fActive->joined ? QString() : tr(" (closed)")));
     else
         fTopic->setText(QString("%1 (%2:%3)").arg(fActive->session->profile().name,
             fActive->session->profile().host).arg(fActive->session->profile().port));
@@ -771,6 +788,22 @@ void MainWindow::onSubmit(const QString& text)
 void MainWindow::sendLine(Buffer* b, const QString& line)
 {
     Session* s = b->session;
+    // "=nick" buffers: text and /me go over the direct DCC connection; other
+    // /commands still go to the server.
+    if (b->type == Buffer::DccChat && (!line.startsWith('/') || line.startsWith("//")
+            || line.startsWith("/me ", Qt::CaseInsensitive))) {
+        bool action = line.startsWith("/me ", Qt::CaseInsensitive);
+        QString body = action ? line.mid(4) : (line.startsWith("//") ? line.mid(1) : line);
+        if (body.isEmpty())
+            return;
+        if (fDcc->chatSend(s, b->name.mid(1), body, action))
+            printMessage(b, s->conn->nick().isEmpty() ? s->profile().nick : s->conn->nick(), body,
+                action ? LineKind::Action : LineKind::Normal, true);
+        else
+            print(b, tr("This DCC CHAT isn't connected. Use /dcc chat %1 to start a new one.")
+                .arg(b->name.mid(1)).toHtmlEscaped(), LineKind::Error);
+        return;
+    }
     if (line.startsWith('/') && !line.startsWith("//")) {
         processCommand(s, b, line);
         return;
@@ -883,6 +916,8 @@ void MainWindow::processCommand(Session* s, Buffer* b, const QString& input)
         if (b && b->type != Buffer::Server) {
             if (b->type == Buffer::Channel && b->joined)
                 c->sendRaw("PART " + b->name);
+            if (b->type == Buffer::DccChat)
+                fDcc->closeChat(s, b->name.mid(1));
             removeBuffer(b);
         }
         return;
@@ -912,6 +947,32 @@ void MainWindow::processCommand(Session* s, Buffer* b, const QString& input)
         Buffer* q = ensureBuffer(s, argv[0], Buffer::Query, true);
         if (argv.size() > 1 && need(c->isRegistered()))
             sendPrivmsg(s, q, argv[0], args.mid(args.indexOf(' ') + 1));
+        return;
+    }
+    if (cmd == "dcc") {
+        const QString sub = argv.value(0).toLower();
+        if (sub.isEmpty() || sub == "list" || sub == "transfers") {
+            fDcc->showTransfers();
+            return;
+        }
+        if ((sub == "send" || sub == "chat") && argv.size() >= 2) {
+            if (!need(c->isRegistered()))
+                return;
+            const QString nick = argv[1];
+            if (sub == "chat") {
+                fDcc->offerChat(s, nick);
+                return;
+            }
+            QString path = args.section(' ', 2).trimmed();
+            if (path.startsWith("~/"))
+                path = QDir::homePath() + path.mid(1);
+            if (path.isEmpty())
+                pickFileForDcc(s, nick);
+            else
+                fDcc->offerFile(s, nick, path);
+            return;
+        }
+        error(tr("Usage: /dcc  |  /dcc send <nick> [file]  |  /dcc chat <nick>"));
         return;
     }
     if (cmd == "list") {
@@ -1639,6 +1700,12 @@ void MainWindow::handlePrivmsg(Session* s, const IrcMessage& m, const QString& b
             inner.chop(1);
         QString ctcp = inner.section(' ', 0, 0).toUpper();
         QString ctcpArgs = inner.section(' ', 1);
+        if (ctcp == "DCC") {
+            // Only private requests count; a DCC "sent" to a channel is ignored.
+            if (!isNotice && !fromMe && !isChannelName(target))
+                fDcc->handleCtcp(s, nick, inner);
+            return;
+        }
         if (ctcp == "ACTION") {
             Buffer* b = isChannelName(target) ? findBuffer(s, target) : ensureBuffer(s, fromMe ? target : nick, Buffer::Query);
             if (!b)
@@ -1808,6 +1875,85 @@ void MainWindow::pollAwayStatus()
     }
 }
 
+void MainWindow::setupDcc()
+{
+    fDcc = new DccManager(this);
+    auto live = [this](void* server) -> Session* {
+        Session* s = static_cast<Session*>(server);
+        return (s && fSessions.contains(s)) ? s : nullptr;
+    };
+    connect(fDcc, &DccManager::sendCtcp, this, [live](void* server, const QString& target, const QString& ctcp) {
+        Session* s = live(server);
+        if (!s || !s->conn->isConnected() || target.contains(' '))
+            return;
+        QString clean = ctcp;
+        clean.remove('\r').remove('\n').remove(QChar(1));
+        s->conn->sendRaw(QString("PRIVMSG %1 :\x01%2\x01").arg(target, clean));
+    });
+    connect(fDcc, &DccManager::logLine, this, [this, live](void* server, const QString& text) {
+        Session* s = live(server);
+        if (!s) {
+            if (fActive)
+                print(fActive, text.toHtmlEscaped());
+            return;
+        }
+        printActiveOrServer(s, text);
+    });
+    connect(fDcc, &DccManager::chatOpened, this, [this, live](void* server, const QString& nick) {
+        Session* s = live(server);
+        if (!s)
+            return;
+        // You started or accepted this chat, so bring it to the front.
+        Buffer* b = dccChatBuffer(s, nick, true);
+        b->joined = true;
+        setActiveBuffer(b);
+        print(b, tr("--- DCC CHAT with %1 connected. Messages here go directly to %1, not through the IRC server.")
+            .arg(nick).toHtmlEscaped(), LineKind::Join);
+        if (fActive == b)
+            refreshTopic();
+    });
+    connect(fDcc, &DccManager::chatLine, this, [this, live](void* server, const QString& nick, const QString& text, bool action) {
+        Session* s = live(server);
+        if (!s)
+            return;
+        Buffer* b = dccChatBuffer(s, nick, true);
+        printMessage(b, nick, text, action ? LineKind::Action : LineKind::Normal, false);
+        if (s->profile().nickAlert && (!isActiveWindow() || fActive != b))
+            Notifier::notify(QString("[DCC] %1").arg(nick), text);
+    });
+    connect(fDcc, &DccManager::chatClosed, this, [this, live](void* server, const QString& nick, const QString& reason) {
+        Session* s = live(server);
+        if (!s)
+            return;
+        Buffer* b = dccChatBuffer(s, nick, false);
+        if (!b)
+            return;
+        b->joined = false;
+        updateTreeItem(b);
+        print(b, tr("--- DCC CHAT with %1 closed (%2).").arg(nick, reason).toHtmlEscaped(), LineKind::Part);
+        if (fActive == b)
+            refreshTopic();
+    });
+}
+
+Buffer* MainWindow::dccChatBuffer(Session* s, const QString& nick, bool create)
+{
+    const QString name = "=" + nick;
+    Buffer* b = findBuffer(s, name);
+    if (!b && create)
+        b = ensureBuffer(s, name, Buffer::DccChat);
+    return b;
+}
+
+void MainWindow::pickFileForDcc(Session* s, const QString& nick)
+{
+    const QStringList files = QFileDialog::getOpenFileNames(this, tr("Send File to %1").arg(nick), QDir::homePath());
+    if (!fSessions.contains(s))
+        return;
+    for (const QString& f : files)
+        fDcc->offerFile(s, nick, f);
+}
+
 void MainWindow::registerFingerprint(Session* s, const QString& sha1, const QString& sha512)
 {
     if (!s->conn->isRegistered())
@@ -1860,6 +2006,7 @@ void MainWindow::removeSession(Session* s)
             --other->index;
     saveConfig();
 
+    fDcc->forgetServer(s);
     fSessions.removeAll(s);
     if (fActive && fActive->session == s)
         fActive = nullptr;
@@ -1970,6 +2117,7 @@ void MainWindow::showTreeMenu(const QPoint& pos)
         hs->setChecked(s->profile().hideStatusMessages);
         connect(hs, &QAction::toggled, this, [s](bool on) { s->profile().hideStatusMessages = on; saveConfig(); });
         menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("folder-download"), tr("DCC Transfers…"), this, [this]() { fDcc->showTransfers(); });
         menu.addAction(QIcon::fromTheme("configure"), tr("Configure…"), this, [this, s]() { configureSession(s); });
         if (s->custom)
             menu.addAction(QIcon::fromTheme("list-remove"), tr("Remove Server"), this, [this, s]() { removeSession(s); });
@@ -2041,6 +2189,11 @@ void MainWindow::showUserMenu(const QPoint& pos)
     menu.addAction(tr("Private Message"), this, [this, s, first]() { ensureBuffer(s, first, Buffer::Query, true); });
     menu.addAction(tr("Whois"), this, [c, first]() { c->sendRaw("WHOIS " + first + " " + first); });
     menu.addAction(tr("CTCP Version"), this, [this, s, b, first]() { processCommand(s, b, "/ctcp " + first + " VERSION"); });
+    menu.addSeparator();
+    menu.addAction(QIcon::fromTheme("document-send"), tr("Send File…"), this, [this, s, first]() { pickFileForDcc(s, first); })
+        ->setEnabled(c->isRegistered());
+    menu.addAction(QIcon::fromTheme("network-connect"), tr("DCC Chat"), this, [this, s, first]() { fDcc->offerChat(s, first); })
+        ->setEnabled(c->isRegistered());
     menu.addSeparator();
     QMenu* ops = menu.addMenu(tr("Operator"));
     auto modeAll = [c, chan, nicks](const QString& flag) {

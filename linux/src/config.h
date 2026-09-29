@@ -76,6 +76,13 @@ struct Config {
     bool showUpdateNotifications = true;
     QString spellLanguage = "en_US";
 
+    // DCC file transfers / chat (same JSON keys as the Haiku build)
+    QString dccDownloadDir;          // empty = ~/Downloads
+    int dccFirstPort = 59200;        // first of 5 listen ports
+    bool dccUsePortMapping = true;   // UPnP / NAT-PMP / PCP router forwarding
+    QString dccExternalIP;           // manual advertised address override
+    bool dccForcePassive = false;    // always offer with passive DCC
+
     // Quit reason with the version suffix always appended, e.g.
     // "bye [Cricket IRC Client v.0.0.67 (Linux)]". Uses quitMessage when reason is empty.
     QString fullQuitMessage(const QString& reason = QString()) const;

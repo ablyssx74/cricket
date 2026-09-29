@@ -14,6 +14,7 @@
 #include <QPointer>
 
 class ChatView;
+class DccManager;
 class ChannelListDialog;
 class ChannelModesDialog;
 class InputEdit;
@@ -37,7 +38,7 @@ struct ChannelUser {
 };
 
 struct Buffer {
-    enum Type { Server, Channel, Query };
+    enum Type { Server, Channel, Query, DccChat };  // DccChat: "=nick" direct chat
     Type type = Server;
     QString name;
     Session* session = nullptr;
@@ -147,6 +148,9 @@ private:
     void openSearch(const QString& text, bool translate);
     void showAbout();
     void registerFingerprint(Session* s, const QString& sha1, const QString& sha512);
+    void setupDcc();
+    void pickFileForDcc(Session* s, const QString& nick);
+    Buffer* dccChatBuffer(Session* s, const QString& nick, bool create);
     void pollAwayStatus();
 
     QList<Session*> fSessions;
@@ -167,6 +171,7 @@ private:
     QTimer* fAwayPollTimer = nullptr;
 
     Translator* fTranslator = nullptr;
+    DccManager* fDcc = nullptr;
     UpdateChecker* fUpdates = nullptr;
     QString fPendingReviewedTranslation;
 };
