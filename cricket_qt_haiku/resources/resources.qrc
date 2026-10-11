@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/">
+    <file>cricket.svg</file>
+  </qresource>
+</RCC>

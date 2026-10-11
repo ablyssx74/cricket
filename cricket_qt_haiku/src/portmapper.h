@@ -1,0 +1,177 @@
+// Adapted from HiShare (github.com/atomozero/HiShare), the modernized edition
+// of BeShare 3.04 by Jeremy Friesner. HiShare's application code (this file
+// included) is public domain -- see HiShare's LICENSE for details.
+// Cricket changes: muscle::String replaced with Haiku's BString, optional
+// automatic reachability probe, configurable router mapping description.
+// Used by the DCC code (dcc.cpp) to open its listen ports on the router.
+//
+// Linux build: identical logic to ../../portmapper/PortMapper.cpp, with the
+// Haiku bits swapped for portmapper_compat.h, std::thread and a report
+// callback instead of a BMessenger. Keep the two in sync.
+
+#ifndef CRICKET_LINUX_PORT_MAPPER_H
+#define CRICKET_LINUX_PORT_MAPPER_H
+
+#include "portmapper_compat.h"
+
+#include <atomic>
+#include <functional>
+#include <thread>
+
+namespace cricket {
+
+// A PortMapReport is passed to the report callback (on the mapper's worker
+// thread) whenever the port-mapping state changes.
+//
+// Fields:
+//   "state"        (int32)  one of the PortMapperState values below
+//   "method"       (string) "NAT-PMP" or "UPnP" (human readable)
+//   "external_ip"  (string) our public IP as seen from the WAN, if known
+//   "external_port"(int32)  the port that was opened on the router, if any
+//   "internal_port"(int32)  the local file-serving port we asked to forward
+//   "message"      (string) a human-readable status line for the chat log
+//   "reachable"    (int32)  ONLY on reachability reports: 1=reachable from the
+//                           internet, 0=not reachable (CGNAT/double-NAT), -1=unknown
+//   "internet_ip"  (string) ONLY on reachability reports: our internet-visible IP
+struct PortMapReport {
+	int32   state = 0;          // PortMapperState
+	BString method;
+	BString externalIP;
+	int32   externalPort = 0;
+	int32   internalPort = 0;
+	bool    verified = true;
+	BString message;
+	int32   reachable = -2;     // -2: not a reachability report
+	BString internetIP;
+};
+
+enum PortMapperState {
+	PORT_MAP_STATE_IDLE = 0,	// not doing anything
+	PORT_MAP_STATE_TRYING,		// discovery/mapping in progress
+	PORT_MAP_STATE_MAPPED,		// a mapping is currently active
+	PORT_MAP_STATE_FAILED,		// gave up (no NAT-PMP/PCP/UPnP router found)
+	PORT_MAP_STATE_REMOVED,		// mapping was deleted (e.g. on shutdown)
+	PORT_MAP_STATE_LOST			// a previously-active mapping stopped renewing (router reboot, etc.)
+};
+
+// PortMapper asks the local NAT router to forward an external TCP port to a
+// port we listen on for incoming DCC connections, so that
+// people who are NOT behind the same router can download from us even when we
+// sit behind a home NAT gateway.  It tries NAT-PMP first (fast, RFC 6886) and
+// falls back to UPnP IGD (SSDP + SOAP) if that gets no answer.
+//
+// All of the network work happens in a private worker thread so the GUI never
+// blocks.  The lease is renewed automatically for as long as the object lives,
+// and the mapping is deleted from the router in the destructor (best-effort).
+//
+// The implementation deliberately uses plain BSD sockets.
+class PortMapper {
+public:
+	// report      : called on the worker thread with every state change
+	// internalPort: the local TCP port to forward
+	// description : label shown in the router's UPnP mapping table
+	// autoProbe   : run the reachability probe after each fresh mapping (when
+	//               several mappers run side by side, let only one probe)
+	typedef std::function<void(const PortMapReport&)> ReportFn;
+	PortMapper(ReportFn report, uint16 internalPort,
+	           const char* description = "Cricket", bool autoProbe = true);
+	~PortMapper();
+
+	status_t Start();   // spawn the worker thread and begin trying to map
+	void     Stop();    // delete the mapping and join the thread (blocks)
+	// Asks the worker to finish (it deletes the mapping on its way out) without
+	// waiting; call Stop() afterwards to join. Lets several mappers shut down
+	// in parallel instead of one after another.
+	void     RequestStop() { _keepRunning = false; }
+
+	uint16 GetInternalPort() const { return _internalPort; }
+
+	BString GetExternalIP() const;
+	uint16 GetExternalPort() const;
+	bool   IsMapped() const;
+
+	// Kicks off an external-reachability probe on the worker thread: it fetches
+	// our internet-visible IP from a public IP-echo service and compares it with
+	// the router's WAN address, to tell whether we are ACTUALLY reachable from
+	// the internet (vs. silently stuck behind carrier-grade / double NAT, which a
+	// confirmed router mapping does not rule out).  Result arrives asynchronously
+	// via PORT_MAP_REPORT with a "reachable" field (see below).  Also run
+	// automatically once after each fresh mapping when autoProbe is set.
+	void   ProbeReachability();
+	int    GetReachability() const;   // 1 reachable, 0 not (CGNAT), -1 unknown/not yet probed
+	BString GetInternetIP() const;
+
+private:
+	void  _ThreadLoop();
+
+	void  _Report(int32 state, const char* method, const char* message,
+	              const BString& externalIP, uint16 externalPort, bool verified = true);
+
+	bool  _DiscoverGatewayAndLocalIP();
+
+	// PCP (RFC 6887) and legacy NAT-PMP (RFC 6886); both talk to _gatewayIP:5351.
+	// IPs are in host byte order.
+	bool  _PCPMap(uint32 lifetimeSecs, BString& outExternalIP,
+	              uint16& outExternalPort, uint32& outLeaseSecs);
+	void  _PCPUnmap();
+	bool  _NatPMPMap(uint32 lifetimeSecs, BString& outExternalIP,
+	                 uint16& outExternalPort, uint32& outLeaseSecs);
+	void  _NatPMPUnmap();
+
+	// UPnP IGD (SSDP discovery + SOAP control).
+	bool  _UPnPDiscover(BString& outControlURL, BString& outServiceType,
+	                    BString& outBaseHost, uint16& outBasePort);
+	bool  _UPnPMap(uint32 lifetimeSecs, BString& outExternalIP,
+	               uint16& outExternalPort);
+	void  _UPnPUnmap();
+	// Self-test: ask the router (GetSpecificPortMappingEntry) whether the mapping
+	// we just asked for is really installed, pointing back at us.  Catches routers
+	// that acknowledge AddPortMapping but silently fail to create the entry.
+	bool  _UPnPVerify();
+	bool  _UPnPSoap(const char* action, const BString& argsXml, BString& outResponse);
+
+	// Minimal blocking HTTP/1.1 client used for UPnP.
+	bool  _HttpRequest(const char* host, uint16 port, const char* method,
+	                   const char* path, const BString& extraHeaders,
+	                   const BString& body, BString& outBody);
+
+	// External-reachability probe helpers.
+	void  _RunReachabilityProbe();                       // fetch internet IP, decide verdict, report
+	bool  _GetInternetIP(BString& outIP);                 // HTTP GET a public IP-echo service
+	static bool _ExtractIPv4(const BString& text, BString& outIP);
+	static bool _IsPrivateIPv4(const BString& ip);        // RFC1918 / CGNAT / link-local / loopback
+
+	ReportFn   _target;
+	uint16     _internalPort;
+	BString    _description;
+	bool       _autoProbe;
+
+	std::thread       _thread;
+	std::atomic<bool> _keepRunning;
+
+	uint32 _localIP;      // host byte order
+	uint32 _gatewayIP;    // host byte order
+
+	enum { METHOD_NONE = 0, METHOD_PCP, METHOD_NATPMP, METHOD_UPNP } _activeMethod;
+
+	BString _upnpControlURL;
+	BString _upnpServiceType;
+	BString _upnpHost;
+	uint16 _upnpPort;
+	bool   _upnpRouterResponded;   // SSDP got answers this cycle (even if unusable) — used to pick the failure message
+	uint16 _mappedExternalPort;
+	uint8  _pcpNonce[12];   // PCP mapping nonce (RFC 6887), kept so we can delete the same mapping
+
+	mutable BLocker _stateLock;
+	BString _externalIP;
+	uint16 _externalPort;
+	bool   _isMapped;
+
+	std::atomic<bool> _probeRequested;   // set by ProbeReachability() / on a fresh map; consumed by the loop
+	int    _reachability;            // 1 reachable, 0 not, -1 unknown (guarded by _stateLock)
+	BString _internetIP;              // internet-visible IP from the last probe (guarded by _stateLock)
+};
+
+};  // namespace cricket
+
+#endif
