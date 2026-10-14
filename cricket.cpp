@@ -7726,7 +7726,9 @@ public:
         userFrame->SetExplicitPreferredSize(BSize(110, B_SIZE_UNLIMITED));    
 
         BLayoutBuilder::Group<>(this, B_VERTICAL, 5)
-            .SetInsets(10)
+            // 2 pixels more at the right: the window's resize corner reaches into the input box's
+            // corner; the user list ends there too, so they line up
+            .SetInsets(10, 10, 12, 10)
             .Add(mainSplitter, 1.0) 
             .AddGroup(B_HORIZONTAL, 5, 0.0) 
                 .Add(fIconToggleButton, 0.0) //  Places the layout-safe toggle button here
