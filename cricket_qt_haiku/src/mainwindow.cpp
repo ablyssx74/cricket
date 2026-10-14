@@ -40,6 +40,7 @@
 #include <QTextStream>
 #include <QTimer>
 #include <QToolButton>
+#include <QPainter>
 #include <QTreeWidget>
 #include <QUrl>
 #include <QUrlQuery>
@@ -60,6 +61,34 @@ static const int kMaxLines = 3000;
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
+
+// The server list. With Rounded Edges on, the selected row is one pill across the whole row,
+// under the branch arrow too (the style would fill the arrow's column with a square block).
+class RoundedSelectionTree : public QTreeWidget {
+public:
+    using QTreeWidget::QTreeWidget;
+
+protected:
+    void drawRow(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        if (!cfg.roundedEdges || !selectionModel() || !selectionModel()->isSelected(index)) {
+            QTreeWidget::drawRow(painter, option, index);
+            return;
+        }
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(palette().color(QPalette::Highlight));
+        QRect row(0, option.rect.top(), viewport()->width(), option.rect.height());
+        painter->drawRoundedRect(row.adjusted(2, 1, -2, -1), 6, 6);
+        painter->restore();
+
+        // the style's own selection fill is made invisible; the text keeps the selected color
+        QStyleOptionViewItem opt = option;
+        opt.palette.setColor(QPalette::Highlight, Qt::transparent);
+        QTreeWidget::drawRow(painter, opt, index);
+    }
+};
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
@@ -132,11 +161,11 @@ void MainWindow::buildUi()
 {
     fSplitter = new QSplitter(Qt::Horizontal);
 
-    fTree = new QTreeWidget;
+    fTree = new RoundedSelectionTree;
     fTree->setHeaderHidden(true);
     fTree->setRootIsDecorated(true);
     fTree->setContextMenuPolicy(Qt::CustomContextMenu);
-    fTree->setMinimumWidth(120);
+    fTree->setMinimumWidth(0);
     connect(fTree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* cur) {
         if (Buffer* b = bufferForItem(cur))
             setActiveBuffer(b);
@@ -168,7 +197,12 @@ void MainWindow::buildUi()
 
     auto* inputRow = new QHBoxLayout;
     fEmoteButton = new QToolButton;
-    fEmoteButton->setText("🙂");
+    if (QFile::exists(IrcFormat::emoteImagePath("Smile"))) {
+        fEmoteButton->setIcon(QIcon(IrcFormat::emoteImagePath("Smile")));
+        fEmoteButton->setIconSize(QSize(20, 20));
+    } else {
+        fEmoteButton->setText("🙂");
+    }
     fEmoteButton->setToolTip(tr("Emoticons"));
     fEmoteButton->setPopupMode(QToolButton::InstantPopup);
     auto* emoteMenu = new QMenu(fEmoteButton);
@@ -178,12 +212,20 @@ void MainWindow::buildUi()
     int col = 0, row = 0;
     for (const IrcFormat::Emote& e : IrcFormat::pickerEmotes()) {
         auto* btn = new QToolButton;
-        btn->setText(QString::fromUtf8(e.emoji));
+        const QString picture = IrcFormat::emoteImagePath(e.name);
+        if (QFile::exists(picture)) {
+            btn->setIcon(QIcon(picture));
+            btn->setIconSize(QSize(24, 24));
+        } else {
+            btn->setText(QString::fromUtf8(e.emoji));
+        }
         btn->setToolTip(QString("%1  %2").arg(e.name, e.trigger));
         btn->setAutoRaise(true);
-        QFont f = btn->font();
-        f.setPointSizeF(f.pointSizeF() * 1.5);
-        btn->setFont(f);
+        if (btn->icon().isNull()) {
+            QFont f = btn->font();
+            f.setPointSizeF(f.pointSizeF() * 1.5);
+            btn->setFont(f);
+        }
         QString trigger = QString::fromUtf8(e.trigger);
         connect(btn, &QToolButton::clicked, this, [this, trigger, emoteMenu]() {
             emoteMenu->close();
@@ -241,7 +283,12 @@ void MainWindow::buildUi()
     fSplitter->addWidget(center);
     fSplitter->addWidget(fUserPanel);
     fSplitter->setStretchFactor(1, 1);
-    fSplitter->setChildrenCollapsible(false);
+    // The server list and the user list can be dragged shut, as in the Haiku-native version; the chat cannot
+    fUserPanel->setMinimumWidth(0);
+    fSplitter->setChildrenCollapsible(true);
+    fSplitter->setCollapsible(0, true);
+    fSplitter->setCollapsible(1, false);
+    fSplitter->setCollapsible(2, true);
     fSplitter->setHandleWidth(7);
 
     auto* wrapper = new QWidget;
@@ -255,7 +302,39 @@ void MainWindow::buildUi()
 
     // Typing anywhere in the chat log goes to the input line.
     fChat->installEventFilter(this);
+    applyRoundedEdges();
     resize(1100, 700);
+}
+
+// Rounded corners on the boxes (server list, chat, user list, topic, input), and rounded selection
+// in the two lists, with the colors of the current palette. Off: the style's own frames.
+void MainWindow::applyRoundedEdges()
+{
+    QWidget* boxes[] = { fTree, fUsers, fChat, fTopic, fInput };
+    if (!cfg.roundedEdges) {
+        for (QWidget* w : boxes)
+            w->setStyleSheet(QString());
+        return;
+    }
+    const QPalette pal = palette();
+    const QString frame = QString("border: 1px solid %1; border-radius: 7px; padding: 3px; background-color: %2;")
+        .arg(pal.color(QPalette::Mid).name(), pal.color(QPalette::Base).name());
+    const QString pill = QString("::item { padding: 2px; border-radius: 6px; } "
+        "::item:selected { background-color: %1; color: %2; border-radius: 6px; }")
+        .arg(pal.color(QPalette::Highlight).name(), pal.color(QPalette::HighlightedText).name());
+    // (the server list paints its own selection pill across the whole row, see RoundedSelectionTree)
+    fTree->setStyleSheet("QTreeWidget { " + frame + " }");
+    fUsers->setStyleSheet("QListWidget { " + frame + " } QListWidget" + pill);
+    fChat->setStyleSheet("QTextBrowser { " + frame + " }");
+    fTopic->setStyleSheet("QLineEdit { " + frame + " }");
+    fInput->setStyleSheet("QPlainTextEdit { " + frame + " }");
+}
+
+void MainWindow::changeEvent(QEvent* e)
+{
+    QMainWindow::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange)
+        applyRoundedEdges();
 }
 
 void MainWindow::buildMenus()
@@ -266,6 +345,7 @@ void MainWindow::buildMenus()
         if (dlg.exec() == QDialog::Accepted) {
             dlg.apply();
             fInput->setSpellCheckEnabled(cfg.enableSpellCheck);
+            applyRoundedEdges();
             if (fDcc)
                 fDcc->applySettings();
         }

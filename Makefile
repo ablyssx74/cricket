@@ -2,7 +2,12 @@
 TARGET = cricket
 PACKAGE_DIR := build/package
 NAME = cricket
-VERSION = 0.0.68
+# The one place a release changes is the VERSION file: the program, the package and the
+# resource all take it from there.
+VERSION := $(shell sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' VERSION | head -1)
+V_MAJOR := $(word 1,$(subst ., ,$(VERSION)))
+V_MIDDLE := $(word 2,$(subst ., ,$(VERSION)))
+V_MINOR := $(word 3,$(subst ., ,$(VERSION)))
 REVISION = 1
 
 # --- 2. Architecture & Paths ---
@@ -22,6 +27,7 @@ else
 endif
 
 DEFINES := $(DEFINES)
+DEFINES += -DCRICKET_VERSION=\"$(VERSION)\"
 
 # OPTIMIZED CXXFLAGS: Aggressive loop optimizations (-O3), dead-code section generation,
 # and warning suppressions to guarantee a clean, flawless compilation terminal output.
@@ -48,9 +54,13 @@ $(TARGET): $(OBJS) $(RSRCS)
 	xres -o $(TARGET) $(RSRCS)
 	mimeset -f $(TARGET)
 
-# Compile the resource script into binary format
-%.rsrc: %.rdef
-	rc -o $@ $<
+# Compile the resource script into binary format (the version fields are filled in from VERSION)
+%.rsrc: %.rdef VERSION
+	sed -e 's/@V_MAJOR@/$(V_MAJOR)/' -e 's/@V_MIDDLE@/$(V_MIDDLE)/' -e 's/@V_MINOR@/$(V_MINOR)/' -e 's/@VERSION@/$(VERSION)/' $< > $*.version.rdef
+	rc -o $@ $*.version.rdef
+
+# The version is compiled in: a new VERSION means a new build of the file that shows it
+cricket.o: VERSION
 
 # Compile source files to object files
 %.o: %.cpp
@@ -71,7 +81,7 @@ release: all
 
 # Clean up build files
 clean:
-	rm -f $(OBJS) $(RSRCS) $(TARGET) *.hpkg
+	rm -f $(OBJS) $(RSRCS) $(TARGET) *.hpkg *.version.rdef
 	rm -fr build
 
 .PHONY: all release clean

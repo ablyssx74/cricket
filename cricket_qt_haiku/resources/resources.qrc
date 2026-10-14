@@ -1,5 +1,19 @@
 <RCC>
   <qresource prefix="/">
     <file>cricket.svg</file>
+    <file>emotes/Annoyed.png</file>
+    <file>emotes/Astonished.png</file>
+    <file>emotes/Cheerful.png</file>
+    <file>emotes/Confused.png</file>
+    <file>emotes/Crying.png</file>
+    <file>emotes/Frown.png</file>
+    <file>emotes/Heart.png</file>
+    <file>emotes/Kiss.png</file>
+    <file>emotes/Laughing.png</file>
+    <file>emotes/Smile.png</file>
+    <file>emotes/Sunglasses.png</file>
+    <file>emotes/Tongue.png</file>
+    <file>emotes/Wide-eyed.png</file>
+    <file>emotes/Wink.png</file>
   </qresource>
 </RCC>

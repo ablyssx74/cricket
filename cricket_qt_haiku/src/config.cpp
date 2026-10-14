@@ -204,6 +204,7 @@ void saveConfig()
     QJsonObject j;
     j["enableSpellCheck"] = cfg.enableSpellCheck;
     j["debugEnable"] = cfg.debugEnable;
+    j["roundedEdges"] = cfg.roundedEdges;
     j["search_engine"] = cfg.searchEngine;
     j["serverListFontSize"] = cfg.serverListFontSize;
     j["chatLogFontSize"] = cfg.chatLogFontSize;
@@ -270,6 +271,7 @@ void loadConfig()
             cfg.awayMessage = j.value("awayMessage").toString("I am away from my computer right now.");
             cfg.enableSpellCheck = j.value("enableSpellCheck").toBool(true);
             cfg.debugEnable = j.value("debugEnable").toBool(false);
+            cfg.roundedEdges = j.value("roundedEdges").toBool(true);
             cfg.serverListFontSize = j.value("serverListFontSize").toInt(12);
             cfg.chatLogFontSize = j.value("chatLogFontSize").toInt(12);
             cfg.userListFontSize = j.value("userListFontSize").toInt(12);

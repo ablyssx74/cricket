@@ -67,7 +67,7 @@ public:
 
 private:
     QLineEdit *fQuit, *fAway, *fSearch, *fSpellLang;
-    QCheckBox *fSpell, *fUpdates, *fDebug;
+    QCheckBox *fSpell, *fUpdates, *fDebug, *fRounded;
     QLineEdit *fDccDir, *fDccExternalIP;
     QSpinBox* fDccPort;
     QCheckBox *fDccPortMap, *fDccPassive;

@@ -9,7 +9,7 @@
 #include <QTextBrowser>
 
 // Read-only chat log. Lines are appended as HTML paragraphs; an optional
-// background image is blended behind the text at the configured opacity.
+// background image is blended behind the text, dimmed by the configured level (0 = full picture, 100 = none).
 class ChatView : public QTextBrowser {
     Q_OBJECT
 public:

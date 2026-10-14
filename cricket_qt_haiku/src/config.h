@@ -64,6 +64,7 @@ struct ServerConfig {
 struct Config {
     bool enableSpellCheck = true;
     bool debugEnable = false;
+    bool roundedEdges = true;       // rounded corners on the server list, chat, user list, topic and input
     QVector<ServerConfig> servers;
     QVector<ServerConfig> customServers;
     int serverListFontSize = 12;

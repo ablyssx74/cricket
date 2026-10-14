@@ -136,7 +136,7 @@ void MainWindow::buildUi()
     fTree->setHeaderHidden(true);
     fTree->setRootIsDecorated(true);
     fTree->setContextMenuPolicy(Qt::CustomContextMenu);
-    fTree->setMinimumWidth(120);
+    fTree->setMinimumWidth(0);
     connect(fTree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* cur) {
         if (Buffer* b = bufferForItem(cur))
             setActiveBuffer(b);
@@ -241,7 +241,12 @@ void MainWindow::buildUi()
     fSplitter->addWidget(center);
     fSplitter->addWidget(fUserPanel);
     fSplitter->setStretchFactor(1, 1);
-    fSplitter->setChildrenCollapsible(false);
+    // The server list and the user list can be dragged shut; the chat cannot
+    fUserPanel->setMinimumWidth(0);
+    fSplitter->setChildrenCollapsible(true);
+    fSplitter->setCollapsible(0, true);
+    fSplitter->setCollapsible(1, false);
+    fSplitter->setCollapsible(2, true);
 
     auto* wrapper = new QWidget;
     auto* wl = new QVBoxLayout(wrapper);

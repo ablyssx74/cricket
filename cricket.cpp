@@ -65,6 +65,9 @@
 #include <curl/curl.h> 
 #include <fstream>
 #include <map>
+#include <Screen.h>
+#include <ScrollBar.h>
+#include <GroupLayout.h>
 #include <memory>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -126,6 +129,7 @@ enum {
     MSG_CONTEXT_UNBAN_SUBMIT = 'mUBS', 
     MSG_TOGGLE_ICON_POPUP = 'tICP',
     MSG_POPUP_WAS_DESTROYED = 'mPWD',
+    MSG_POPUP_CLOSED_BY_BUTTON = 'mPCB',
     MSG_CONTEXT_SHOW_MODES = 'mCSM',
     MSG_GENERATE_CERTFP_KEYPAIR = 'gcfp',
     MSG_AUTO_REGISTER_FINGERPRINT = 'argf',
@@ -150,8 +154,14 @@ class ServerTreeItem;
 static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
 
+// The version comes from the VERSION file through the Makefile (-DCRICKET_VERSION="0.0.68")
+#ifndef CRICKET_VERSION
+#error "CRICKET_VERSION is not defined: build with make, which reads it from the VERSION file"
+#endif
+
 namespace AppInfo {
-    static const char* const VERSION_STRING = "Cricket IRC Client v.0.0.68 (Haiku OS)";
+    static const char* const VERSION_NUMBER = CRICKET_VERSION;
+    static const char* const VERSION_STRING = "Cricket IRC Client v." CRICKET_VERSION " (Haiku OS)";
 }
 
 
@@ -206,12 +216,13 @@ struct ServerConfig {
 struct Config {
 	bool enableSpellCheck = false;	
     bool debugEnable = false;
+    bool roundedEdges = true;      // rounded corners on the server list, chat, user list and input boxes
     std::vector<ServerConfig> servers;
     std::vector<ServerConfig> customServers; 
     int32 serverListFontSize = 12;
     int32 chatLogFontSize = 12;
     int32 userListFontSize = 12;
-    std::string quitMessage = std::string(AppInfo::VERSION_STRING);
+    std::string quitMessage = "App Quit";    // the reason only; the version is added when it is sent
     std::string awayMessage = "I am away from my computer right now."; 
     bool useCustomDrawFunction = true;
     int32 timestampInterval = 30;
@@ -225,6 +236,46 @@ struct Config {
     std::string dccExternalIP = "";      // manual advertised address override
     bool dccForcePassive = false;        // always offer files with passive DCC
 } cfg;
+
+// A list item that is as wide as it can be, so that the list redraws the whole row when the
+// item changes (selected, deselected, new text). An item as wide as its text leaves the rest of
+// the row alone, and the pill of a selection that moved on is left behind there.
+class WideRowItem : public BStringItem {
+public:
+    WideRowItem(const char* text, uint32 level = 0, bool expanded = true)
+        : BStringItem(text, level, expanded) {}
+
+    virtual void Update(BView* owner, const BFont* font) override {
+        BStringItem::Update(owner, font);
+        SetWidth(4000.0f);
+    }
+};
+
+// The background of a list row. A selected row is a rounded pill when Rounded Edges is on.
+static void FillListRowBackground(BView* owner, BRect rect, bool selected) {
+    // The row is the whole width of the list: the items are made that wide (see
+    // WideRowItem below), but a row is drawn over the visible width in any case
+    rect.left = owner->Bounds().left;
+    rect.right = owner->Bounds().right;
+    owner->SetHighColor(ui_color(B_LIST_BACKGROUND_COLOR));
+    owner->FillRect(rect);
+    if (!selected) return;
+    if (cfg.roundedEdges) {
+        BRect pill = rect;
+        pill.InsetBy(2.0f, 1.0f);
+        owner->PushState();
+        owner->SetDrawingMode(B_OP_ALPHA);
+        owner->SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+        owner->SetHighColor(ui_color(B_LIST_SELECTED_BACKGROUND_COLOR));
+        owner->FillRoundRect(pill, 6.0f, 6.0f);
+        owner->PopState();
+    } else {
+        owner->SetHighColor(ui_color(B_LIST_SELECTED_BACKGROUND_COLOR));
+        owner->FillRect(rect);
+    }
+}
+
+
 
 
 int selectedConfig = 0;
@@ -242,6 +293,7 @@ void save_config() {
     json j;
     j["enableSpellCheck"] = cfg.enableSpellCheck;
     j["debugEnable"] = cfg.debugEnable;
+    j["roundedEdges"] = cfg.roundedEdges;
     j["search_engine"] = cfg.searchEngine;
     j["serverListFontSize"] = cfg.serverListFontSize;
     j["chatLogFontSize"] = cfg.chatLogFontSize;
@@ -446,6 +498,7 @@ void load_config() {
     ensure_config_dir();
     cfg.enableSpellCheck = true;
     cfg.debugEnable = false;
+    cfg.roundedEdges = true;
     cfg.useCustomDrawFunction = true;
 
     cfg.servers.clear(); 
@@ -485,17 +538,13 @@ void load_config() {
                     savedQuit = "";
                 }
 
-                BString finalQuitMsg;
-                if (savedQuit.Length() > 0) {
-                    finalQuitMsg << savedQuit << " [" << AppInfo::VERSION_STRING << "]";
-                } else {
-                    finalQuitMsg << "[" << AppInfo::VERSION_STRING << "]";
-                }
-                cfg.quitMessage = finalQuitMsg.String();
+                // Only the reason is kept (shown in Settings, saved); the version is added when sent
+                cfg.quitMessage = savedQuit.String();
 
                 cfg.awayMessage = j.value("awayMessage", "I am away from my computer right now.");
                 cfg.enableSpellCheck = j.value("enableSpellCheck", true); 
                 cfg.debugEnable = j.value("debugEnable", false);             
+                cfg.roundedEdges = j.value("roundedEdges", true);
                 cfg.serverListFontSize = j.value("serverListFontSize", (int32)12);
                 cfg.chatLogFontSize    = j.value("chatLogFontSize", (int32)12);
                 cfg.userListFontSize   = j.value("userListFontSize", (int32)12);  
@@ -689,9 +738,7 @@ void load_config() {
         cfg.useCustomDrawFunction = true; 
         
         // --- FALLBACK FORMAT MATCH ---
-        BString defaultQuit;
-        defaultQuit << "App Quit [" << AppInfo::VERSION_STRING << "]";
-        cfg.quitMessage = defaultQuit.String();
+        cfg.quitMessage = "App Quit";
         cfg.awayMessage = "I am away from my computer right now.";        
        
         srand(static_cast<unsigned int>(real_time_clock_usecs()));
@@ -1361,10 +1408,10 @@ static bool MatchWildcard(const char* stringToTest, const char* wildcardPattern)
 }
 
 
-class UserListItem : public BStringItem {
+class UserListItem : public WideRowItem {
 public:
     UserListItem(const char* nickname, bool isAway = false)
-        : BStringItem(""), fIsAway(isAway), fIsOwner(false), fIsAdmin(false), fIsOp(false), fIsHalfOp(false), fIsVoiced(false) {
+        : WideRowItem(""), fIsAway(isAway), fIsOwner(false), fIsAdmin(false), fIsOp(false), fIsHalfOp(false), fIsVoiced(false) {
         
         // Extract any leading prefix from the initial nickname string if passed directly
         BString rawNick = nickname;
@@ -1411,12 +1458,7 @@ public:
     }
 
     virtual void DrawItem(BView* owner, BRect frame, bool complete = false) override {
-        if (IsSelected()) {
-            owner->SetHighColor(ui_color(B_LIST_SELECTED_BACKGROUND_COLOR));
-        } else {
-            owner->SetHighColor(ui_color(B_LIST_BACKGROUND_COLOR));
-        }
-        owner->FillRect(frame);
+        FillListRowBackground(owner, frame, IsSelected());
 
         if (IsSelected()) {
             owner->SetHighColor(ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR));
@@ -1473,11 +1515,321 @@ struct StyledRunFragment {
 
 
 
+// A box with rounded corners round a control. The corners lie on the window's flat panel
+// color, so they are simply painted: the control sits inside a little padding that keeps its
+// square corners within the curve. With Rounded Edges off the padding is 0 and nothing is drawn.
+class RoundedFrame : public BView {
+public:
+    static const float kRadius;
+    static const float kPad;
+
+    RoundedFrame(BView* child, float pad = kPad)
+        : BView("rounded_frame", B_WILL_DRAW | B_FRAME_EVENTS), fPad(pad)
+    {
+        SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
+        fLayout = new BGroupLayout(B_VERTICAL, 0);
+        SetLayout(fLayout);
+        fLayout->AddView(child);
+        fChild = child;
+        Apply();
+    }
+
+    BView* Child() const { return fChild; }
+
+    // Takes the Rounded Edges setting (live)
+    void Apply() {
+        float pad = cfg.roundedEdges ? fPad : 0.0f;
+        fLayout->SetInsets(pad, pad, pad, pad);
+        InvalidateLayout();
+        Invalidate();
+    }
+
+    virtual void Draw(BRect) override {
+        if (!cfg.roundedEdges) return;
+        BRect r = Bounds();
+        SetDrawingMode(B_OP_ALPHA);
+        SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+        // the outline is drawn first, the fill inside it, so the curve is smoothed once
+        SetHighColor(tint_color(ui_color(B_PANEL_BACKGROUND_COLOR), B_DARKEN_2_TINT));
+        FillRoundRect(r, kRadius, kRadius);
+        r.InsetBy(1.0f, 1.0f);
+        SetHighColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
+        FillRoundRect(r, kRadius - 1.0f, kRadius - 1.0f);
+        SetDrawingMode(B_OP_COPY);
+    }
+
+private:
+    BGroupLayout* fLayout;
+    BView*        fChild;
+    float         fPad;
+};
+const float RoundedFrame::kRadius = 7.0f;
+const float RoundedFrame::kPad = 3.0f;
+
+// A vertical scroll bar for the boxes: with Rounded Edges on, the track is the color of the box
+// and only the thumb is drawn, as a pill. The thumb sits where BScrollBar keeps it (its frame is
+// worked out the same way as in ScrollBar.cpp), so dragging and clicking behave as usual.
+// With Rounded Edges off it is the ordinary scroll bar.
+// What a box that shows a picture behind its text gives the scroll bar laid over it: the picture
+// of the whole box (the box's outline and rounded corners included), so the bar can show the
+// part under it and draw only the thumb on top.
+class BackdropProvider {
+public:
+    virtual ~BackdropProvider() {}
+    virtual BBitmap* BoxBackdrop(int32 width, int32 height) = 0;
+    virtual void SetBoxMode(bool on) = 0;
+};
+
+class FlatScrollBar : public BScrollBar {
+public:
+    FlatScrollBar(BView* target, color_which background)
+        : BScrollBar("flat_scroll", target, 0, 0, B_VERTICAL), fBackground(background),
+          fProvider(nullptr), fOverlay(false) {}
+
+    void SetBackdrop(BackdropProvider* provider) { fProvider = provider; }
+    void SetOverlay(bool on) { fOverlay = on; Invalidate(); }
+
+    virtual void Draw(BRect updateRect) override {
+        if (!cfg.roundedEdges) {
+            BScrollBar::Draw(updateRect);
+            return;
+        }
+        SetDrawingMode(B_OP_COPY);
+        BBitmap* backdrop = nullptr;
+        if (fOverlay && fProvider != nullptr && Parent() != nullptr) {
+            BRect box = Parent()->Bounds();
+            backdrop = fProvider->BoxBackdrop((int32)ceilf(box.Width() + 1.0f), (int32)ceilf(box.Height() + 1.0f));
+        }
+        if (backdrop != nullptr) {
+            DrawBitmap(backdrop, Frame(), Bounds());     // the part of the box's picture under the bar
+        } else {
+            SetHighColor(ui_color(fBackground));
+            FillRect(updateRect);
+        }
+
+        float minV, maxV;
+        GetRange(&minV, &maxV);
+        float proportion = Proportion();
+        if (!(minV < maxV && proportion >= 0.0f && proportion < 1.0f))
+            return;                      // nothing to scroll: no thumb
+
+        BRect thumb = ThumbFrame();
+        thumb.InsetBy(2.0f, 0.0f);
+        thumb.right += 1.0f;
+        thumb.bottom += 1.0f;
+        SetDrawingMode(B_OP_ALPHA);
+        SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+        SetHighColor(tint_color(ui_color(B_SCROLL_BAR_THUMB_COLOR), B_DARKEN_1_TINT));
+        float radius = thumb.Width() / 2.0f;
+        FillRoundRect(thumb, radius, radius);
+        SetDrawingMode(B_OP_COPY);
+    }
+
+private:
+    // The thumb's frame as BScrollBar::_UpdateThumbFrame() makes it (vertical bar)
+    BRect ThumbFrame() {
+        scroll_bar_info info;
+        get_scroll_bar_info(&info);
+
+        BRect bounds = Bounds();
+        bounds.InsetBy(1.0f, 1.0f);
+        BRect frame = bounds;
+        float minSize = info.min_knob_size;
+        float maxSize = bounds.Height();
+        float buttonSize = bounds.Width() + 1.0f;
+
+        bool doubleArrows = info.double_arrows
+            && Bounds().Height() > (Bounds().Width() + 1.0f) * 4.0f + minSize * 2.0f;
+        maxSize -= buttonSize * (doubleArrows ? 4.0f : 2.0f);
+        maxSize--;
+
+        float minV, maxV;
+        GetRange(&minV, &maxV);
+        float thumbSize;
+        if (info.proportional) {
+            float proportion = Proportion();
+            if (minV >= maxV || proportion > 1.0f || proportion < 0.0f)
+                proportion = 1.0f;
+            if (proportion == 0.0f) {
+                float smallStep, largeStep;
+                GetSteps(&smallStep, &largeStep);
+                proportion = largeStep / (2.0f * (maxV - minV));
+                if (proportion > 1.0f) proportion = 1.0f;
+            }
+            thumbSize = maxSize * proportion;
+            if (thumbSize < minSize) thumbSize = minSize;
+        } else {
+            thumbSize = minSize;
+        }
+        thumbSize = floorf(thumbSize + 0.5f);
+        thumbSize--;
+
+        float offset = 0.0f;
+        if (maxV > minV)
+            offset = floorf(((Value() - minV) / (maxV - minV)) * (maxSize - thumbSize - 1.0f));
+        offset += buttonSize * (doubleArrows ? 2.0f : 1.0f);
+        offset++;
+
+        frame.bottom = frame.top + thumbSize;
+        frame.OffsetBy(0.0f, offset);
+        return frame;
+    }
+
+    color_which fBackground;
+    BackdropProvider* fProvider;
+    bool fOverlay;
+};
+
+class FlatScrollView;
+static std::vector<FlatScrollView*>& FlatScrollViews() {
+    static std::vector<FlatScrollView*> views;
+    return views;
+}
+
+// A box with a vertical scroll bar (the part of BScrollView the program used). The target and a
+// FlatScrollBar sit side by side; with Rounded Edges off it draws the usual scroll view frame.
+class FlatScrollView : public BView {
+public:
+    // overlay: with Rounded Edges on the bar lies over the right edge of the target (which then
+    // fills the whole box and shows its picture under the bar); inset: the margin round the target
+    // in a rounded box that has no RoundedFrame padding of its own. The two children are placed
+    // by hand (a layout would make room for the bar beside the target).
+    FlatScrollView(const char* name, BView* target, color_which background = B_DOCUMENT_BACKGROUND_COLOR,
+                   bool overlay = false, float inset = 0.0f)
+        : BView(name, B_WILL_DRAW | B_FRAME_EVENTS | B_FULL_UPDATE_ON_RESIZE),
+          fTarget(target), fOverlayCapable(overlay), fInset(inset), fBarOverlay(false),
+          fProvider(nullptr)
+    {
+        SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
+        fBar = new FlatScrollBar(target, background);
+        fTarget->SetResizingMode(B_FOLLOW_NONE);
+        fBar->SetResizingMode(B_FOLLOW_NONE);
+        AddChild(fTarget);
+        AddChild(fBar);
+        if (overlay) {
+            fProvider = dynamic_cast<BackdropProvider*>(target);
+            fBar->SetBackdrop(fProvider);
+        }
+        FlatScrollViews().push_back(this);
+        Apply();
+    }
+
+    virtual ~FlatScrollView() {
+        std::vector<FlatScrollView*>& v = FlatScrollViews();
+        for (size_t i = 0; i < v.size(); i++) {
+            if (v[i] == this) { v.erase(v.begin() + i); break; }
+        }
+    }
+
+    void Apply() {
+        fBarOverlay = cfg.roundedEdges && fOverlayCapable;
+        fBar->SetOverlay(fBarOverlay);
+        if (fProvider != nullptr) fProvider->SetBoxMode(fBarOverlay);
+        InvalidateLayout();
+        LayoutChildren();
+        Invalidate();
+        fBar->Invalidate();
+    }
+
+    virtual BSize MinSize() override {
+        BSize t = fTarget->MinSize();
+        float inset = ContentInset();
+        return BSize(t.width + (fBarOverlay ? 0.0f : kBarWidth) + 2 * inset, 40.0f + 2 * inset);
+    }
+    virtual BSize PreferredSize() override {
+        BSize t = fTarget->PreferredSize();
+        float inset = ContentInset();
+        return BSize(t.width + (fBarOverlay ? 0.0f : kBarWidth) + 2 * inset, t.height + 2 * inset);
+    }
+    virtual BSize MaxSize() override { return BSize(B_SIZE_UNLIMITED, B_SIZE_UNLIMITED); }
+
+    virtual void FrameResized(float width, float height) override {
+        BView::FrameResized(width, height);
+        LayoutChildren();
+    }
+    virtual void AttachedToWindow() override {
+        BView::AttachedToWindow();
+        LayoutChildren();
+    }
+
+    virtual void Draw(BRect updateRect) override {
+        if (cfg.roundedEdges) return;
+        BRect rect = Bounds();
+        be_control_look->DrawScrollViewFrame(this, rect, updateRect, fBar->Frame(), BRect(),
+            ui_color(B_PANEL_BACKGROUND_COLOR), B_FANCY_BORDER, 0, BControlLook::B_ALL_BORDERS);
+    }
+
+private:
+    static const float kBarWidth;
+
+    float ContentInset() const {
+        if (fBarOverlay) return 0.0f;
+        return cfg.roundedEdges ? fInset : 2.0f;
+    }
+
+    void LayoutChildren() {
+        BRect box = Bounds();
+        float inset = ContentInset();
+        if (fBarOverlay) {
+            // the target fills the box; the bar lies over its right edge, inside the box's outline
+            MoveAndResize(fTarget, box.left, box.top, box.Width(), box.Height());
+            MoveAndResize(fBar, box.right - kBarWidth, box.top + 1.0f, kBarWidth - 1.0f, box.Height() - 2.0f);
+        } else {
+            BRect inner = box;
+            inner.InsetBy(inset, inset);
+            MoveAndResize(fBar, inner.right - kBarWidth + 1.0f, inner.top, kBarWidth, inner.Height());
+            MoveAndResize(fTarget, inner.left, inner.top, inner.Width() - kBarWidth, inner.Height());
+        }
+    }
+
+    static void MoveAndResize(BView* view, float left, float top, float width, float height) {
+        if (width < 1.0f) width = 1.0f;
+        if (height < 1.0f) height = 1.0f;
+        if (view->Frame().LeftTop() != BPoint(left, top)) view->MoveTo(left, top);
+        if (view->Bounds().Width() != width || view->Bounds().Height() != height)
+            view->ResizeTo(width, height);
+    }
+
+    BView*            fTarget;
+    FlatScrollBar*    fBar;
+    bool              fOverlayCapable;
+    float             fInset;
+    bool              fBarOverlay;
+    BackdropProvider* fProvider;
+};
+const float FlatScrollView::kBarWidth = 14.0f;
+
+// A BTextControl without its square frame while Rounded Edges is on (the RoundedFrame round it
+// is its frame then). The label is still drawn.
+class FlatTextControl : public BTextControl {
+public:
+    FlatTextControl(const char* name, const char* label, const char* text, BMessage* message)
+        : BTextControl(name, label, text, message) {}
+
+    virtual void Draw(BRect updateRect) override {
+        if (!cfg.roundedEdges) {
+            BTextControl::Draw(updateRect);
+            return;
+        }
+        SetHighColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
+        FillRect(updateRect);
+        const char* text = Label();
+        if (text != nullptr && text[0] != '\0') {
+            font_height fh;
+            GetFontHeight(&fh);
+            float y = (Bounds().Height() - (fh.ascent + fh.descent)) / 2.0f + fh.ascent;
+            SetHighColor(ui_color(B_DOCUMENT_TEXT_COLOR));
+            DrawString(text, BPoint(4.0f, y));
+        }
+    }
+};
+
 // 2. Holds the raw message, its raw style runs, and its calculated display rows
 struct StyledLine {
     BStringItem* itemNode; // <-- ADDED: Binds this specific text entry to its channel context node
     BString text;
     text_run_array* runs;
+    int32 wrapSig;         // what the rows were wrapped for (width and options); -1 = not wrapped yet
     
     // Explicit template parameters handle nested pointer cleanup automatically
     BObjectList<BObjectList<StyledRunFragment, true>, true> wrappedRows;
@@ -1486,6 +1838,7 @@ struct StyledLine {
     StyledLine(BStringItem* node, BString t, const text_run_array* r) : wrappedRows(2) {
         itemNode = node;
         text = t;
+        wrapSig = -1;
         if (r != nullptr) {
             size_t size = sizeof(text_run_array) + (sizeof(text_run) * (r->count - 1));
             runs = (text_run_array*)malloc(size);
@@ -1507,17 +1860,28 @@ struct StyledLine {
 };
 
 // 3. Clean Interface Declaration Block (Contains NO method bodies)
-class CustomChatView : public BView {
+class CustomChatView : public BView, public BackdropProvider {
 public:
     CustomChatView(BRect frame, const char* name, uint32 resizingMode, uint32 flags);
     virtual ~CustomChatView(); 
 
     void AddStyledLine(BStringItem* itemNode, const BString& text, const text_run_array* runs);
     void ClearAllLines();    
+    // The lines of every channel stay here while another channel is shown; only the shown
+    // channel's lines are wrapped, and only when their wrap is out of date.
+    void RemoveLinesFor(BStringItem* itemNode);
+    void BeginBulk();                // adding many lines: no wrapping or redraw until EndBulk()
+    void EndBulk();
+    void InvalidateWrapCache();      // wrap again on next show (emoticon/colour options changed)
+    int32 RenderedBytes(BStringItem* itemNode) const;   // how much of the channel's text is in fLines
+    int32 RenderedFontSize(BStringItem* itemNode) const;
+    void SetRendered(BStringItem* itemNode, int32 bytes, int32 fontSize);
     void SetLineHeight(float height);
     void RecalculateAllLineWraps();
     void SetActiveChannel(BStringItem* activeNode);
     void SetBackgroundImage(const char* filePath);
+    virtual BBitmap* BoxBackdrop(int32 width, int32 height) override;
+    virtual void SetBoxMode(bool on) override;
     void SetBackgroundDimming(int32 level); 
 
 	virtual void KeyDown(const char* bytes, int32 numBytes) override;
@@ -1536,10 +1900,25 @@ private:
     void ComputeWrapForLine(StyledLine* line, float maxWidth, BObjectList<StyledRunFragment, true>* rawFragments);
     virtual void ScrollTo(BPoint point) override;
 	void UpdateScrollRange(bool scrollToBottom = false);
+    int32 WrapSignature(float maxWidth) const;
     BObjectList<StyledLine, true> fLines; 
+    std::map<BStringItem*, std::pair<int32, int32> > fRendered;   // node -> (bytes of text, font size)
+    bool                          fBulk;
     BStringItem*                  fActiveChannelNode;
     float                         fLineHeight;
-    BBitmap* fBackgroundBitmap;
+    BBitmap* fBackgroundBitmap;      // the picture (owned by fPictureCache)
+    BString  fBackgroundPath;        // the file fBackgroundBitmap was read from
+    std::map<std::string, BBitmap*> fPictureCache;   // pictures already read, by file
+    BBitmap* fWallpaperCache;        // the picture scaled to the view and dimmed, ready to copy
+    BBitmap* fBoxCache;              // the whole box (picture, outline, rounded corners), ready to copy
+    int32    fBoxW, fBoxH, fBoxDim;
+    bool     fBoxLight;
+    uint32   fBoxColors;
+    BBitmap* fBoxSource;
+    bool     fBoxMode;               // Rounded Edges: this view fills the whole box and draws it
+    int32    fWallpaperW, fWallpaperH, fWallpaperDim;
+    bool     fWallpaperLight;
+    BBitmap* fWallpaperSource;
     int32    fBackgroundDimmingLevel; 
     bool     fIsSelecting;       // Is the user actively dragging the mouse?
     BPoint   fSelectionStart;    // Mouse down starting point
@@ -1559,7 +1938,13 @@ CustomChatView::CustomChatView(BRect frame, const char* name, uint32 resizingMod
       fSelectionStart(0, 0),
       fSelectionEnd(0, 0),
       fLines(20),
+      fBulk(false),
       fBackgroundBitmap(nullptr),
+      fWallpaperCache(nullptr),
+      fBoxCache(nullptr), fBoxW(0), fBoxH(0), fBoxDim(-1), fBoxLight(false), fBoxColors(0),
+      fBoxSource(nullptr), fBoxMode(false),
+      fWallpaperW(0), fWallpaperH(0), fWallpaperDim(-1), fWallpaperLight(false),
+      fWallpaperSource(nullptr),
       fBackgroundDimmingLevel(30), 
       fServerIdx(0),
       fIsCustom(false)
@@ -1948,11 +2333,66 @@ void CustomChatView::SetBackgroundDimming(int32 level)
     if (fBackgroundDimmingLevel < 0) fBackgroundDimmingLevel = 0;
     if (fBackgroundDimmingLevel > 100) fBackgroundDimmingLevel = 100;
     Invalidate(); // Refresh canvas
+    if (fBoxMode && Parent() != nullptr) Parent()->Invalidate();    // the bar shows part of it
 }
 
 void CustomChatView::ClearAllLines() {
     fLines.MakeEmpty();
+    fRendered.clear();
     Invalidate();
+}
+
+void CustomChatView::RemoveLinesFor(BStringItem* itemNode) {
+    for (int32 i = fLines.CountItems() - 1; i >= 0; i--) {
+        StyledLine* line = fLines.ItemAt(i);
+        if (line != nullptr && line->itemNode == itemNode)
+            delete fLines.RemoveItemAt(i);
+    }
+    fRendered.erase(itemNode);
+}
+
+void CustomChatView::BeginBulk() { fBulk = true; }
+
+void CustomChatView::EndBulk() {
+    fBulk = false;
+    RecalculateAllLineWraps();
+    UpdateScrollRange(true);
+    Invalidate();
+}
+
+void CustomChatView::InvalidateWrapCache() {
+    for (int32 i = 0; i < fLines.CountItems(); i++)
+        fLines.ItemAt(i)->wrapSig = -1;
+}
+
+int32 CustomChatView::RenderedBytes(BStringItem* itemNode) const {
+    auto it = fRendered.find(itemNode);
+    return it == fRendered.end() ? -1 : it->second.first;
+}
+
+int32 CustomChatView::RenderedFontSize(BStringItem* itemNode) const {
+    auto it = fRendered.find(itemNode);
+    return it == fRendered.end() ? -1 : it->second.second;
+}
+
+void CustomChatView::SetRendered(BStringItem* itemNode, int32 bytes, int32 fontSize) {
+    fRendered[itemNode] = std::make_pair(bytes, fontSize);
+}
+
+// The width the rows are wrapped to, with the options the wrapping reads.
+int32 CustomChatView::WrapSignature(float maxWidth) const {
+    int32 sig = ((int32)maxWidth) * 4;
+    if (selectedConfig < (int)cfg.servers.size()) {
+        if (cfg.servers[selectedConfig].enableEmoticons) sig |= 1;
+        if (cfg.servers[selectedConfig].enableColorCodes) sig |= 2;
+    } else {
+        int customIdx = selectedConfig - cfg.servers.size();
+        if (customIdx >= 0 && customIdx < (int)cfg.customServers.size()) {
+            if (cfg.customServers[customIdx].enableEmoticons) sig |= 1;
+            if (cfg.customServers[customIdx].enableColorCodes) sig |= 2;
+        }
+    }
+    return sig;
 }
 
 void CustomChatView::SetLineHeight(float height) {
@@ -1968,7 +2408,10 @@ void CustomChatView::FrameResized(float newWidth, float newHeight) {
 }
 
 CustomChatView::~CustomChatView() {
-	delete fBackgroundBitmap; 
+	delete fWallpaperCache;
+	delete fBoxCache;
+	for (auto it = fPictureCache.begin(); it != fPictureCache.end(); ++it)
+		delete it->second;
     fLines.MakeEmpty();
 }
 
@@ -2062,6 +2505,7 @@ void CustomChatView::AddStyledLine(BStringItem* itemNode, const BString& text, c
 
     StyledLine* newLine = new StyledLine(itemNode, cleanText, runs);
     fLines.AddItem(newLine);
+    if (fBulk) return;      // EndBulk() wraps what was added
 
     if (itemNode == fActiveChannelNode) {
         // Enforce the standard 36px buffer so text wrapping matches recalculation loop
@@ -2072,6 +2516,7 @@ void CustomChatView::AddStyledLine(BStringItem* itemNode, const BString& text, c
         ParseTextAndIcons(cleanText, runs, &rawFragments);
 
         ComputeWrapForLine(newLine, maxWidth, &rawFragments);
+        newLine->wrapSig = WrapSignature(maxWidth);
         
         // Pass 'true' so the view snaps down to show newly processed line immediately
         UpdateScrollRange(true); 
@@ -2090,17 +2535,18 @@ void CustomChatView::RecalculateAllLineWraps()
     // Match the exact 36.0f padding used in AddStyledLine to stop the clipping
     float maxWidth = Bounds().Width() - 36.0f;
     if (maxWidth <= 50.0f) maxWidth = 50.0f;
+    const int32 sig = WrapSignature(maxWidth);
 
     for (int32 i = 0; i < fLines.CountItems(); i++) {
         StyledLine* line = fLines.ItemAt(i);
         
-        if (line->itemNode == fActiveChannelNode) {
-            // OPTIMIZATION: Instead of manually parsing every single line from scratch,
-            // construct a temporary list and use pre-built logic pipelines.
+        if (line->itemNode == fActiveChannelNode && line->wrapSig != sig) {
+            // Only a line that was not wrapped for this width (and options) is wrapped again
             BObjectList<StyledRunFragment, true> rawFragments(10);
             ParseTextAndIcons(line->text, line->runs, &rawFragments);
 
             ComputeWrapForLine(line, maxWidth, &rawFragments);
+            line->wrapSig = sig;
         }
     }
     UpdateScrollRange(false);
@@ -2476,23 +2922,64 @@ void CustomChatView::Draw(BRect updateRect) {
                       (0.0722f * systemBgColor.blue);
     bool isLightTheme = (luminance > 128.0f);
 
+    // --- BOX MODE (Rounded Edges): the picture of the whole box, outline and corners included ---
+    BBitmap* boxPicture = nullptr;
+    if (fBoxMode) {
+        BRect box = Bounds();
+        boxPicture = BoxBackdrop((int32)ceilf(box.Width() + 1.0f), (int32)ceilf(box.Height() + 1.0f));
+    }
+    if (boxPicture != nullptr) {
+        SetDrawingMode(B_OP_COPY);
+        DrawBitmap(boxPicture, Bounds().LeftTop());
+    } else
     // --- BRANCH A: SCALED CUSTOM BACKGROUND REFRESH ---
     if (fBackgroundBitmap != nullptr) {
-        SetDrawingMode(B_OP_COPY);
-        DrawBitmap(fBackgroundBitmap, Bounds());
+        // The picture scaled to the view and dimmed is made once, then only copied
+        BRect bounds = Bounds();
+        const int32 w = (int32)ceilf(bounds.Width() + 1.0f);
+        const int32 h = (int32)ceilf(bounds.Height() + 1.0f);
+        if (fWallpaperCache == nullptr || fWallpaperSource != fBackgroundBitmap
+                || fWallpaperW != w || fWallpaperH != h
+                || fWallpaperDim != fBackgroundDimmingLevel || fWallpaperLight != isLightTheme) {
+            delete fWallpaperCache;
+            fWallpaperCache = nullptr;
+            BRect r(0, 0, w - 1, h - 1);
+            BBitmap* off = new BBitmap(r, B_RGB32, true);
+            if (off->InitCheck() == B_OK && off->Lock()) {
+                BView* v = new BView(r, "wallpaper", B_FOLLOW_NONE, 0);
+                off->AddChild(v);
+                v->SetDrawingMode(B_OP_COPY);
+                v->DrawBitmap(fBackgroundBitmap, r);
 
-        // --- NEW: HIGH-PERFORMANCE DIMMING OVERLAY PASS ---
-        if (fBackgroundDimmingLevel > 0) {
-            uint8 alphaIntensity = (uint8)((fBackgroundDimmingLevel / 100.0f) * 255.0f);
-            
-            // Over light themes, wash with white. Over dark themes, dim with black.
-            rgb_color dimColor = isLightTheme ? rgb_color{ 255, 255, 255, alphaIntensity }
-                                              : rgb_color{ 0, 0, 0, alphaIntensity };
-            
-            SetHighColor(dimColor);
-            SetDrawingMode(B_OP_ALPHA); 
-            FillRect(Bounds());
-            SetDrawingMode(B_OP_COPY);  
+                // --- DIMMING OVERLAY ---
+                if (fBackgroundDimmingLevel > 0) {
+                    uint8 alphaIntensity = (uint8)((fBackgroundDimmingLevel / 100.0f) * 255.0f);
+
+                    // Over light themes, wash with white. Over dark themes, dim with black.
+                    rgb_color dimColor = isLightTheme ? rgb_color{ 255, 255, 255, alphaIntensity }
+                                                      : rgb_color{ 0, 0, 0, alphaIntensity };
+
+                    v->SetHighColor(dimColor);
+                    v->SetDrawingMode(B_OP_ALPHA);
+                    v->FillRect(r);
+                    v->SetDrawingMode(B_OP_COPY);
+                }
+                v->Sync();
+                off->Unlock();
+                fWallpaperCache = off;
+            } else {
+                delete off;
+            }
+            fWallpaperSource = fBackgroundBitmap;
+            fWallpaperW = w; fWallpaperH = h;
+            fWallpaperDim = fBackgroundDimmingLevel; fWallpaperLight = isLightTheme;
+        }
+
+        SetDrawingMode(B_OP_COPY);
+        if (fWallpaperCache != nullptr) {
+            DrawBitmap(fWallpaperCache, bounds.LeftTop());
+        } else {
+            DrawBitmap(fBackgroundBitmap, bounds);
         }
     } else {
         SetHighColor(systemBgColor); 
@@ -3240,14 +3727,139 @@ void CustomChatView::MouseDown(BPoint point) {
 
 void CustomChatView::SetBackgroundImage(const char* filePath)
 {
-    delete fBackgroundBitmap;
-    fBackgroundBitmap = nullptr;
+    // A picture is read from disk once; the same one again (every channel switch asks) costs nothing
+    std::string wanted(filePath != nullptr ? filePath : "");
+    if (BString(wanted.c_str()) == fBackgroundPath && (fBackgroundBitmap != nullptr || wanted.empty()))
+        return;
 
-    if (filePath != nullptr) {
-        fBackgroundBitmap = BTranslationUtils::GetBitmap(filePath);
+    fBackgroundBitmap = nullptr;
+    fBackgroundPath = wanted.c_str();
+
+    if (!wanted.empty()) {
+        auto it = fPictureCache.find(wanted);
+        if (it != fPictureCache.end()) {
+            fBackgroundBitmap = it->second;
+        } else {
+            BBitmap* loaded = BTranslationUtils::GetBitmap(wanted.c_str());
+            if (loaded != nullptr) {
+                fPictureCache[wanted] = loaded;
+                fBackgroundBitmap = loaded;
+            } else {
+                fBackgroundPath = "";    // not readable: try again next time
+            }
+        }
     }
 
     Invalidate();
+    if (fBoxMode && Parent() != nullptr) Parent()->Invalidate();    // the bar shows part of it
+}
+
+void CustomChatView::SetBoxMode(bool on) {
+    if (fBoxMode == on) return;
+    fBoxMode = on;
+    Invalidate();
+}
+
+// The whole box as one picture: the wallpaper (dimmed) or the document color, a one pixel outline
+// and the corners rounded, so the view can fill the box and the scroll bar can show the part of
+// it under its thumb. The corners outside the curve are the panel color.
+BBitmap* CustomChatView::BoxBackdrop(int32 w, int32 h)
+{
+    if (w < 24 || h < 24) return nullptr;
+    rgb_color panel = ui_color(B_PANEL_BACKGROUND_COLOR);
+    rgb_color doc = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
+    rgb_color border = tint_color(panel, B_DARKEN_2_TINT);
+    float luminance = 0.2126f * doc.red + 0.7152f * doc.green + 0.0722f * doc.blue;
+    bool isLight = (luminance > 128.0f);
+    uint32 colors = ((uint32)panel.red << 24) ^ ((uint32)panel.green << 16) ^ ((uint32)panel.blue << 8)
+        ^ ((uint32)doc.red << 20) ^ ((uint32)doc.green << 12) ^ ((uint32)doc.blue << 4)
+        ^ ((uint32)border.red << 18) ^ ((uint32)border.blue << 2);
+
+    if (fBoxCache != nullptr && fBoxW == w && fBoxH == h && fBoxSource == fBackgroundBitmap
+            && fBoxDim == fBackgroundDimmingLevel && fBoxLight == isLight && fBoxColors == colors)
+        return fBoxCache;
+
+    delete fBoxCache;
+    fBoxCache = nullptr;
+    fBoxSource = fBackgroundBitmap;
+    fBoxW = w; fBoxH = h; fBoxDim = fBackgroundDimmingLevel; fBoxLight = isLight; fBoxColors = colors;
+
+    BRect r(0, 0, w - 1, h - 1);
+    BBitmap* off = new BBitmap(r, B_RGB32, true);
+    if (off->InitCheck() != B_OK || !off->Lock()) {
+        delete off;
+        return nullptr;
+    }
+    BView* v = new BView(r, "box", B_FOLLOW_NONE, 0);
+    off->AddChild(v);
+    if (fBackgroundBitmap != nullptr) {
+        v->SetDrawingMode(B_OP_COPY);
+        v->DrawBitmap(fBackgroundBitmap, r);
+        if (fBackgroundDimmingLevel > 0) {
+            uint8 alphaIntensity = (uint8)((fBackgroundDimmingLevel / 100.0f) * 255.0f);
+            rgb_color dimColor = isLight ? rgb_color{ 255, 255, 255, alphaIntensity }
+                                         : rgb_color{ 0, 0, 0, alphaIntensity };
+            v->SetHighColor(dimColor);
+            v->SetDrawingMode(B_OP_ALPHA);
+            v->FillRect(r);
+            v->SetDrawingMode(B_OP_COPY);
+        }
+    } else {
+        v->SetHighColor(doc);
+        v->FillRect(r);
+    }
+    v->Sync();
+    off->Unlock();
+
+    uint8* bits = (uint8*)off->Bits();
+    const int32 bpr = off->BytesPerRow();
+    const float radius = RoundedFrame::kRadius;
+    const int32 ri = (int32)radius;
+
+    // the straight parts of the outline
+    for (int32 x = ri; x < w - ri; x++) {
+        for (int32 side = 0; side < 2; side++) {
+            uint8* p = bits + (side == 0 ? 0 : (h - 1)) * bpr + x * 4;
+            p[0] = border.blue; p[1] = border.green; p[2] = border.red; p[3] = 255;
+        }
+    }
+    for (int32 y = ri; y < h - ri; y++) {
+        for (int32 side = 0; side < 2; side++) {
+            uint8* p = bits + y * bpr + (side == 0 ? 0 : (w - 1)) * 4;
+            p[0] = border.blue; p[1] = border.green; p[2] = border.red; p[3] = 255;
+        }
+    }
+    // the corners: outside the curve the panel color, on it the outline, inside the picture
+    for (int32 corner = 0; corner < 4; corner++) {
+        for (int32 ly = 0; ly < ri; ly++) {
+            for (int32 lx = 0; lx < ri; lx++) {
+                float dx = radius - (lx + 0.5f);
+                float dy = radius - (ly + 0.5f);
+                float d = sqrtf(dx * dx + dy * dy);
+                float outer = radius - d + 0.5f;
+                float inner = radius - 1.0f - d + 0.5f;
+                outer = outer < 0.0f ? 0.0f : (outer > 1.0f ? 1.0f : outer);
+                inner = inner < 0.0f ? 0.0f : (inner > 1.0f ? 1.0f : inner);
+                int32 px = (corner & 1) ? (w - 1 - lx) : lx;
+                int32 py = (corner & 2) ? (h - 1 - ly) : ly;
+                uint8* p = bits + py * bpr + px * 4;
+                float pic[3] = { (float)p[2], (float)p[1], (float)p[0] };
+                float bd[3] = { (float)border.red, (float)border.green, (float)border.blue };
+                float pn[3] = { (float)panel.red, (float)panel.green, (float)panel.blue };
+                float out[3];
+                for (int c = 0; c < 3; c++) {
+                    float mixed = bd[c] + (pic[c] - bd[c]) * inner;
+                    out[c] = pn[c] + (mixed - pn[c]) * outer;
+                }
+                p[2] = (uint8)(out[0] + 0.5f);
+                p[1] = (uint8)(out[1] + 0.5f);
+                p[0] = (uint8)(out[2] + 0.5f);
+                p[3] = 255;
+            }
+        }
+    }
+    fBoxCache = off;
+    return fBoxCache;
 }
 
 
@@ -3831,13 +4443,13 @@ private:
 
 
 // @ChannelTreeItem
-class ChannelTreeItem : public BStringItem {
+class ChannelTreeItem : public WideRowItem {
 public:
 
 
     // Accept an additional bool isCustom parameter (defaults to false)
     ChannelTreeItem(const char* text, size_t serverIndex, bool isCustom = false) 
-        : BStringItem(text), fServerIndex(serverIndex), fIsCustom(isCustom), fHasUnread(false), fAutoJoin(false) {
+        : WideRowItem(text), fServerIndex(serverIndex), fIsCustom(isCustom), fHasUnread(false), fAutoJoin(false) {
         
         BString chanName(text);
         
@@ -3876,15 +4488,9 @@ public:
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
         owner->PushState();
 
-        if (IsSelected()) {
-            owner->SetLowColor(ui_color(B_LIST_SELECTED_BACKGROUND_COLOR));
-            owner->SetHighColor(ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR));
-            owner->FillRect(itemRect, B_SOLID_LOW);
-        } else {
-            owner->SetLowColor(ui_color(B_LIST_BACKGROUND_COLOR));
-            owner->SetHighColor(ui_color(B_LIST_ITEM_TEXT_COLOR));
-            owner->FillRect(itemRect, B_SOLID_LOW);
-        }
+        FillListRowBackground(owner, itemRect, IsSelected());
+        owner->SetLowColor(ui_color(IsSelected() ? B_LIST_SELECTED_BACKGROUND_COLOR : B_LIST_BACKGROUND_COLOR));
+        owner->SetHighColor(ui_color(IsSelected() ? B_LIST_SELECTED_ITEM_TEXT_COLOR : B_LIST_ITEM_TEXT_COLOR));
 
         BFont dynamicFont;
         owner->GetFont(&dynamicFont);
@@ -3918,10 +4524,10 @@ private:
 };
 
 
-class ServerTreeItem : public BStringItem {
+class ServerTreeItem : public WideRowItem {
 public:
     ServerTreeItem(const char* text, size_t configIndex, bool isChannel = false, bool isCustom = false) 
-        : BStringItem(text), 
+        : WideRowItem(text), 
           fConfigIndex(configIndex), 
           fIsChannel(isChannel), 
           fIsCustom(isCustom),
@@ -4051,15 +4657,9 @@ public:
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
         owner->PushState();
         
-        if (IsSelected()) {
-            owner->SetLowColor(ui_color(B_LIST_SELECTED_BACKGROUND_COLOR));
-            owner->SetHighColor(ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR));
-            owner->FillRect(itemRect, B_SOLID_LOW);
-        } else {
-            owner->SetLowColor(ui_color(B_LIST_BACKGROUND_COLOR));
-            owner->SetHighColor(ui_color(B_LIST_ITEM_TEXT_COLOR));
-            owner->FillRect(itemRect, B_SOLID_LOW);
-        }
+        FillListRowBackground(owner, itemRect, IsSelected());
+        owner->SetLowColor(ui_color(IsSelected() ? B_LIST_SELECTED_BACKGROUND_COLOR : B_LIST_BACKGROUND_COLOR));
+        owner->SetHighColor(ui_color(IsSelected() ? B_LIST_SELECTED_ITEM_TEXT_COLOR : B_LIST_ITEM_TEXT_COLOR));
 
         BFont dynamicFont;
         owner->GetFont(&dynamicFont);
@@ -4216,6 +4816,10 @@ public:
 
         fUseCustomDrawCheck = new BCheckBox("use_custom_draw", "Enable High Performance Draw Engine", nullptr);
         fUseCustomDrawCheck->SetValue(srv.useCustomDrawFunction ? B_CONTROL_ON : B_CONTROL_OFF);
+        fRoundedEdgesCheck = new BCheckBox("rounded_edges", "Rounded Edges on the boxes", nullptr);
+        fRoundedEdgesCheck->SetValue(cfg.roundedEdges ? B_CONTROL_ON : B_CONTROL_OFF);
+        fRoundedEdgesCheck->SetToolTip("Rounded corners on the server list, chat, user list, topic and input boxes. Applies to every server.");
+
         fUseCustomDrawCheck->SetToolTip("Bypasses standard layout constraints, using Cricket's optimized direct canvas drawing engine for faster line rendering and smooth log scrolling.");
 
         fLogChatsToFileCheck = new BCheckBox("log_chats", "Log server chats to file", nullptr);
@@ -4780,15 +5384,16 @@ public:
 		    .Add(fDebugEnableCheck, 0, 0, 2, 1)     
 		    .Add(fShowUpdateCheck, 0, 1, 2, 1)
 		    .Add(fEnableSpellCheck, 0, 2, 2, 1)
-		    .Add(fSearchEngineMenu, 0, 3, 2, 1)
+		    .Add(fRoundedEdgesCheck, 0, 3, 2, 1)
+		    .Add(fSearchEngineMenu, 0, 4, 2, 1)
 		
-		    // Row 3: Away Message Options Group
-		    .Add(fAwayInput->CreateLabelLayoutItem(), 0, 4)
-		    .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 4) 
+		    // Row 5: Away Message Options Group
+		    .Add(fAwayInput->CreateLabelLayoutItem(), 0, 5)
+		    .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 5) 
 		    
-		    // Row 4: Quit Message Options Group
-		    .Add(fQuitInput->CreateLabelLayoutItem(), 0, 5)
-		    .Add(fQuitInput->CreateTextViewLayoutItem(), 1, 5)
+		    // Row 6: Quit Message Options Group
+		    .Add(fQuitInput->CreateLabelLayoutItem(), 0, 6)
+		    .Add(fQuitInput->CreateTextViewLayoutItem(), 1, 6)
 		
 		;
 		
@@ -5575,6 +6180,7 @@ public:
 	            cfg.searchEngine = fLocalSearchEngineChoice.String();                
 	            cfg.awayMessage = fAwayInput->Text();
 	            cfg.quitMessage = fQuitInput->Text();
+	            cfg.roundedEdges = (fRoundedEdgesCheck->Value() == B_CONTROL_ON);
 
 	            // DCC settings (global), applied immediately
 	            {
@@ -5749,6 +6355,7 @@ private:
 	BSlider*					fBgOpacitySlider;
 	BCheckBox*					fEnableEmoticonsCheck;
 	BCheckBox*					fUseCustomDrawCheck;
+	BCheckBox*					fRoundedEdgesCheck;
 	BCheckBox*					fEnableColorCodesCheck;
     BView*              		fColorPreviewBox; 
 	// Color Management
@@ -5867,16 +6474,96 @@ static int SortUsersByRank(const void* first, const void* second) {
 
 
 
+// The popup's background. With Rounded Edges on, the popup is a plain window over the picture of
+// the screen taken just before it opened, so its outline can be anything: the top-right corner
+// is rounded, and where the popup meets the box behind it (top-left and bottom-right) the box's
+// own corner is rounded instead, which takes a fillet that reaches a little beyond the popup. The
+// window is therefore kRadius larger than the popup, at the top and on the right.
+class EmotePopupBg : public BView {
+public:
+    static const float kRadius;
+
+    EmotePopupBg(BRect frame)
+        : BView(frame, "popBg", B_FOLLOW_ALL, B_WILL_DRAW), fBackdrop(nullptr)
+    {
+        SetViewColor(B_TRANSPARENT_COLOR);
+    }
+    virtual ~EmotePopupBg() { delete fBackdrop; }
+
+    static float Reach() { return cfg.roundedEdges ? kRadius : 0.0f; }
+
+    void SetBackdrop(BBitmap* backdrop) {
+        delete fBackdrop;
+        fBackdrop = backdrop;
+        Invalidate();
+    }
+
+    virtual void Draw(BRect) override {
+        const float r = Reach();
+        BRect bounds = Bounds();
+        rgb_color panel = ui_color(B_PANEL_BACKGROUND_COLOR);
+        if (fBackdrop == nullptr || r <= 0.0f) {
+            SetHighColor(panel);
+            FillRect(bounds);
+            return;
+        }
+        // the popup itself
+        BRect body(bounds.left, bounds.top + r, bounds.right - r, bounds.bottom);
+
+        SetDrawingMode(B_OP_COPY);
+        DrawBitmap(fBackdrop, BPoint(0, 0));
+
+        SetHighColor(panel);
+        SetDrawingMode(B_OP_ALPHA);
+        SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+        FillRoundRect(body, r, r);
+        // only the top-right corner of the body is rounded
+        SetDrawingMode(B_OP_COPY);
+        FillRect(BRect(body.left, body.top, body.left + r, body.top + r));
+        FillRect(BRect(body.left, body.bottom - r, body.left + r, body.bottom));
+        FillRect(BRect(body.right - r, body.bottom - r, body.right, body.bottom));
+
+        // the fillets: the corner of the box behind, where the popup's edge meets it, rounded
+        SetDrawingMode(B_OP_ALPHA);
+        SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+        FillFillet(BPoint(body.left, body.top), r);
+        FillFillet(BPoint(body.right, body.bottom), r);
+        SetDrawingMode(B_OP_COPY);
+    }
+
+private:
+    // The piece of an r x r square that lies outside the quarter circle whose center is at
+    // (corner.x + r, corner.y - r): it reaches from the corner up the left side and along
+    // the bottom. Filled with the popup's color it rounds the box's corner at the corner.
+    void FillFillet(BPoint corner, float r) {
+        const BPoint center(corner.x + r, corner.y - r);
+        BShape shape;
+        shape.MoveTo(BPoint(corner.x, corner.y - r));
+        shape.LineTo(corner);
+        shape.LineTo(BPoint(corner.x + r, corner.y));
+        const int steps = 24;
+        for (int i = 1; i <= steps; i++) {
+            float angle = (float)M_PI / 2.0f + (float)M_PI / 2.0f * i / steps;
+            shape.LineTo(BPoint(center.x + r * cosf(angle), center.y + r * sinf(angle)));
+        }
+        shape.Close();
+        FillShape(&shape);
+    }
+
+    BBitmap* fBackdrop;
+};
+const float EmotePopupBg::kRadius = 9.0f;
+
 // ==================== NATIVE HAIKU ICON POPUP CANVAS ====================
 class EmotePopupWindow : public BWindow {
 public:
-    EmotePopupWindow(BPoint screenPos, BMessenger targetWindowMessenger)
-        : BWindow(BRect(0, 0, 100, 50), "", B_NO_BORDER_WINDOW_LOOK, B_MODAL_APP_WINDOW_FEEL, 
-                  B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS),
-          fTargetMessenger(targetWindowMessenger)
+    EmotePopupWindow(BPoint screenPos, BMessenger targetWindowMessenger, BRect openerScreenFrame)
+        : BWindow(BRect(0, 0, 100, 50), "", B_NO_BORDER_WINDOW_LOOK, B_FLOATING_APP_WINDOW_FEEL, 
+                  B_NOT_RESIZABLE | B_NOT_ZOOMABLE | B_AUTO_UPDATE_SIZE_LIMITS | B_AVOID_FOCUS),
+          fTargetMessenger(targetWindowMessenger), fOpenerFrame(openerScreenFrame), fBackground(nullptr)
     {
-        BView* bgPanel = new BView(Bounds(), "popBg", B_FOLLOW_ALL, B_WILL_DRAW);
-        bgPanel->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+        EmotePopupBg* bgPanel = new EmotePopupBg(Bounds());
+        fBackground = bgPanel;
         bgPanel->SetLowColor(ui_color(B_PANEL_BACKGROUND_COLOR));
         AddChild(bgPanel);
 
@@ -5917,37 +6604,38 @@ public:
             gridLayout->AddView(btn, column, row, 1, 1);
         }
 
-        BButton* closeBtn = new BButton("closeBtn", "[Close]", new BMessage(B_QUIT_REQUESTED));
-        closeBtn->SetFlat(true);
-        closeBtn->SetTarget(this); 
-        
-        closeBtn->SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
-        closeBtn->SetLowColor(ui_color(B_PANEL_BACKGROUND_COLOR));
-        
-        BFont themeFont;
-        bgPanel->GetFont(&themeFont);
-        closeBtn->SetFont(&themeFont);
-        
-        rgb_color panelTextColor = ui_color(B_PANEL_TEXT_COLOR);
-        closeBtn->SetHighColor(panelTextColor);
-
-        closeBtn->SetExplicitPreferredSize(BSize(96, 20));
-        closeBtn->SetExplicitAlignment(BAlignment(B_ALIGN_CENTER, B_ALIGN_TOP));
-
+        const float reach = EmotePopupBg::Reach();      // room for the fillets (top and right)
         BLayoutBuilder::Group<>(bgPanel, B_VERTICAL, 2)
-            .SetInsets(4) 
+            .SetInsets(4, 4 + reach, 4 + reach, 4) 
             .Add(grid)
-            .Add(closeBtn)
             .End();
         
         BSize optimalSize = bgPanel->MinSize();
         ResizeTo(optimalSize.width, optimalSize.height);
         MoveTo(screenPos.x, screenPos.y - Bounds().Height() - 5.0f);
+
+        if (cfg.roundedEdges) {
+            BScreen screen(this);
+            BBitmap* backdrop = nullptr;
+            BRect where = Frame();
+            if (screen.GetBitmap(&backdrop, false, &where) == B_OK)
+                bgPanel->SetBackdrop(backdrop);
+        }
     }
 
     virtual void WindowActivated(bool active) {
         BWindow::WindowActivated(active);
         if (!active) {
+            // A click on the Emots button takes the focus from the popup first. The popup closes,
+            // and tells the window so, so that the same click does not open it again.
+            if (fBackground != nullptr) {
+                BPoint where;
+                uint32 buttons = 0;
+                fBackground->GetMouse(&where, &buttons, false);
+                where = fBackground->ConvertToScreen(where);
+                if (buttons != 0 && fOpenerFrame.Contains(where))
+                    fTargetMessenger.SendMessage(MSG_POPUP_CLOSED_BY_BUTTON);
+            }
             PostMessage(B_QUIT_REQUESTED);
         }
     }
@@ -5960,7 +6648,9 @@ public:
     }
 
 private:
-    BMessenger fTargetMessenger;
+    BMessenger  fTargetMessenger;
+    BRect       fOpenerFrame;        // the Emots button, on the screen
+    BView*      fBackground;
 };
 
 
@@ -6850,7 +7540,9 @@ public:
         
         // 1. Setup Channel Tree View (Left Side)
         fChannelTree = new BOutlineListView("channel_tree");
-        BScrollView* channelScroll = new BScrollView("scroll_channels", fChannelTree, 0, false, true);
+        // redrawn whole when the pane is resized (the selection pill is as wide as the list)
+        fChannelTree->SetFlags(fChannelTree->Flags() | B_FULL_UPDATE_ON_RESIZE);
+        BView* channelScroll = new FlatScrollView("scroll_channels", fChannelTree, B_LIST_BACKGROUND_COLOR);
         
         
         
@@ -6918,7 +7610,7 @@ public:
         
         // 3. Create Topic View bar Control
         // REMOVED: MakeEditable(false) to allow typing inside the field
-        fTopicView = new BTextControl("topic_view", "Topic:", "No topic set.", new BMessage(MSG_TOPIC_CHANGED));
+        fTopicView = new FlatTextControl("topic_view", "Topic:", "No topic set.", new BMessage(MSG_TOPIC_CHANGED));
         
         // Ensure that this text field sends its messaging packet back into main window context
         fTopicView->SetTarget(this);
@@ -6928,7 +7620,7 @@ public:
         fChatLog->MakeEditable(false);
         fChatLog->SetStylable(true);
 
-		new BScrollView("scroll_chat", fChatLog, 0, false, true);
+		new FlatScrollView("scroll_chat", fChatLog, B_DOCUMENT_BACKGROUND_COLOR, false, RoundedFrame::kPad);
 		
         // --- NEW: Custom Draw Engine View Canvas Instantiation ---
         //  Added B_NAVIGABLE so this layout surface can accept keyboard events!
@@ -6936,7 +7628,7 @@ public:
         
         // Note: Wrapping a direct BView inside a scrollview requires explicit scroll implementation.
         // For simple presentation management, we swap whole container view hierarchies.
-		new BScrollView("scroll_custom", fCustomChatLog, 0, false, true);
+		new FlatScrollView("scroll_custom", fCustomChatLog, B_DOCUMENT_BACKGROUND_COLOR, true);
         
         
 
@@ -6944,6 +7636,7 @@ public:
         fChatContainer = new BGroupView(B_VERTICAL, 0);
         
         fUserList = new BListView("user_list");
+        fUserList->SetFlags(fUserList->Flags() | B_FULL_UPDATE_ON_RESIZE);
         
         // 1. Change the Selection Message so it doesn't trick the app into thinking a context click happened on every left-click
         fUserList->SetSelectionMessage(new BMessage('usr_')); // Or use a generic selection message
@@ -6953,10 +7646,10 @@ public:
         fUserList->AddFilter(new RightClickSingleClickFilter(this));      
 
        
-        BScrollView* userScroll = new BScrollView("scroll_users", fUserList, 0, false, true);
+        BView* userScroll = new FlatScrollView("scroll_users", fUserList, B_LIST_BACKGROUND_COLOR);
 
 		//@here
-		fInputControl = new BTextControl("input", "", "", nullptr);
+		fInputControl = new FlatTextControl("input", "", "", nullptr);
 		
 		BTextView* inputTextView = fInputControl->TextView();
 		if (inputTextView != nullptr) {
@@ -7008,25 +7701,38 @@ public:
        // 5. Layout Architecture using Adjustable Split Panes
         BSplitView* mainSplitter = new BSplitView(B_HORIZONTAL, 5.0f);
         
+        // Each box is in a RoundedFrame (rounded corners; see the Rounded Edges setting)
+        RoundedFrame* topicFrame   = new RoundedFrame(fTopicView);
+        RoundedFrame* chatFrame    = new RoundedFrame(fChatContainer, 0.0f);   // the views inside have their own margin
+        RoundedFrame* channelFrame = new RoundedFrame(channelScroll);
+        RoundedFrame* userFrame    = new RoundedFrame(userScroll);
+        RoundedFrame* inputFrame   = new RoundedFrame(fInputControl);
+        fRoundFrames.push_back(topicFrame);
+        fRoundFrames.push_back(chatFrame);
+        fRoundFrames.push_back(channelFrame);
+        fRoundFrames.push_back(userFrame);
+        fRoundFrames.push_back(inputFrame);
+
         BView* centerStackView = BLayoutBuilder::Group<>(B_VERTICAL, 5)
-            .Add(fTopicView, 0.0)         
-            .Add(fChatContainer, 1.0)     
+            .Add(topicFrame, 0.0)         
+            .Add(chatFrame, 1.0)     
             .View();
 
-        mainSplitter->AddChild(channelScroll, 0.16f);  
+        mainSplitter->AddChild(channelFrame, 0.16f);  
         mainSplitter->AddChild(centerStackView, 0.73f); 
-        mainSplitter->AddChild(userScroll, 0.11f);     
+        mainSplitter->AddChild(userFrame, 0.11f);     
 
-        channelScroll->SetExplicitPreferredSize(BSize(130, B_SIZE_UNLIMITED)); 
-        userScroll->SetExplicitPreferredSize(BSize(110, B_SIZE_UNLIMITED));    
+        channelFrame->SetExplicitPreferredSize(BSize(130, B_SIZE_UNLIMITED)); 
+        userFrame->SetExplicitPreferredSize(BSize(110, B_SIZE_UNLIMITED));    
 
         BLayoutBuilder::Group<>(this, B_VERTICAL, 5)
             .SetInsets(10)
             .Add(mainSplitter, 1.0) 
             .AddGroup(B_HORIZONTAL, 5, 0.0) 
                 .Add(fIconToggleButton, 0.0) //  Places the layout-safe toggle button here
-                .Add(fInputControl, 1.0)     
+                .Add(inputFrame, 1.0)     
             .End();
+        ApplyRoundedEdges();
 
 
 
@@ -7170,7 +7876,15 @@ public:
 
         // 1. Prepare the custom sign-off message payload
         BString quitPayload;
-        quitPayload << "QUIT :" << cfg.quitMessage.c_str() << "\r\n";
+        {
+            // The reason, then the program and version in brackets, as the Linux version sends it
+            BString reason(cfg.quitMessage.c_str());
+            reason.Trim();
+            if (reason.Length() > 0)
+                quitPayload << "QUIT :" << reason << " [" << AppInfo::VERSION_STRING << "]\r\n";
+            else
+                quitPayload << "QUIT :[" << AppInfo::VERSION_STRING << "]\r\n";
+        }
 
         std::vector<std::pair<thread_id, BNetEndpoint*>> shutdownSnapshot;
         
@@ -7322,61 +8036,199 @@ public:
 	}
 	
 	
-	void RebuildActiveChannelBuffer() {
-		size_t activeIdx = (size_t)selectedConfig;
-	    ServerConfig* activeSrv = nullptr;
-	    if (activeIdx < cfg.servers.size()) {
-	        activeSrv = &cfg.servers[activeIdx];
-	    } else {
-	        size_t customIdx = activeIdx - cfg.servers.size();
-	        if (customIdx < cfg.customServers.size()) {
-	            activeSrv = &cfg.customServers[customIdx];
-	        }
-	    }
-		
-		fIsLoadingHistory = true;
-	    if (fActiveBufferItem == nullptr || !fChatLog || !fCustomChatLog) return;
-	
-	    // 1. Fetch the raw historical plain-text string from memory cache map
-	    BString channelHistory = fTextBuffers[fActiveBufferItem];
-	    if (channelHistory.Length() == 0) return;
-	
-	    // 2. Clear both layout views completely to prevent duplicated text layering
-	    fChatLog->SetText("");
-	    fCustomChatLog->ClearAllLines(); // Canvas is now safely cleared out
-	
-	    // 3. Ensure the custom log view is pointing at the selected workspace channel room
-	    bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
-		if (drawEngineActive) { 
-	        fCustomChatLog->SetActiveChannel(fActiveBufferItem);
-	    }
-	
-	    // 4. Tokenize the massive historical text block into separate individual text lines
-	    int32 startSearch = 0;
-	    while (startSearch < channelHistory.Length()) {
-	        int32 nextNewline = channelHistory.FindFirst("\n", startSearch);
-	        if (nextNewline == B_ERROR) break;
-	
-	        BString singleLine;
-	        channelHistory.CopyInto(singleLine, startSearch, nextNewline - startSearch);
-	        
-	        // Pass the individual line through the isolated formatting engine
-	        this->RenderLineWithoutCaching(fActiveBufferItem, singleLine);
-	
-	        startSearch = nextNewline + 1;
-	    }
-	
-	    // 5. Force exactly ONE layout redraw pass once the history is fully built out
-		if (drawEngineActive) { 
-	        fCustomChatLog->Invalidate();
-	    } else {
-	        fChatLog->ScrollToSelection();
-	    }
-	    fIsLoadingHistory = false;
+	// The chat view of every channel is kept while another channel is shown (the custom view keeps
+	// the lines of all channels, the BTextView engine has a view of its own for each channel).
+	// A switch then only adds what arrived while the channel was out of view.
+	struct ChatPane {
+		BView* scroll;
+		BTextView*   text;
+		int32        bytes;      // how much of the channel's text the view holds (-1 = nothing yet)
+		int32        fontSize;
+		int32        colorGen;
+	};
+
+	static bigtime_t TimingNow() { return system_time(); }
+	static bool TimingOn() {
+		static int on = -1;
+		if (on < 0) on = (getenv("CRICKET_TIMING") != nullptr) ? 1 : 0;
+		return on == 1;
+	}
+	static void TimingLog(const char* what, bigtime_t since) {
+		if (TimingOn())
+			fprintf(stderr, "[SWITCH] %-28s %6.2f ms\n", what, (system_time() - since) / 1000.0);
 	}
 
+	bool ChatEngineIsCustom() {
+		size_t idx = (size_t)selectedConfig;
+		if (idx < cfg.servers.size()) return cfg.servers[idx].useCustomDrawFunction;
+		size_t customIdx = idx - cfg.servers.size();
+		if (customIdx < cfg.customServers.size()) return cfg.customServers[customIdx].useCustomDrawFunction;
+		return cfg.useCustomDrawFunction;
+	}
 
+	int32 ChatFontSizeForSelected() {
+		size_t idx = (size_t)selectedConfig;
+		if (idx < cfg.servers.size()) return cfg.servers[idx].chatLogFontSize;
+		size_t customIdx = idx - cfg.servers.size();
+		if (customIdx < cfg.customServers.size()) return cfg.customServers[customIdx].chatLogFontSize;
+		return cfg.chatLogFontSize;
+	}
 
+	void ApplyChatColors(ChatPane& pane) {
+		rgb_color bg = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
+		rgb_color fg = ui_color(B_DOCUMENT_TEXT_COLOR);
+		pane.text->SetViewColor(bg);
+		pane.text->SetLowColor(bg);
+		pane.text->SetFontAndColor(nullptr, 0, &fg);
+		pane.scroll->SetViewColor(bg);
+		pane.scroll->SetLowColor(bg);
+		pane.colorGen = fChatColorGen;
+	}
+
+	// Rounded Edges on or off (live): the frames, the borders of the chat scroll views, the text boxes
+	void ApplyRoundedEdges() {
+		std::vector<FlatScrollView*> views = FlatScrollViews();
+		for (size_t i = 0; i < views.size(); i++)
+			views[i]->Apply();
+		for (size_t i = 0; i < fRoundFrames.size(); i++)
+			fRoundFrames[i]->Apply();
+		if (fTopicView) fTopicView->Invalidate();
+		if (fInputControl) fInputControl->Invalidate();
+	}
+
+	// The BTextView engine's view for this channel, put in place of the one shown.
+	ChatPane* EnsureChatPane(BStringItem* node) {
+		if (node == nullptr || fChatContainer == nullptr) return nullptr;
+
+		auto it = fChatPanes.find(node);
+		if (it == fChatPanes.end()) {
+			ChatPane fresh;
+			fresh.text = new BTextView("chat_log");
+			fresh.text->MakeEditable(false);
+			fresh.text->SetStylable(true);
+			BFont f;
+			fresh.text->GetFont(&f);
+			f.SetSize(ChatFontSizeForSelected());
+			fresh.text->SetFont(&f, B_FONT_SIZE);
+			fresh.scroll = new FlatScrollView("scroll_chat", fresh.text, B_DOCUMENT_BACKGROUND_COLOR, false, RoundedFrame::kPad);
+			fresh.bytes = -1;
+			fresh.fontSize = ChatFontSizeForSelected();
+			fresh.colorGen = -1;
+			it = fChatPanes.insert(std::make_pair(node, fresh)).first;
+			ApplyChatColors(it->second);
+		}
+		ChatPane* pane = &it->second;
+
+		if (fChatLog != pane->text) {
+			BView* oldScroll = fChatLog ? fChatLog->Parent() : nullptr;
+			BLayout* layout = fChatContainer->GetLayout();
+			bool wasShown = (oldScroll != nullptr && oldScroll->Parent() == fChatContainer);
+			if (wasShown && layout != nullptr) layout->RemoveView(oldScroll);
+
+			// A view that belongs to no channel (the first one, or a closed channel's) is let go
+			bool owned = false;
+			for (auto p = fChatPanes.begin(); p != fChatPanes.end(); ++p)
+				if (p->second.text == fChatLog) owned = true;
+			if (!owned && oldScroll != nullptr) {
+				oldScroll->RemoveSelf();
+				delete oldScroll;
+			}
+
+			fChatLog = pane->text;
+			if (wasShown && layout != nullptr) layout->AddView(pane->scroll);
+		}
+		if (pane->colorGen != fChatColorGen) ApplyChatColors(*pane);
+		return pane;
+	}
+
+	void DropChatPane(BStringItem* node) {
+		auto it = fChatPanes.find(node);
+		if (it == fChatPanes.end()) return;
+		ChatPane pane = it->second;
+		fChatPanes.erase(it);
+		if (pane.text == fChatLog) {
+			pane.text->SetText("");      // still on screen: let go of it at the next switch
+			return;
+		}
+		pane.scroll->RemoveSelf();
+		delete pane.scroll;
+	}
+
+	// The shown channel's view is brought up to date with its text. Only the text that arrived since
+	// the last time is parsed and added; the whole text only when the view has none of it.
+	void RebuildActiveChannelBuffer() {
+		fIsLoadingHistory = true;
+		if (fActiveBufferItem == nullptr || !fChatLog || !fCustomChatLog) {
+			fIsLoadingHistory = false;
+			return;
+		}
+		const bigtime_t t0 = TimingNow();
+
+		BStringItem* node = fActiveBufferItem;
+		const bool custom = ChatEngineIsCustom();
+		const int32 fontSize = ChatFontSizeForSelected();
+		const BString& history = fTextBuffers[node];
+		const int32 length = history.Length();
+
+		ChatPane* pane = nullptr;
+		int32 have;
+		if (custom) {
+			fCustomChatLog->SetActiveChannel(node);
+			have = fCustomChatLog->RenderedBytes(node);
+			if (have >= 0 && fCustomChatLog->RenderedFontSize(node) != fontSize) have = -1;
+		} else {
+			pane = EnsureChatPane(node);
+			have = pane ? pane->bytes : -1;
+		}
+
+		if (have < 0 || have > length) {
+			// Nothing of it in the view, or the text was cleared or replaced: start over
+			if (custom) fCustomChatLog->RemoveLinesFor(node);
+			else if (pane) pane->text->SetText("");
+			have = 0;
+		}
+
+		int32 startSearch = have;
+		if (length > have) {
+			if (custom) fCustomChatLog->BeginBulk();
+			else DisableUpdates();
+
+			while (startSearch < length) {
+				int32 nextNewline = history.FindFirst("\n", startSearch);
+				if (nextNewline == B_ERROR) break;
+
+				BString singleLine;
+				history.CopyInto(singleLine, startSearch, nextNewline - startSearch);
+				this->RenderLineWithoutCaching(node, singleLine);
+				startSearch = nextNewline + 1;
+			}
+
+			if (custom) fCustomChatLog->EndBulk();
+			else EnableUpdates();
+		}
+
+		if (custom) {
+			fCustomChatLog->SetRendered(node, startSearch, fontSize);
+			fCustomChatLog->Invalidate();
+		} else if (pane) {
+			pane->bytes = startSearch;
+			pane->fontSize = fontSize;
+		}
+		TimingLog(custom ? "rebuild (custom view)" : "rebuild (text view)", t0);
+		fIsLoadingHistory = false;
+	}
+
+	// After a line was added live to the shown channel: the view holds the text up to its end again
+	void NoteLiveRendered(BStringItem* node, int32 previousLength, int32 newLength) {
+		if (ChatEngineIsCustom()) {
+			if (fCustomChatLog && fCustomChatLog->RenderedBytes(node) == previousLength)
+				fCustomChatLog->SetRendered(node, newLength, fCustomChatLog->RenderedFontSize(node));
+		} else {
+			auto it = fChatPanes.find(node);
+			if (it != fChatPanes.end() && it->second.bytes == previousLength && it->second.text == fChatLog)
+				it->second.bytes = newLength;
+		}
+	}
 
 	void RenderLineWithoutCaching(BStringItem* itemNode, BString text) {
 	    if (!text.EndsWith("\n")) text << "\n";
@@ -7803,8 +8655,6 @@ private:
 	    
 	    // Update the screen draw engine if the current node matches the active view focus
 	    if (fActiveBufferItem == targetNode && fChatLog != nullptr) {
-	        fChatLog->SetText(fTextBuffers[targetNode].String());
-	    } else if (fActiveBufferItem == targetNode && fCustomChatLog != nullptr && cfg.useCustomDrawFunction) {
 	        this->RebuildActiveChannelBuffer();
 	    }
 	
@@ -7831,6 +8681,7 @@ private:
 	    
 	    // Ensure trailing newline for layout alignment consistency
 	    if (!text.EndsWith("\n")) text << "\n";
+	    const int32 previousLength = fTextBuffers[itemNode].Length();
 	    fTextBuffers[itemNode] << text;
 	    
 	    // Fire the automatic disk writer hook
@@ -8012,6 +8863,7 @@ private:
 	                fChatLog->Insert(text.String());
 	            }
 	        }
+	        NoteLiveRendered(itemNode, previousLength, fTextBuffers[itemNode].Length());
 	    }
 	}
 
@@ -11467,7 +12319,19 @@ static status_t NetworkLoop(void* data) {
 
 
 public:
+    virtual void WindowActivated(bool active) override {
+        BWindow::WindowActivated(active);
+        // another window took the focus: the popup closes
+        if (!active && fActiveIconPopup != nullptr)
+            fActiveIconPopup->PostMessage(B_QUIT_REQUESTED);
+    }
+
     void DispatchMessage(BMessage* message, BHandler* handler) override {
+        // The Emots popup does not take the focus (so the Emots button can close it again): a click
+        // anywhere else in this window closes it
+        if (message->what == B_MOUSE_DOWN && fActiveIconPopup != nullptr && handler != fIconToggleButton)
+            fActiveIconPopup->PostMessage(B_QUIT_REQUESTED);
+
         // 1. LEFT-CLICK INTERCEPTOR: Catch clicks on WebPositive URL links inside fChatLog
         if (message->what == B_MOUSE_DOWN && handler == fChatLog) {
             int32 buttons;
@@ -12007,6 +12871,12 @@ public:
             break;
         }
 
+        // The popup closed because the Emots button was clicked: that click must not open it again
+        case MSG_POPUP_CLOSED_BY_BUTTON: {
+            fIconPopupClosedByButtonAt = system_time();
+            break;
+        }
+
 
 
         // ICON GRID MANAGER LAUNCHER: Toggles the custom borderless icon canvas on and off
@@ -12019,14 +12889,21 @@ public:
                     break;
                 }
 
+                // The click that took the focus from the popup (and so closed it) is this one
+                if (system_time() - fIconPopupClosedByButtonAt < 700000) {
+                    fIconPopupClosedByButtonAt = 0;
+                    break;
+                }
+
                 // 2. Safe layout geometry extraction relative to our parent window context
                 BRect buttonFrame = fIconToggleButton->Frame();
                 BPoint buttonWindowPos(buttonFrame.left, buttonFrame.top);
                 BPoint screenCoordinate = ConvertToScreen(buttonWindowPos);
+                BRect buttonScreenFrame(ConvertToScreen(buttonFrame.LeftTop()), ConvertToScreen(buttonFrame.RightBottom()));
                 
                 // 3. Spin up the popup passing ONLY the messenger target thread handle.
                 // We completely remove any reference to fEmoticonGrid to bypass pointer corruption crashes!
-                EmotePopupWindow* popWin = new EmotePopupWindow(screenCoordinate, BMessenger(this));
+                EmotePopupWindow* popWin = new EmotePopupWindow(screenCoordinate, BMessenger(this), buttonScreenFrame);
                 
                 // 4. Update our active class reference tracker
                 fActiveIconPopup = popWin;
@@ -13460,12 +14337,12 @@ public:
 			
 			
         // 3. UI Cleanup
+        if (fCustomChatLog) fCustomChatLog->RemoveLinesFor(chanItem);
         if (fActiveBufferItem == chanItem) {
             fActiveBufferItem = nullptr;
             fChatLog->SetText("");
             if (fCustomChatLog) {
                 fCustomChatLog->SetActiveChannel(nullptr);
-                fCustomChatLog->ClearAllLines();
             }
             // Use RemoveItem only to avoid double-free crashes
             while (fUserList->CountItems() > 0) {
@@ -13475,6 +14352,7 @@ public:
         }
         
         // 4. Memory Purge
+        DropChatPane(chanItem);
         fTextBuffers.erase(chanItem);
         fChannelTopics.erase(chanItem);
         if (fChannelUsers.count(chanItem) > 0) {
@@ -13500,6 +14378,12 @@ public:
         	
       case 'mscf': {
         save_config(); 
+        ApplyRoundedEdges();
+        // Options the wrapping reads (emoticons, colour codes, nick colours) may have changed
+        if (fCustomChatLog != nullptr) {
+            fCustomChatLog->InvalidateWrapCache();
+            fCustomChatLog->RecalculateAllLineWraps();
+        }
 
         size_t activeIdx = (size_t)selectedConfig;
         ServerConfig* activeSrv = nullptr;
@@ -13849,6 +14733,12 @@ public:
 
             
             case B_COLORS_UPDATED: {
+                fChatColorGen++;     // the views of the other channels take the colors when shown
+                for (size_t i = 0; i < fRoundFrames.size(); i++) fRoundFrames[i]->Invalidate();
+                {
+                    auto pit = fChatPanes.find(fActiveBufferItem);
+                    if (pit != fChatPanes.end() && pit->second.text == fChatLog) pit->second.colorGen = fChatColorGen;
+                }
                 // 1. Fetch the newly selected color vectors
                 rgb_color newBgColor = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
                 rgb_color newTextColor = ui_color(B_DOCUMENT_TEXT_COLOR);
@@ -13978,10 +14868,9 @@ public:
                 BStringItem* selectedItem = dynamic_cast<BStringItem*>(rawItem);
                 
                 if (selectedItem != nullptr && selectedItem != fActiveBufferItem) {
-                    
-                    if (fActiveBufferItem != nullptr && !cfg.useCustomDrawFunction) {
-                        fTextBuffers[fActiveBufferItem] = fChatLog->Text();
-                    }
+                    const bigtime_t tSwitch = TimingNow();
+                    bigtime_t tPhase = tSwitch;
+                    DisableUpdates();   // one redraw at the end, not one per change
                     
                     fActiveBufferItem = selectedItem;
                     
@@ -14063,38 +14952,53 @@ public:
                             targetChatLogFontSize    = activeSrv->chatLogFontSize;
                             targetUserListFontSize   = activeSrv->userListFontSize;
                         }
+                        TimingLog("context + background", tPhase); tPhase = TimingNow();
 
-                        // --- LIVE RESIZE CHAT VIEWS ---
+                        // The chat view of the channel (BTextView engine) is put in place first,
+                        // so the font changes below reach it and not the view of the last channel
+                        ChatPane* chatPane = ChatEngineIsCustom() ? nullptr : EnsureChatPane(fActiveBufferItem);
+                        TimingLog("chat view swap", tPhase); tPhase = TimingNow();
+
+                        // --- LIVE RESIZE CHAT VIEWS (only what differs from the last channel's) ---
                         BFont tempFont;
                         fChannelTree->GetFont(&tempFont);
-                        tempFont.SetSize(targetServerListFontSize);
-                        fChannelTree->SetFont(&tempFont, B_FONT_SIZE);
-                        for (int32 i = 0; i < fChannelTree->CountItems(); i++) {
-                            BListItem* it = fChannelTree->ItemAt(i);
-                            if (it) it->Update(fChannelTree, &tempFont);
+                        if ((int32)tempFont.Size() != targetServerListFontSize) {
+                            tempFont.SetSize(targetServerListFontSize);
+                            fChannelTree->SetFont(&tempFont, B_FONT_SIZE);
+                            for (int32 i = 0; i < fChannelTree->CountItems(); i++) {
+                                BListItem* it = fChannelTree->ItemAt(i);
+                                if (it) it->Update(fChannelTree, &tempFont);
+                            }
+                            fChannelTree->Invalidate();
                         }
-                        fChannelTree->Invalidate();
 
-                        fChatLog->GetFont(&tempFont);
-                        tempFont.SetSize(targetChatLogFontSize);
-                        fChatLog->SetFont(&tempFont, B_FONT_SIZE);
-                        fChatLog->SetFontAndColor(&tempFont, B_FONT_SIZE);
+                        if (chatPane != nullptr && chatPane->fontSize != targetChatLogFontSize) {
+                            fChatLog->GetFont(&tempFont);
+                            tempFont.SetSize(targetChatLogFontSize);
+                            fChatLog->SetFont(&tempFont, B_FONT_SIZE);
+                            fChatLog->SetFontAndColor(&tempFont, B_FONT_SIZE);
+                            chatPane->fontSize = targetChatLogFontSize;
+                        }
 
                         if (fCustomChatLog != nullptr) {
                             fCustomChatLog->SetLineHeight(targetChatLogFontSize + 4.0f);
                         }
 
                         fTopicView->GetFont(&tempFont);
-                        tempFont.SetSize(targetChatLogFontSize);
-                        fTopicView->SetFont(&tempFont, B_FONT_SIZE);
-                        if (fTopicView->TextView()) {
-                            fTopicView->TextView()->SetFontAndColor(&tempFont, B_FONT_SIZE);
+                        if ((int32)tempFont.Size() != targetChatLogFontSize) {
+                            tempFont.SetSize(targetChatLogFontSize);
+                            fTopicView->SetFont(&tempFont, B_FONT_SIZE);
+                            if (fTopicView->TextView()) {
+                                fTopicView->TextView()->SetFontAndColor(&tempFont, B_FONT_SIZE);
+                            }
                         }
 
                         fUserList->GetFont(&tempFont);
-                        tempFont.SetSize(targetUserListFontSize);
-                        fUserList->SetFont(&tempFont, B_FONT_SIZE);
-                        fUserList->Invalidate();
+                        if ((int32)tempFont.Size() != targetUserListFontSize) {
+                            tempFont.SetSize(targetUserListFontSize);
+                            fUserList->SetFont(&tempFont, B_FONT_SIZE);
+                        }
+                        TimingLog("fonts", tPhase); tPhase = TimingNow();
                     }
                     // =========================================================================
 
@@ -14108,14 +15012,11 @@ public:
                         fChannelTree->InvalidateItem(selectedIdx);
                     }
                     
-                    fChatLog->SetText("");
-                    if (fCustomChatLog != nullptr) {
-                        fCustomChatLog->ClearAllLines();
+                    // (the chat view is not cleared: the channel's own view is shown below)
+                    for (int32 i = fUserList->CountItems() - 1; i >= 0; i--) {
+                        delete fUserList->RemoveItem(i);
                     }
-
-                    while (fUserList->CountItems() > 0) {
-                        delete fUserList->RemoveItem((int32)0);
-                    }
+                    TimingLog("unread + user list clear", tPhase); tPhase = TimingNow();
 
                     fTopicView->SetText("No topic set.");
 
@@ -14163,21 +15064,24 @@ public:
                                 fUserList->GetFont(&userListFont);
                                 userListFont.SetSize(cfg.userListFontSize);
 
+                                BFont componentUserFont;
+                                fUserList->GetFont(&componentUserFont);
+                                // Crucial: Use our target size calculated in the synchronization pass
+                                componentUserFont.SetSize(targetUserListFontSize);
+
+                                // The items are made first and added in one call (one layout of the list)
+                                BList newUserItems((int32)userVector->CountItems());
                                 for (int32 i = 0; i < userVector->CountItems(); i++) {
                                     UserListItem* cachedItem = userVector->ItemAt(i);
                                     if (cachedItem != nullptr) {
                                         bool userIsAway = cachedItem->IsAway();
                                         UserListItem* newUserItem = new UserListItem(cachedItem->Text(), userIsAway);
-                                        
-                                        // Use the dynamically resolved target font size we computed earlier
-                                        fUserList->AddItem(newUserItem);
-                                        
-                                        BFont componentUserFont;
-                                        fUserList->GetFont(&componentUserFont);
-                                        // Crucial: Use our target size calculated in the synchronization pass
-                                        componentUserFont.SetSize(targetUserListFontSize);
-                                        newUserItem->Update(fUserList, &componentUserFont);
+                                        newUserItems.AddItem(newUserItem);
                                     }
+                                }
+                                fUserList->AddList(&newUserItems);
+                                for (int32 i = 0; i < newUserItems.CountItems(); i++) {
+                                    static_cast<UserListItem*>(newUserItems.ItemAt(i))->Update(fUserList, &componentUserFont);
                                 }
                                 // Sort Channel Operators
                                 fUserList->SortItems(SortUsersByRank); 
@@ -14188,15 +15092,19 @@ public:
                         }
                     }
 
-                    // 3. Re-populate visible chat log panel via Rebuild routing block ---
+                    TimingLog("topic + user list", tPhase); tPhase = TimingNow();
+
+                    // 3. Bring the chat log panel up to date (only the text that arrived since it was last shown)
                     if (fTextBuffers.find(fActiveBufferItem) != fTextBuffers.end()) {
                         this->RebuildActiveChannelBuffer();
                     } else {
                         fChatLog->SetText("");
                         if (fCustomChatLog != nullptr) {
-                            fCustomChatLog->ClearAllLines();
+                            fCustomChatLog->RemoveLinesFor(fActiveBufferItem);
+                            fCustomChatLog->SetActiveChannel(fActiveBufferItem);
                         }
                     }
+                    TimingLog("chat log", tPhase); tPhase = TimingNow();
                     
                     // --- NEW: DYNAMIC PICKER PANEL TOOLBAR SYNCHRONIZATION ---
                     if (fEmoticonGrid != nullptr && fCurrentServerNode != nullptr) {
@@ -14229,20 +15137,26 @@ public:
                         bool drawEngineActive = activeSrv ? activeSrv->useCustomDrawFunction : cfg.useCustomDrawFunction;
 
                         // 4. ROBUST VISIBILITY CHECK: Hide if emotes are off OR if the draw engine itself is disabled
+                        bool buttonChanged = false;
                         if (emotesActive && drawEngineActive) {
                             if (fIconToggleButton->IsHidden()) {
                                 fIconToggleButton->Show();
+                                buttonChanged = true;
                             }
                         } else {
                             if (!fIconToggleButton->IsHidden()) {
                                 fIconToggleButton->Hide();
+                                buttonChanged = true;
                             }
                         }
 
-                        // 5. FORCE INSTANT RUNTIME LAYOUT RE-FLOW CALCULATIONS
-                        this->InvalidateLayout(true);
-                        this->Layout(true); // Forces Haiku to redraw and re-flow widgets immediately
+                        // 5. The window is laid out again only when the toolbar changed
+                        if (buttonChanged) {
+                            this->InvalidateLayout(true);
+                            this->Layout(true);
+                        }
                     }
+                    TimingLog("toolbar", tPhase); tPhase = TimingNow();
                     // --- END OF PICKER PANEL RE-FLOW PATCH ---
 
                     
@@ -14292,9 +15206,11 @@ public:
                         fChatLog->Select(newLength, newLength);
                         fChatLog->ScrollToSelection();
                     } else if (fCustomChatLog != nullptr) {
-                        fCustomChatLog->RecalculateAllLineWraps();
                         fCustomChatLog->Invalidate();
                     }
+                    EnableUpdates();
+                    TimingLog("view swap + finish", tPhase);
+                    TimingLog("TOTAL channel switch", tSwitch);
                 }
             }
             break;
@@ -14462,10 +15378,15 @@ public:
                             if (fActiveBufferItem != nullptr) {
                                 fTextBuffers[fActiveBufferItem] = "";
                                 fChatLog->SetText("");
+                                {
+                                    auto pit = fChatPanes.find(fActiveBufferItem);
+                                    if (pit != fChatPanes.end()) pit->second.bytes = 0;
+                                }
                                 
                                 // --- Clear custom text row canvas vectors instantly ---
                                 if (fCustomChatLog != nullptr) {
-                                    fCustomChatLog->ClearAllLines();
+                                    fCustomChatLog->RemoveLinesFor(fActiveBufferItem);
+                                    fCustomChatLog->Invalidate();
                                 }
                             }
                         }
@@ -15408,6 +16329,9 @@ private:
 	    BStringItem*      fActiveBufferItem;
 	    
 	    std::map<BStringItem*, BString> fTextBuffers;
+	    std::map<BStringItem*, ChatPane> fChatPanes;
+	    std::vector<RoundedFrame*> fRoundFrames;
+	    int32 fChatColorGen = 0;
 	    std::map<BStringItem*, BString> fChannelTopics;
 	    
 	    std::map<ServerTreeItem*, BObjectList<BString, true>*> fServerBanHarvests;
@@ -15453,6 +16377,7 @@ private:
 		
 	 	BGridView*    fEmoticonGrid;
 	    BButton*    fIconToggleButton;  
+	    bigtime_t   fIconPopupClosedByButtonAt = 0;
 		BWindow*    fActiveIconPopup; 
 	
 		ChannelModesDialog* fActiveModesDialog;

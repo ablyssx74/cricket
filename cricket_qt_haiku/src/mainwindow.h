@@ -81,6 +81,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* e) override;
+    void changeEvent(QEvent* e) override;
     bool eventFilter(QObject* obj, QEvent* e) override;
 
 private:
@@ -102,6 +103,7 @@ private:
     void refreshTopic();
     void refreshStatus();
     void applyAppearance();
+    void applyRoundedEdges();
     void logToFile(Buffer* b, const QString& plainLine);
 
     // Output

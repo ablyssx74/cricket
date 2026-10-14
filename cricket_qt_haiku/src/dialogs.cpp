@@ -204,7 +204,7 @@ ServerDialog::ServerDialog(const ServerConfig& profile, bool isNew, QWidget* par
     lf->addRow(fEmoticons);
     lf->addRow(fColorCodes);
     lf->addRow(tr("Background image:"), bgRow);
-    lf->addRow(tr("Background opacity:"), fBgOpacity);
+    lf->addRow(tr("Wallpaper dimming level:"), fBgOpacity);
     lf->addRow(tr("Timestamp interval:"), fTimestamp);
     lf->addRow(tr("Server list font:"), fServerFont);
     lf->addRow(tr("Chat font:"), fChatFont);
@@ -454,6 +454,8 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     fUpdates->setChecked(cfg.showUpdateNotifications);
     fDebug = new QCheckBox(tr("Print raw IRC traffic to the terminal (debug)"));
     fDebug->setChecked(cfg.debugEnable);
+    fRounded = new QCheckBox(tr("Rounded corners on the boxes"));
+    fRounded->setChecked(cfg.roundedEdges);
 
     form->addRow(tr("Quit message:"), fQuit);
     form->addRow(tr("Away message:"), fAway);
@@ -466,6 +468,7 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
         form->addRow(note);
     }
     form->addRow(fUpdates);
+    form->addRow(fRounded);
     form->addRow(fDebug);
 
     // --- DCC file transfers and chat ---
@@ -522,6 +525,7 @@ void SettingsDialog::apply()
         cfg.spellLanguage = lang;
     cfg.showUpdateNotifications = fUpdates->isChecked();
     cfg.debugEnable = fDebug->isChecked();
+    cfg.roundedEdges = fRounded->isChecked();
     cfg.dccDownloadDir = fDccDir->text().trimmed();
     cfg.dccFirstPort = fDccPort->value();
     cfg.dccUsePortMapping = fDccPortMap->isChecked();

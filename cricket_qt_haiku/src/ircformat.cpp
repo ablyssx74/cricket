@@ -4,6 +4,7 @@
  */
 #include "ircformat.h"
 
+#include <QFile>
 #include <QHash>
 #include <QRegularExpression>
 
@@ -39,6 +40,11 @@ QColor paletteColor(int index)
 QString escape(const QString& text)
 {
     return text.toHtmlEscaped();
+}
+
+QString emoteImagePath(const char* name)
+{
+    return QString(":/emotes/%1.png").arg(QString::fromUtf8(name));
 }
 
 const QVector<Emote>& emotes()
@@ -77,12 +83,22 @@ QVector<Emote> pickerEmotes()
     return out;
 }
 
+// The emoticon's picture, shared with the Haiku-native version (the font's emoji are drawn as
+// line art on Haiku), as an <img> for the chat log; the emoji if the picture is missing.
 static QString emoteFor(const QString& token)
 {
     static QHash<QString, QString> map;
-    if (map.isEmpty())
-        for (const Emote& e : emotes())
-            map.insert(QString::fromUtf8(e.trigger), QString::fromUtf8(e.emoji));
+    if (map.isEmpty()) {
+        for (const Emote& e : emotes()) {
+            QString html;
+            if (QFile::exists(emoteImagePath(e.name)))
+                html = QString("<img src=\"%1\" width=\"18\" height=\"18\" style=\"vertical-align: middle;\">")
+                           .arg(emoteImagePath(e.name));
+            else
+                html = QString::fromUtf8(e.emoji);
+            map.insert(QString::fromUtf8(e.trigger), html);
+        }
+    }
     return map.value(token);
 }
 

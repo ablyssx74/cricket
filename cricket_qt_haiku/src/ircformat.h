@@ -32,6 +32,8 @@ struct Emote {
     const char* name;
 };
 const QVector<Emote>& emotes();
+// The resource path of an emote's picture (":/emotes/<name>.png").
+QString emoteImagePath(const char* name);
 // One representative emote per face, for the picker.
 QVector<Emote> pickerEmotes();
 

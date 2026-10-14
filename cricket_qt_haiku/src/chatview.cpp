@@ -77,7 +77,8 @@ void ChatView::updateBackground()
     QPixmap canvas(size);
     canvas.fill(base);
     QPainter p(&canvas);
-    p.setOpacity(fOpacity / 100.0);
+    // The setting is the dimming level, as in the native Cricket: higher = the picture fainter
+    p.setOpacity(1.0 - fOpacity / 100.0);
     QPixmap scaled = fImage.scaled(size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
     p.drawPixmap((size.width() - scaled.width()) / 2, (size.height() - scaled.height()) / 2, scaled);
     p.end();
