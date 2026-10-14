@@ -12,7 +12,9 @@ CXX=g++ CC=gcc cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCRICKET_WITH_DBU
 cmake --build build -j"$(nproc)"
 
 # app signature, version and icon go into the program's resources
-rc -o build/cricket_qt.rsrc packaging/cricket_qt.rdef
+major=$(echo "$version" | cut -d. -f1); middle=$(echo "$version" | cut -d. -f2); minor=$(echo "$version" | cut -d. -f3)
+sed -e "s/@V_MAJOR@/$major/" -e "s/@V_MIDDLE@/$middle/" -e "s/@V_MINOR@/$minor/" -e "s/@VERSION@/$version/g" packaging/cricket_qt.rdef > build/cricket_qt.version.rdef
+rc -o build/cricket_qt.rsrc build/cricket_qt.version.rdef
 cp build/cricket build/cricket_qt
 xres -o build/cricket_qt build/cricket_qt.rsrc
 mimeset -f build/cricket_qt

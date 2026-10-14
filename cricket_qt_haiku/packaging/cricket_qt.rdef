@@ -1,13 +1,13 @@
 resource app_signature "application/x-vnd.cricket-qt";
 
 resource app_version {
-    major  = 0,   
-    middle = 0,   
-    minor  = 68, 
+    major  = @V_MAJOR@,   
+    middle = @V_MIDDLE@,   
+    minor  = @V_MINOR@, 
     variety = B_APPV_DEVELOPMENT, 
     internal = 0,
-    short_info = "cricket_qt v0.0.68",
-    long_info = "cricket_qt v0.0.68 - A lightweight, multi-server IRC client (Qt 6 version)."
+    short_info = "cricket_qt v@VERSION@",
+    long_info = "cricket_qt v@VERSION@ - A lightweight, multi-server IRC client (Qt 6 version)."
 };
 //resource app_flags B_SINGLE_LAUNCH;
 
