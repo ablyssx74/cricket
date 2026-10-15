@@ -278,6 +278,12 @@ static void FillListRowBackground(BView* owner, BRect rect, bool selected) {
 
 
 
+// A row under a server is indented by the list, and by the program's own offset for such rows
+// (20 and 24 against the 4 of a server): this takes about half of it off for each level
+static float LevelIndentTrim(const BListItem* item) {
+    return item->OutlineLevel() * floorf((be_control_look->DefaultItemSpacing() + 16.0f) / 2.0f);
+}
+
 int selectedConfig = 0;
 
 void ensure_config_dir() {
@@ -1625,15 +1631,94 @@ public:
         SetDrawingMode(B_OP_COPY);
     }
 
+    // The pill is grabbed and dragged here, in the one place that knows where it is drawn: the
+    // thumb is a thumb for the mouse as well as for the eye. Clicking above or below it scrolls a
+    // page. With Rounded Edges off the usual scroll bar does all of it. The bar lies over the
+    // chat, and the window gives the clicks on it to the chat, which hands them over with
+    // BeginGrab(), GrabMoved() and EndGrab().
+    bool IsOverlay() const { return fOverlay && cfg.roundedEdges; }
+    bool IsGrabbing() const { return fDragging; }
+
+    // A press at 'where' (in this bar). Returns whether the bar took it.
+    bool BeginGrab(BPoint where) {
+        float minV, maxV;
+        GetRange(&minV, &maxV);
+        float proportion = Proportion();
+        if (!(minV < maxV && proportion >= 0.0f && proportion < 1.0f))
+            return false;                // nothing to scroll
+        Geometry g = ThumbGeometry();
+        if (where.y >= g.top && where.y <= g.top + g.size) {
+            fDragging = true;
+            fGrabOffset = where.y - g.top;
+        } else {
+            float smallStep, largeStep;
+            GetSteps(&smallStep, &largeStep);
+            SetValue(Value() + (where.y < g.top ? -largeStep : largeStep));
+        }
+        return true;
+    }
+
+    // The pointer is at 'where' (in this bar) while the thumb is held
+    void GrabMoved(BPoint where) {
+        if (!fDragging) return;
+        float minV, maxV;
+        GetRange(&minV, &maxV);
+        Geometry g = ThumbGeometry();
+        if (g.span <= 0.0f || !(minV < maxV)) return;
+        float t = (where.y - fGrabOffset - g.base) / g.span;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        SetValue(minV + t * (maxV - minV));
+    }
+
+    void EndGrab() { fDragging = false; }
+
+    virtual void MouseDown(BPoint where) override {
+        if (!cfg.roundedEdges) {
+            BScrollBar::MouseDown(where);
+            return;
+        }
+        int32 buttons = 0;
+        BMessage* message = Window() != nullptr ? Window()->CurrentMessage() : nullptr;
+        if (message != nullptr) message->FindInt32("buttons", &buttons);
+        if ((buttons & B_PRIMARY_MOUSE_BUTTON) == 0)
+            return;
+        SetMouseEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
+        BeginGrab(where);
+    }
+
+    virtual void MouseMoved(BPoint where, uint32 transit, const BMessage* dragMessage) override {
+        if (!fDragging) {
+            BScrollBar::MouseMoved(where, transit, dragMessage);
+            return;
+        }
+        GrabMoved(where);
+    }
+
+    virtual void MouseUp(BPoint where) override {
+        if (fDragging) {
+            EndGrab();
+            return;
+        }
+        BScrollBar::MouseUp(where);
+    }
+
 private:
-    // The thumb's frame as BScrollBar::_UpdateThumbFrame() makes it (vertical bar)
-    BRect ThumbFrame() {
+    // Where the thumb is and how far it can go, as BScrollBar::_UpdateThumbFrame() works it out
+    // (vertical bar): the thumb's top is base + floor(t * span) for a scroll position of t (0..1).
+    struct Geometry {
+        float top;      // the thumb's top now
+        float size;     // its height
+        float base;     // its top at the top of the range
+        float span;     // how far its top moves over the range
+    };
+
+    Geometry ThumbGeometry() {
         scroll_bar_info info;
         get_scroll_bar_info(&info);
 
         BRect bounds = Bounds();
         bounds.InsetBy(1.0f, 1.0f);
-        BRect frame = bounds;
         float minSize = info.min_knob_size;
         float maxSize = bounds.Height();
         float buttonSize = bounds.Width() + 1.0f;
@@ -1664,20 +1749,32 @@ private:
         thumbSize = floorf(thumbSize + 0.5f);
         thumbSize--;
 
+        Geometry g;
+        g.size = thumbSize;
+        g.span = maxSize - thumbSize - 1.0f;
+        g.base = bounds.top + buttonSize * (doubleArrows ? 2.0f : 1.0f) + 1.0f;
         float offset = 0.0f;
         if (maxV > minV)
-            offset = floorf(((Value() - minV) / (maxV - minV)) * (maxSize - thumbSize - 1.0f));
-        offset += buttonSize * (doubleArrows ? 2.0f : 1.0f);
-        offset++;
+            offset = floorf(((Value() - minV) / (maxV - minV)) * g.span);
+        g.top = g.base + offset;
+        return g;
+    }
 
-        frame.bottom = frame.top + thumbSize;
-        frame.OffsetBy(0.0f, offset);
+    // The thumb's frame (vertical bar)
+    BRect ThumbFrame() {
+        Geometry g = ThumbGeometry();
+        BRect frame = Bounds();
+        frame.InsetBy(1.0f, 1.0f);
+        frame.top = g.top;
+        frame.bottom = g.top + g.size;
         return frame;
     }
 
     color_which fBackground;
     BackdropProvider* fProvider;
     bool fOverlay;
+    bool fDragging = false;
+    float fGrabOffset = 0.0f;   // where the thumb was taken, from its top
 };
 
 class FlatScrollView;
@@ -1694,11 +1791,14 @@ public:
     // fills the whole box and shows its picture under the bar); inset: the margin round the target
     // in a rounded box that has no RoundedFrame padding of its own. The two children are placed
     // by hand (a layout would make room for the bar beside the target).
+    // autoHide: the bar is only there while the target has more than fits (the target then has the
+    // whole width otherwise); the target's changes are looked at by UpdateBar(), which the target
+    // calls when its items change, and a pulse covers the rest.
     FlatScrollView(const char* name, BView* target, color_which background = B_DOCUMENT_BACKGROUND_COLOR,
-                   bool overlay = false, float inset = 0.0f)
-        : BView(name, B_WILL_DRAW | B_FRAME_EVENTS | B_FULL_UPDATE_ON_RESIZE),
+                   bool overlay = false, float inset = 0.0f, bool autoHide = false)
+        : BView(name, B_WILL_DRAW | B_FRAME_EVENTS | B_FULL_UPDATE_ON_RESIZE | (autoHide ? B_PULSE_NEEDED : 0)),
           fTarget(target), fOverlayCapable(overlay), fInset(inset), fBarOverlay(false),
-          fProvider(nullptr)
+          fProvider(nullptr), fAutoHide(autoHide), fBarShown(true)
     {
         SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
         fBar = new FlatScrollBar(target, background);
@@ -1751,11 +1851,34 @@ public:
         BView::AttachedToWindow();
         LayoutChildren();
     }
+    virtual void Pulse() override {
+        UpdateBar();
+    }
+
+    // Shows the bar if the target has more than fits, and hides it if not (autoHide only)
+    void UpdateBar() {
+        if (!fAutoHide || fBarOverlay || Window() == nullptr)
+            return;
+        float minV, maxV;
+        fBar->GetRange(&minV, &maxV);
+        bool needed = minV < maxV;
+        if (needed == fBarShown)
+            return;
+        fBarShown = needed;
+        if (needed) {
+            if (fBar->IsHidden()) fBar->Show();
+        } else {
+            if (!fBar->IsHidden()) fBar->Hide();
+        }
+        LayoutChildren();
+        Invalidate();
+        fTarget->Invalidate();
+    }
 
     virtual void Draw(BRect updateRect) override {
         if (cfg.roundedEdges) return;
         BRect rect = Bounds();
-        be_control_look->DrawScrollViewFrame(this, rect, updateRect, fBar->Frame(), BRect(),
+        be_control_look->DrawScrollViewFrame(this, rect, updateRect, fBarShown ? fBar->Frame() : BRect(), BRect(),
             ui_color(B_PANEL_BACKGROUND_COLOR), B_FANCY_BORDER, 0, BControlLook::B_ALL_BORDERS);
     }
 
@@ -1778,7 +1901,7 @@ private:
             BRect inner = box;
             inner.InsetBy(inset, inset);
             MoveAndResize(fBar, inner.right - kBarWidth + 1.0f, inner.top, kBarWidth, inner.Height());
-            MoveAndResize(fTarget, inner.left, inner.top, inner.Width() - kBarWidth, inner.Height());
+            MoveAndResize(fTarget, inner.left, inner.top, inner.Width() - (fBarShown ? kBarWidth : 0.0f), inner.Height());
         }
     }
 
@@ -1796,8 +1919,31 @@ private:
     float             fInset;
     bool              fBarOverlay;
     BackdropProvider* fProvider;
+    bool              fAutoHide;
+    bool              fBarShown;
 };
 const float FlatScrollView::kBarWidth = 14.0f;
+
+// The server tree: tells the scroll view round it when its items change, so the scroll bar comes
+// and goes with the need for it
+class ChannelTreeView : public BOutlineListView {
+public:
+    ChannelTreeView(const char* name) : BOutlineListView(name) {}
+
+    virtual bool AddItem(BListItem* item) override { bool r = BOutlineListView::AddItem(item); ScrollNeedChanged(); return r; }
+    virtual bool AddItem(BListItem* item, int32 fullListIndex) override { bool r = BOutlineListView::AddItem(item, fullListIndex); ScrollNeedChanged(); return r; }
+    virtual bool AddUnder(BListItem* item, BListItem* superitem) override { bool r = BOutlineListView::AddUnder(item, superitem); ScrollNeedChanged(); return r; }
+    virtual bool RemoveItem(BListItem* item) override { bool r = BOutlineListView::RemoveItem(item); ScrollNeedChanged(); return r; }
+    virtual BListItem* RemoveItem(int32 fullListIndex) override { BListItem* r = BOutlineListView::RemoveItem(fullListIndex); ScrollNeedChanged(); return r; }
+    virtual void MakeEmpty() override { BOutlineListView::MakeEmpty(); ScrollNeedChanged(); }
+    virtual void FrameResized(float width, float height) override { BOutlineListView::FrameResized(width, height); ScrollNeedChanged(); }
+
+private:
+    void ScrollNeedChanged() {
+        FlatScrollView* view = dynamic_cast<FlatScrollView*>(Parent());
+        if (view != nullptr) view->UpdateBar();
+    }
+};
 
 // A BTextControl without its square frame while Rounded Edges is on (the RoundedFrame round it
 // is its frame then). The label is still drawn.
@@ -1921,6 +2067,7 @@ private:
     BBitmap* fWallpaperSource;
     int32    fBackgroundDimmingLevel; 
     bool     fIsSelecting;       // Is the user actively dragging the mouse?
+    bool     fBarGrab = false;   // is the scroll bar's thumb held? (the bar lies over this view)
     BPoint   fSelectionStart;    // Mouse down starting point
     BPoint   fSelectionEnd;      // Current mouse dragging point
     
@@ -2584,6 +2731,8 @@ void CustomChatView::UpdateScrollRange(bool scrollToBottom) {
         
         // Set the size ratio of the scrollbar thumb relative to full canvas height
         vScroll->SetProportion(viewHeight / totalDocumentHeight);
+        // A click above or below the thumb scrolls a page; the arrows' step is a line
+        vScroll->SetSteps(fLineHeight, viewHeight - fLineHeight);
 
         // 5. Fire auto-scroll step if flagged or if the user is trailing closely at the bottom
         if (scrollToBottom) {
@@ -3171,6 +3320,12 @@ void CustomChatView::Draw(BRect updateRect) {
 
 
 void CustomChatView::MouseUp(BPoint point) {
+    if (fBarGrab) {
+        fBarGrab = false;
+        FlatScrollBar* bar = dynamic_cast<FlatScrollBar*>(ScrollBar(B_VERTICAL));
+        if (bar != nullptr) bar->EndGrab();
+        return;
+    }
     if (fIsSelecting) {
         fIsSelecting = false;
         // Keep the selection coordinates so right-clicking can grab the cached selection text!
@@ -3181,6 +3336,11 @@ void CustomChatView::MouseUp(BPoint point) {
 
 // Scoped layout mouse hover tracking engine for dynamic cursor feedback and selection highlighting
 void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dragMessage) {
+    if (fBarGrab) {
+        FlatScrollBar* bar = dynamic_cast<FlatScrollBar*>(ScrollBar(B_VERTICAL));
+        if (bar != nullptr) bar->GrabMoved(bar->ConvertFromScreen(ConvertToScreen(point)));
+        return;
+    }
     
     // =========================================================================
     // NEW: LIVE SELECTION HIGHLIGHT TRACKING INTERCEPTION
@@ -3289,8 +3449,32 @@ void CustomChatView::MouseMoved(BPoint point, uint32 transit, const BMessage* dr
 
 
 // Scoped layout mouse click tracker logic implementation with Channel Filtering Isolation and Text Selection
+// The scroll bar lies over the right edge of this view, and the window gives this view the clicks
+// on it: the bar gets them from here.
+static FlatScrollBar* OverlayBarAt(CustomChatView* view, BPoint point, BPoint* inBar) {
+    FlatScrollBar* bar = dynamic_cast<FlatScrollBar*>(view->ScrollBar(B_VERTICAL));
+    if (bar == nullptr || !bar->IsOverlay() || bar->Parent() == nullptr)
+        return nullptr;
+    BPoint where = bar->ConvertFromScreen(view->ConvertToScreen(point));
+    if (!bar->Bounds().Contains(where))
+        return nullptr;
+    *inBar = where;
+    return bar;
+}
+
 void CustomChatView::MouseDown(BPoint point) {
     if (Window() == nullptr) return;
+    {
+        int32 buttons = 0;
+        Window()->CurrentMessage()->FindInt32("buttons", &buttons);
+        BPoint inBar;
+        FlatScrollBar* bar = OverlayBarAt(this, point, &inBar);
+        if (bar != nullptr && (buttons & B_PRIMARY_MOUSE_BUTTON) != 0 && bar->BeginGrab(inBar)) {
+            fBarGrab = true;
+            SetMouseEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
+            return;
+        }
+    }
 	// MakeFocus(true);
     // =========================================================================
     // NEW: INITIAL APP BOOT HOVER CLICK TARGET CHECK
@@ -4507,7 +4691,7 @@ public:
         dynamicFont.GetHeight(&fh);
         float textBaseline = itemRect.top + fh.ascent + (itemRect.Height() - (fh.ascent + fh.descent + fh.leading)) / 2.0f;
         
-        owner->MovePenTo(itemRect.left + 20, textBaseline);
+        owner->MovePenTo(itemRect.left + 20 - LevelIndentTrim(this), textBaseline);
         
         BString displayString = Text();
         if (fAutoJoin) displayString << " [A]";
@@ -4670,6 +4854,7 @@ public:
         float textBaseline = itemRect.top + fh.ascent + (itemRect.Height() - (fh.ascent + fh.descent + fh.leading)) / 2.0f;
         
         float leftPadding = fIsChannel ? 24.0f : 4.0f;
+        leftPadding -= LevelIndentTrim(this);
         owner->MovePenTo(itemRect.left + leftPadding, textBaseline);
         
         BString displayString = Text();
@@ -7539,10 +7724,10 @@ public:
 
         
         // 1. Setup Channel Tree View (Left Side)
-        fChannelTree = new BOutlineListView("channel_tree");
+        fChannelTree = new ChannelTreeView("channel_tree");
         // redrawn whole when the pane is resized (the selection pill is as wide as the list)
         fChannelTree->SetFlags(fChannelTree->Flags() | B_FULL_UPDATE_ON_RESIZE);
-        BView* channelScroll = new FlatScrollView("scroll_channels", fChannelTree, B_LIST_BACKGROUND_COLOR);
+        BView* channelScroll = new FlatScrollView("scroll_channels", fChannelTree, B_LIST_BACKGROUND_COLOR, false, 0.0f, true);
         
         
         
