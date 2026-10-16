@@ -18,6 +18,7 @@ class DccManager;
 class ChannelListDialog;
 class ChannelModesDialog;
 class InputEdit;
+class OverlayBar;
 class IrcConnection;
 class QLabel;
 class QLineEdit;
@@ -81,12 +82,16 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* e) override;
+    void changeEvent(QEvent* e) override;
     bool eventFilter(QObject* obj, QEvent* e) override;
 
 private:
     // Construction
     void buildUi();
     void buildMenus();
+    void applyRoundedEdges();
+    void applyChatMargin();
+    void clearChat();
     Session* createSession(bool custom, int index);
     void wireConnection(Session* s);
 
@@ -158,6 +163,7 @@ private:
 
     QSplitter* fSplitter = nullptr;
     QTreeWidget* fTree = nullptr;
+    OverlayBar* fOverlayBars[3] = {nullptr, nullptr, nullptr};
     QLineEdit* fTopic = nullptr;
     ChatView* fChat = nullptr;
     InputEdit* fInput = nullptr;

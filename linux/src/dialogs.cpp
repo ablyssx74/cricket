@@ -454,6 +454,8 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
     fUpdates->setChecked(cfg.showUpdateNotifications);
     fDebug = new QCheckBox(tr("Print raw IRC traffic to the terminal (debug)"));
     fDebug->setChecked(cfg.debugEnable);
+    fRounded = new QCheckBox(tr("Rounded corners on the boxes"));
+    fRounded->setChecked(cfg.roundedEdges);
 
     form->addRow(tr("Quit message:"), fQuit);
     form->addRow(tr("Away message:"), fAway);
@@ -466,6 +468,7 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent)
         form->addRow(note);
     }
     form->addRow(fUpdates);
+    form->addRow(fRounded);
     form->addRow(fDebug);
 
     // --- DCC file transfers and chat ---
@@ -517,6 +520,7 @@ void SettingsDialog::apply()
     cfg.awayMessage = fAway->text().trimmed();
     cfg.searchEngine = fSearch->text().trimmed().isEmpty() ? QString("https://duckduckgo.com") : fSearch->text().trimmed();
     cfg.enableSpellCheck = fSpell->isChecked();
+    cfg.roundedEdges = fRounded->isChecked();
     QString lang = fSpellLang->text().trimmed();
     if (!lang.isEmpty() && lang != cfg.spellLanguage && SpellChecker::instance().setLanguage(lang))
         cfg.spellLanguage = lang;

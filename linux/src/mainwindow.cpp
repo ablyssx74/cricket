@@ -33,10 +33,18 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QTextFrame>
+#include <QTextDocument>
+#include <QScrollBar>
+#include <QAbstractScrollArea>
+#include <QPainter>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QSplitter>
+#include <QStyleOptionViewItem>
 #include <QStatusBar>
+#include <QStyledItemDelegate>
+#include <QStyleOption>
 #include <QTextStream>
 #include <QTimer>
 #include <QToolButton>
@@ -61,6 +69,138 @@ static const int kMaxLines = 3000;
 // Construction
 // ---------------------------------------------------------------------------
 
+// A scroll bar laid over the right edge of a scroll area, as a handle only: the area keeps its full width and what is under
+// the handle (the chat's wallpaper, for one) shows around it. It follows the area's own bar, which is kept but never shown.
+class OverlayBar : public QScrollBar {
+public:
+    explicit OverlayBar(QAbstractScrollArea* area)
+        : QScrollBar(Qt::Vertical, area), fArea(area), fSource(area->verticalScrollBar())
+    {
+        area->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        area->installEventFilter(this);
+        connect(fSource, &QScrollBar::rangeChanged, this, [this]() { sync(); });
+        connect(fSource, &QScrollBar::valueChanged, this, [this](int v) {
+            if (value() != v)
+                setValue(v);
+        });
+        connect(this, &QScrollBar::valueChanged, fSource, &QScrollBar::setValue);
+        sync();
+    }
+
+    // (translucent, so that it shows on a wallpaper of any color)
+    static QString rgba(const QColor& c, int alpha)
+    {
+        return QString("rgba(%1, %2, %3, %4)").arg(c.red()).arg(c.green()).arg(c.blue()).arg(alpha);
+    }
+
+    void setColors(const QColor& handle, const QColor& hover)
+    {
+        setStyleSheet(QString(
+            "QScrollBar:vertical { background: transparent; border: none; width: 10px; margin: 0; } "
+            "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 28px; margin: 0 1px; } "
+            "QScrollBar::handle:vertical:hover, QScrollBar::handle:vertical:pressed { background: %2; } "
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; border: none; background: none; } "
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
+            .arg(rgba(handle, 130), rgba(hover, 230)));
+    }
+
+    bool eventFilter(QObject* obj, QEvent* e) override
+    {
+        if (obj == fArea && (e->type() == QEvent::Resize || e->type() == QEvent::Show || e->type() == QEvent::LayoutRequest))
+            QTimer::singleShot(0, this, [this]() { sync(); });
+        return QScrollBar::eventFilter(obj, e);
+    }
+
+private:
+    void sync()
+    {
+        setRange(fSource->minimum(), fSource->maximum());
+        setPageStep(fSource->pageStep());
+        setSingleStep(fSource->singleStep());
+        if (value() != fSource->value())
+            setValue(fSource->value());
+        // inside the frame's rounded corners, a little in from the right edge
+        setGeometry(fArea->width() - 14, 6, 10, qMax(0, fArea->height() - 12));
+        setVisible(fSource->maximum() > fSource->minimum());
+        raise();
+    }
+
+    QAbstractScrollArea* fArea;
+    QScrollBar* fSource;
+};
+
+// Draws the items of a list without the style's focus outline, which would be a box inside the rounded selection.
+class NoFocusDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+protected:
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+        if (cfg.roundedEdges)
+            option->state &= ~QStyle::State_HasFocus;
+    }
+};
+
+// The server list. With Rounded Edges on, the selected item is a pill with a dark outline, from its own cell to the right
+// edge; the branch lines to its left stay clear of it.
+class RoundedSelectionTree : public QTreeWidget {
+public:
+    using QTreeWidget::QTreeWidget;
+
+protected:
+    void drawRow(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        if (!cfg.roundedEdges || !selectionModel() || !selectionModel()->isSelected(index)) {
+            QTreeWidget::drawRow(painter, option, index);
+            return;
+        }
+        // the pill is the item's own cell, with its dark outline; the branch lines to the left of it stay as they are
+        const QRect cell = visualRect(index.sibling(index.row(), 0));
+        QRect pill(cell.left(), option.rect.top(), viewport()->width() - cell.left(), option.rect.height());
+        pill.adjust(1, 1, -2, -1);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(QPen(palette().color(QPalette::Shadow), 1));
+        painter->setBrush(palette().color(QPalette::Highlight));
+        painter->drawRoundedRect(QRectF(pill).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
+        painter->restore();
+
+        // the style's own selection fill is made invisible; the text keeps the selected color
+        QStyleOptionViewItem opt = option;
+        opt.palette.setColor(QPalette::Highlight, Qt::transparent);
+        QTreeWidget::drawRow(painter, opt, index);
+    }
+
+    // Only the expand arrow of an item that has children; the style's branch lines are left out.
+    void drawBranches(QPainter* painter, const QRect& rect, const QModelIndex& index) const override
+    {
+        if (!cfg.roundedEdges) {
+            QTreeWidget::drawBranches(painter, rect, index);
+            return;
+        }
+        if (!model()->hasChildren(index))
+            return;
+        // drawn here, not by the style, whose arrow would come with its tree lines
+        const QRect cell(rect.right() - indentation() + 1, rect.top(), indentation(), rect.height());
+        const QPointF c(cell.center().x() + 0.5, cell.center().y() + 0.5);
+        QPolygonF arrow;
+        if (isExpanded(index))
+            arrow << QPointF(c.x() - 4, c.y() - 2) << QPointF(c.x() + 4, c.y() - 2) << QPointF(c.x(), c.y() + 3);
+        else
+            arrow << QPointF(c.x() - 2, c.y() - 4) << QPointF(c.x() + 3, c.y()) << QPointF(c.x() - 2, c.y() + 4);
+        QColor color = palette().color(QPalette::Text);
+        color.setAlpha(170);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(color);
+        painter->drawPolygon(arrow);
+        painter->restore();
+    }
+};
+
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
     setWindowTitle("Cricket");
@@ -71,6 +211,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 
     buildUi();
     buildMenus();
+    applyRoundedEdges();
 
     for (int i = 0; i < cfg.servers.size(); ++i)
         createSession(false, i);
@@ -132,11 +273,15 @@ void MainWindow::buildUi()
 {
     fSplitter = new QSplitter(Qt::Horizontal);
 
-    fTree = new QTreeWidget;
+    fTree = new RoundedSelectionTree;
+    fTree->setItemDelegate(new NoFocusDelegate(fTree));
     fTree->setHeaderHidden(true);
     fTree->setRootIsDecorated(true);
     fTree->setContextMenuPolicy(Qt::CustomContextMenu);
     fTree->setMinimumWidth(0);
+    // a scroll bar only when there are enough servers and channels to need one, never a sideways one
+    fTree->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    fTree->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     connect(fTree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* cur) {
         if (Buffer* b = bufferForItem(cur))
             setActiveBuffer(b);
@@ -225,6 +370,7 @@ void MainWindow::buildUi()
     ul->setSpacing(4);
     fUserCount = new QLabel;
     fUsers = new QListWidget;
+    fUsers->setItemDelegate(new NoFocusDelegate(fUsers));
     fUsers->setContextMenuPolicy(Qt::CustomContextMenu);
     fUsers->setSelectionMode(QAbstractItemView::ExtendedSelection);
     connect(fUsers, &QListWidget::customContextMenuRequested, this, &MainWindow::showUserMenu);
@@ -262,6 +408,67 @@ void MainWindow::buildUi()
     resize(1100, 700);
 }
 
+// Rounded corners on the boxes (server list, chat, user list, topic, input), and rounded selection
+// in the two lists, with the colors of the current palette. Off: the style's own frames.
+void MainWindow::applyRoundedEdges()
+{
+    QWidget* boxes[] = { fTree, fUsers, fChat, fTopic, fInput };
+    if (!cfg.roundedEdges) {
+        for (QWidget* w : boxes)
+            w->setStyleSheet(QString());
+        QAbstractScrollArea* areas[] = { fTree, fUsers, fChat };
+        for (int i = 0; i < 3; ++i) {
+            delete fOverlayBars[i];
+            fOverlayBars[i] = nullptr;
+            areas[i]->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        }
+        applyChatMargin();
+        return;
+    }
+    const QPalette pal = palette();
+    const QString frame = QString("border: 1px solid %1; border-radius: 7px; padding: 3px; background-color: %2;")
+        .arg(pal.color(QPalette::Mid).name(), pal.color(QPalette::Base).name());
+    const QString pill = QString("::item { padding: 2px; border-radius: 6px; } "
+        "::item:selected { background-color: %1; color: %2; border-radius: 6px; }")
+        .arg(pal.color(QPalette::Highlight).name(), pal.color(QPalette::HighlightedText).name());
+    // (the server list paints its own selection pill across the whole row, see RoundedSelectionTree)
+    fTree->setStyleSheet("QTreeWidget { " + frame + " outline: 0; }");
+    fUsers->setStyleSheet("QListWidget { " + frame + " outline: 0; } QListWidget" + pill);
+    fChat->setStyleSheet("QTextBrowser { " + frame + " }");
+
+    // the scroll bars of the three lists are handles over their right edge
+    QAbstractScrollArea* areas[] = { fTree, fUsers, fChat };
+    for (int i = 0; i < 3; ++i) {
+        if (!fOverlayBars[i])
+            fOverlayBars[i] = new OverlayBar(areas[i]);
+        fOverlayBars[i]->setColors(pal.color(QPalette::Text), pal.color(QPalette::Highlight));
+    }
+    applyChatMargin();
+    fTopic->setStyleSheet("QLineEdit { " + frame + " }");
+    fInput->setStyleSheet("QPlainTextEdit { " + frame + " }");
+}
+
+// The chat's text keeps clear of the scroll bar's handle. (The margin is lost when the chat is cleared.)
+void MainWindow::applyChatMargin()
+{
+    QTextFrameFormat format = fChat->document()->rootFrame()->frameFormat();
+    format.setRightMargin(fOverlayBars[2] ? 12 : 0);
+    fChat->document()->rootFrame()->setFrameFormat(format);
+}
+
+void MainWindow::clearChat()
+{
+    fChat->clear();
+    applyChatMargin();
+}
+
+void MainWindow::changeEvent(QEvent* e)
+{
+    QMainWindow::changeEvent(e);
+    if (e->type() == QEvent::PaletteChange)
+        applyRoundedEdges();
+}
+
 void MainWindow::buildMenus()
 {
     QMenu* app = menuBar()->addMenu(tr("&Cricket"));
@@ -270,6 +477,7 @@ void MainWindow::buildMenus()
         if (dlg.exec() == QDialog::Accepted) {
             dlg.apply();
             fInput->setSpellCheckEnabled(cfg.enableSpellCheck);
+            applyRoundedEdges();
             if (fDcc)
                 fDcc->applySettings();
         }
@@ -313,7 +521,7 @@ void MainWindow::buildMenus()
     QAction* clear = view->addAction(tr("&Clear Buffer"), this, [this]() {
         if (!fActive) return;
         fActive->lines.clear();
-        fChat->clear();
+        clearChat();
     });
     clear->setShortcut(QKeySequence("Ctrl+L"));
     QAction* next = view->addAction(tr("&Next Buffer"), this, [this]() {
@@ -907,7 +1115,7 @@ void MainWindow::processCommand(Session* s, Buffer* b, const QString& input)
     };
 
     if (cmd == "clear") {
-        if (b) { b->lines.clear(); if (b == fActive) fChat->clear(); }
+        if (b) { b->lines.clear(); if (b == fActive) clearChat(); }
         return;
     }
     if (cmd == "connect" || cmd == "server") { connectSession(s); return; }
@@ -2158,7 +2366,7 @@ void MainWindow::showTreeMenu(const QPoint& pos)
         }
         menu.addAction(tr("Clear"), this, [this, b]() {
             b->lines.clear();
-            if (b == fActive) fChat->clear();
+            if (b == fActive) clearChat();
         });
         menu.addSeparator();
         menu.addAction(QIcon::fromTheme("tab-close"), tr("Close"), this, [this, s, b]() {
