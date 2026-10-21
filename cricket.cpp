@@ -1359,6 +1359,35 @@ public:
 
 
 // Hardened, non-recursive, case-insensitive shell-style wildcard matcher (* and ?)
+// The color a nickname gets when none of the user's nick patterns matches it: the same one every time (a hash of the
+// lowercased nick picks one of ten colors of the mIRC palette, those that read well on the chat's background), the way
+// Cricket QT does it. On a dark background the darker ones are lightened.
+static rgb_color AutoNickColor(const BString& nick, bool darkBackground) {
+	static const uint32 kPalette[16] = {
+		0xFFFFFF, 0x000000, 0x00007F, 0x009300, 0xFF0000, 0x7F0000, 0x9C009C, 0xFC7F00,
+		0xFFFF00, 0x00FC00, 0x009393, 0x00FFFF, 0x0000FC, 0xFF00FF, 0x7F7F7F, 0xD2D2D2
+	};
+	static const int kLightBg[10] = { 2, 3, 4, 5, 6, 7, 10, 12, 13, 14 };
+	static const int kDarkBg[10] = { 3, 4, 7, 8, 9, 10, 11, 12, 13, 15 };
+	uint32 h = 0;
+	for (int32 i = 0; i < nick.Length(); i++) {
+		uint8 ch = (uint8)nick.ByteAt(i);
+		if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+		h = h * 31 + ch;
+	}
+	const uint32 rgb = kPalette[(darkBackground ? kDarkBg : kLightBg)[h % 10]];
+	int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+	const int lightness = (std::max(r, std::max(g, b)) + std::min(r, std::min(g, b))) / 2;
+	if (darkBackground && lightness < 110) {
+		// (a lighter shade: the brightness raised by half)
+		r = std::min(255, r * 3 / 2);
+		g = std::min(255, g * 3 / 2);
+		b = std::min(255, b * 3 / 2);
+	}
+	rgb_color color = { (uint8)r, (uint8)g, (uint8)b, 255 };
+	return color;
+}
+
 static bool MatchWildcard(const char* stringToTest, const char* wildcardPattern) {
     if (stringToTest == nullptr || wildcardPattern == nullptr) return false;
 
@@ -2334,8 +2363,19 @@ void CustomChatView::ParseTextAndIcons(const BString& text, const text_run_array
                             BString fgToken = (commaIdx != B_ERROR) ? tempContent.Truncate(commaIdx) : tempContent;
                             fgToken.Trim();
 
-                            int32 pIdx = atoi(fgToken.String());
-                            if (pIdx >= 0 && pIdx < 16) activeColor = ircPalette[pIdx];
+                            if (fgToken.Length() == 7 && fgToken.ByteAt(0) == '#') {
+                                // (a color given whole, #RRGGBB: a nickname's own color)
+                                unsigned int rgb = 0;
+                                if (sscanf(fgToken.String() + 1, "%6x", &rgb) == 1) {
+                                    activeColor.red = (rgb >> 16) & 0xFF;
+                                    activeColor.green = (rgb >> 8) & 0xFF;
+                                    activeColor.blue = rgb & 0xFF;
+                                    activeColor.alpha = 255;
+                                }
+                            } else {
+                                int32 pIdx = atoi(fgToken.String());
+                                if (pIdx >= 0 && pIdx < 16) activeColor = ircPalette[pIdx];
+                            }
                         } 
                         else if (tagContent == "B") {
                             activeFont.SetFace(B_BOLD_FACE);
@@ -11753,6 +11793,17 @@ private:
             BString senderNick = prefix;
             int32 exclamIdx = senderNick.FindFirst("!");
             if (exclamIdx != B_ERROR) senderNick.Truncate(exclamIdx);            
+
+            // The nickname may carry the color tags put in before it (see MSG_IRC_RECEIVED): the line shows them, but the
+            // name used for the ignore list, the tabs and the alerts is the plain one.
+            BString taggedNick = senderNick;
+            for (int32 tagAt = senderNick.FindFirst("[C:"); tagAt != B_ERROR; tagAt = senderNick.FindFirst("[C:")) {
+                int32 tagEnd = senderNick.FindFirst("]", tagAt);
+                if (tagEnd == B_ERROR) break;
+                senderNick.Remove(tagAt, tagEnd - tagAt + 1);
+            }
+            senderNick.ReplaceAll("[B]", "");
+            senderNick.ReplaceAll("[R]", "");
             
             // --- UPDATED: WILDCARD PRIVMSG / NOTICE FILTER ENGINE ---
             if (senderNick.Length() > 0 && !contextServer->fRuntimeIgnoreList.empty()) {
@@ -12080,13 +12131,13 @@ private:
                     }
                     
                     // Format as classic standard action text output style: * Nick message
-                    formattedMessage << "* " << senderNick << " " << messageBody << "\n";
+                    formattedMessage << "* " << taggedNick << " " << messageBody << "\n";
                 } else {
                     // Standard explicit room message delivery style
-                    formattedMessage << "<" << senderNick << "> " << messageBody << "\n";
+                    formattedMessage << "<" << taggedNick << "> " << messageBody << "\n";
                 }
             } else {
-                formattedMessage << "-!- " << senderNick << " NOTICE: " << trailing << "\n";
+                formattedMessage << "-!- " << taggedNick << " NOTICE: " << trailing << "\n";
             }
 
             // Append formatting payload to the matching memory array cell tracking keys
@@ -13811,8 +13862,16 @@ public:
             BString targetNick;
             if (message->FindString("target_nick", &targetNick) == B_OK && targetNick.Length() > 0) {
                 
-                // 1. Resolve which server connection context is currently active
-                ServerTreeItem* contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
+                // 1. Resolve which server connection context is currently active: the one of the tab in front (the last server
+                //    to send a line is not it when two servers are connected)
+                ServerTreeItem* contextServer = nullptr;
+                if (fActiveBufferItem != nullptr && fChannelTree != nullptr) {
+                    contextServer = dynamic_cast<ServerTreeItem*>(fActiveBufferItem);
+                    if (contextServer == nullptr && dynamic_cast<ChannelTreeItem*>(fActiveBufferItem) != nullptr)
+                        contextServer = dynamic_cast<ServerTreeItem*>(fChannelTree->Superitem(fActiveBufferItem));
+                }
+                if (contextServer == nullptr)
+                    contextServer = (fCurrentServerNode != nullptr) ? fCurrentServerNode : fLiberaNode;
                 if (contextServer == nullptr) break;
 
                 // 2. Check if a private query tree node already exists for this person
@@ -16210,10 +16269,22 @@ public:
                                     }
                                 }
 
+	                            // A nickname none of the patterns matches gets a color of its own, the same every time.
+	                            BString autoColorCode;
+	                            if (matchedColorIndex == -1 && showCodesForThisServer) {
+	                                const rgb_color doc = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
+	                                const bool darkBackground = (0.2126f * doc.red + 0.7152f * doc.green + 0.0722f * doc.blue) < 128.0f;
+	                                const rgb_color auto_ = AutoNickColor(senderNick, darkBackground);
+	                                autoColorCode.SetToFormat("[C:#%02X%02X%02X][B]", auto_.red, auto_.green, auto_.blue);
+	                            }
+
 	                            // --- TARGETED PREFIX-LOCKED ENCAPSULATION ---
-	                            if (matchedColorIndex != -1) {
+	                            if (matchedColorIndex != -1 || autoColorCode.Length() > 0) {
 	                                BString colorOpenCode, colorCloseCode;
-	                                colorOpenCode.SetToFormat("[C:%d][B]", matchedColorIndex);
+	                                if (matchedColorIndex != -1)
+	                                    colorOpenCode.SetToFormat("[C:%d][B]", matchedColorIndex);
+	                                else
+	                                    colorOpenCode = autoColorCode;
 	                                colorCloseCode = "[R]";
 	
 	                                // Find exactly where the clean sender nickname starts inside the REAL rawLine buffer
