@@ -1559,7 +1559,9 @@ public:
     static const float kPad;
 
     RoundedFrame(BView* child, float pad = kPad)
-        : BView("rounded_frame", B_WILL_DRAW | B_FRAME_EVENTS), fPad(pad)
+        // (B_FULL_UPDATE_ON_RESIZE: the whole outline is drawn again when the window is resized; otherwise only the strip that the
+        // resize uncovers is, and the corner that was at the old edge stays behind as speckles along the side)
+        : BView("rounded_frame", B_WILL_DRAW | B_FRAME_EVENTS | B_FULL_UPDATE_ON_RESIZE), fPad(pad)
     {
         SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
         fLayout = new BGroupLayout(B_VERTICAL, 0);
