@@ -16,6 +16,9 @@
 * Color Highlight keywords.
 * Ignore keywords.
 * Emots.
+* Each nickname gets a color of its own (the same one every time).
+* Rounded boxes around the server list, chat, user list, topic and input (can be turned off),
+  following the system's light or dark colors.
 * DCC file transfers (send and receive, passive DCC, resume) and DCC CHAT, with
   automatic router port forwarding (UPnP / NAT-PMP / PCP).
 
@@ -38,6 +41,13 @@
 ```
 make release
 
+```
+
+### Haiku, Qt 6 version
+[`cricket_qt_haiku/`](cricket_qt_haiku/README.md) is the Qt 6 version of Cricket built for Haiku
+(`cricket_qt`). It reads the same settings and can be installed beside the native one.
+```
+cd cricket_qt_haiku && sh make-package.sh
 ```
 
 ### Linux (KDE Plasma / Wayland)
