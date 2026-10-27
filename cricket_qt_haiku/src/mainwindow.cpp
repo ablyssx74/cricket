@@ -317,8 +317,17 @@ void MainWindow::applyRoundedEdges()
         return;
     }
     const QPalette pal = palette();
+    // The palette's Mid is a light grey even in a dark theme (Qt's Haiku platform theme), which made
+    // the frames stand out; blend the window and text colors instead so the frame follows the theme.
+    const QColor win = pal.color(QPalette::Window);
+    const QColor txt = pal.color(QPalette::WindowText);
+    const bool dark = win.lightness() < 128;
+    const double mix = dark ? 0.22 : 0.30;
+    const QColor edge(int(win.red() + (txt.red() - win.red()) * mix),
+                      int(win.green() + (txt.green() - win.green()) * mix),
+                      int(win.blue() + (txt.blue() - win.blue()) * mix));
     const QString frame = QString("border: 1px solid %1; border-radius: 7px; padding: 3px; background-color: %2;")
-        .arg(pal.color(QPalette::Mid).name(), pal.color(QPalette::Base).name());
+        .arg(edge.name(), pal.color(QPalette::Base).name());
     const QString pill = QString("::item { padding: 2px; border-radius: 6px; } "
         "::item:selected { background-color: %1; color: %2; border-radius: 6px; }")
         .arg(pal.color(QPalette::Highlight).name(), pal.color(QPalette::HighlightedText).name());
