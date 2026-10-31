@@ -147,6 +147,186 @@ enum {
 
 
 
+// --- Rounded popup menus ---
+// With the SnakeTracker look in all programs (and its rounded corners) on, a popup menu is drawn as a pill with rounded corners, which
+// needs the part of the screen behind it, taken just before it opens (the window system's own border is square and is covered with
+// that picture). SnakeTracker's control look keeps the pictures; it is found by name in the images of this program, and when it
+// is not there (or the look is off) nothing here does anything and the menus are Haiku's.
+namespace RoundMenus {
+
+static bool sLooked = false;
+static void (*sBeginChain)(bool (*)(BMenu*)) = nullptr;
+static void (*sAddTile)(BBitmap*, BRect) = nullptr;
+static bool (*sWantsTile)(BMenu*) = nullptr;
+static bool (*sGoesLeft)(BMenu*) = nullptr;
+
+static bool AnyMenu(BMenu*) { return true; }
+
+static void FindSymbols()
+{
+    if (sLooked)
+        return;
+    sLooked = true;
+    image_info info;
+    int32 cookie = 0;
+    while (get_next_image_info(B_CURRENT_TEAM, &cookie, &info) == B_OK) {
+        if (strstr(info.name, "SnakeControlLook") == nullptr)
+            continue;
+        get_image_symbol(info.id, "snake_begin_menu_chain", B_SYMBOL_TYPE_TEXT, (void**)&sBeginChain);
+        get_image_symbol(info.id, "snake_add_menu_tile", B_SYMBOL_TYPE_TEXT, (void**)&sAddTile);
+        get_image_symbol(info.id, "snake_wants_tile", B_SYMBOL_TYPE_TEXT, (void**)&sWantsTile);
+        get_image_symbol(info.id, "snake_menu_goes_left", B_SYMBOL_TYPE_TEXT, (void**)&sGoesLeft);
+    }
+}
+
+// Some drivers draw the pointer into the screen itself: it is mended in a picture, line by line, from the pixels either side of it.
+static void EraseCursor(BBitmap* bitmap, const BRect& rect)
+{
+    if (bitmap->ColorSpace() != B_RGB32 && bitmap->ColorSpace() != B_RGBA32)
+        return;
+    BPoint where;
+    uint32 buttons;
+    if (get_mouse(&where, &buttons) != B_OK)
+        return;
+    int32 cursorWidth = 32, cursorHeight = 32;
+    BPoint hotSpot(0, 0);
+    BBitmap* cursor = nullptr;
+    if (get_mouse_bitmap(&cursor, &hotSpot) == B_OK && cursor != nullptr) {
+        cursorWidth = (int32)cursor->Bounds().Width() + 1;
+        cursorHeight = (int32)cursor->Bounds().Height() + 1;
+    }
+    delete cursor;
+
+    const int32 width = (int32)bitmap->Bounds().Width() + 1, height = (int32)bitmap->Bounds().Height() + 1;
+    const int32 left = (int32)floorf(where.x - hotSpot.x - rect.left) - 1;
+    const int32 top = (int32)floorf(where.y - hotSpot.y - rect.top) - 1;
+    const int32 right = left + cursorWidth + 1, bottom = top + cursorHeight + 1;
+    const int32 y0 = std::max(top, (int32)0), y1 = std::min(bottom, height - 1);
+    if (left > width - 1 || right < 0 || y0 > y1)
+        return;
+
+    uint8* bits = (uint8*)bitmap->Bits();
+    const int32 stride = bitmap->BytesPerRow();
+    const int32 x0 = std::max(left, (int32)0), x1 = std::min(right, width - 1);
+    for (int32 y = y0; y <= y1; y++) {
+        uint8* row = bits + y * stride;
+        const bool haveLeft = left - 1 >= 0, haveRight = right + 1 <= width - 1;
+        if (!haveLeft && !haveRight)
+            continue;
+        const uint8* from = row + (haveLeft ? left - 1 : right + 1) * 4;
+        const uint8* to = row + (haveRight ? right + 1 : left - 1) * 4;
+        uint8 a[4], b[4];
+        memcpy(a, from, 4);
+        memcpy(b, to, 4);
+        for (int32 x = x0; x <= x1; x++) {
+            const float t = right > left ? (float)(x - left) / (float)(right - left) : 0.0f;
+            for (int k = 0; k < 4; k++)
+                row[x * 4 + k] = (uint8)(a[k] + (b[k] - a[k]) * t + 0.5f);
+        }
+    }
+}
+
+static void CaptureTile(BRect region)
+{
+    if (sAddTile == nullptr)
+        return;
+    BScreen screen(B_MAIN_SCREEN_ID);
+    if (!screen.IsValid())
+        return;
+    BRect rect(floorf(region.left), floorf(region.top), ceilf(region.right), ceilf(region.bottom));
+    rect = rect & screen.Frame();
+    if (!rect.IsValid())
+        return;
+    BBitmap* bitmap = nullptr;
+    if (screen.GetBitmap(&bitmap, false, &rect) != B_OK || bitmap == nullptr)
+        return;
+    EraseCursor(bitmap, rect);
+    sAddTile(bitmap, rect);     // (it takes the picture)
+}
+
+// The part of the screen that a popup menu covers when it opens with its top left at where (the screen pushes it back in).
+static BRect PredictRoot(BMenu* menu, BPoint where)
+{
+    float width = 250, height = 300;
+    menu->GetPreferredSize(&width, &height);
+    BScreen screen(B_MAIN_SCREEN_ID);
+    const BRect frame = screen.Frame();
+    float left = std::min(where.x, frame.right + 1 - width);
+    float top = std::min(where.y, frame.bottom + 1 - height);
+    left = std::max(left, frame.left);
+    top = std::max(top, frame.top);
+    return BRect(left - 8, top - 8, left + width + 48, top + height + 48) & frame;
+}
+
+// A popup menu is about to open at where (screen coordinates): a new chain of menus begins and the screen behind it is taken.
+static void BeginPopup(BMenu* menu, BPoint where)
+{
+    FindSymbols();
+    if (sBeginChain == nullptr || sAddTile == nullptr || sWantsTile == nullptr)
+        return;
+    sBeginChain(AnyMenu);
+    if (sWantsTile(menu))
+        CaptureTile(PredictRoot(menu, where));
+}
+
+// A submenu is about to open beside its parent's row: the screen behind it, to the right of the parent or to the left when there is
+// no room, the way a BMenu places it.
+static void CaptureSubmenu(BMenu* submenu)
+{
+    FindSymbols();
+    BMenu* parent = submenu->Supermenu();
+    BMenuItem* item = submenu->Superitem();
+    if (sWantsTile == nullptr || parent == nullptr || item == nullptr || parent->Window() == nullptr
+            || dynamic_cast<BMenuBar*>(parent) != nullptr || !sWantsTile(submenu))
+        return;
+    float width = 200, height = 300;
+    submenu->GetPreferredSize(&width, &height);
+    const BRect parentFrame = parent->Window()->Frame();
+    const BRect row = parent->ConvertToScreen(item->Frame());
+    BScreen screen(B_MAIN_SCREEN_ID);
+    const BRect frame = screen.Frame();
+    bool shiftedLeft = false;
+    BMenu* grandparent = parent->Supermenu();
+    if (grandparent != nullptr && dynamic_cast<BMenuBar*>(grandparent) == nullptr && grandparent->Window() != nullptr)
+        shiftedLeft = parentFrame.left < grandparent->Window()->Frame().left;
+    else if (grandparent == nullptr)
+        shiftedLeft = parentFrame.right >= frame.right - 1;
+    if (sGoesLeft != nullptr && sGoesLeft(submenu))
+        shiftedLeft = true;
+    float left, right;
+    if (!shiftedLeft && parentFrame.right + 1 + width <= frame.right + 1) {
+        left = parentFrame.right - 40;
+        right = parentFrame.right + 1 + width + 8;
+    } else {
+        float menuLeft = parentFrame.left - width - 1;
+        if (menuLeft < 0)
+            menuLeft = 6;
+        left = menuLeft - 8;
+        right = std::max(parentFrame.left + 40, menuLeft + width + 8);
+    }
+    float top = row.top - 8;
+    if (row.top + height > frame.bottom + 1)
+        top = frame.bottom + 1 - height - 8;
+    CaptureTile(BRect(left, std::max(top, frame.top), right, std::min(top + height + 16, frame.bottom)));
+}
+
+}   // namespace RoundMenus
+
+// A submenu of a popup menu: the screen behind it is taken as it is attached, just before it is shown.
+class RoundSubMenu : public BMenu {
+public:
+    RoundSubMenu(const char* name) : BMenu(name) {}
+    virtual void AttachedToWindow() override {
+        BMenu::AttachedToWindow();
+        BMenu* root = this;
+        while (root->Supermenu() != nullptr && dynamic_cast<BMenuBar*>(root->Supermenu()) == nullptr)
+            root = root->Supermenu();
+        if (dynamic_cast<BPopUpMenu*>(root) != nullptr)
+            RoundMenus::CaptureSubmenu(this);
+    }
+};
+
+
 // Forward Declarations 
 class CricketWindow; 
 class ServerTreeItem; 
@@ -2055,6 +2235,7 @@ public:
     void SetRendered(BStringItem* itemNode, int32 bytes, int32 fontSize);
     void SetLineHeight(float height);
     void RecalculateAllLineWraps();
+    void RewrapNewestLines(bigtime_t budget);   // while the window is resized: the lines in view first, as many as fit the time
     void SetActiveChannel(BStringItem* activeNode);
     void SetBackgroundImage(const char* filePath);
     virtual BBitmap* BoxBackdrop(int32 width, int32 height) override;
@@ -2608,10 +2789,41 @@ void CustomChatView::FrameResized(float newWidth, float newHeight) {
         if (line != nullptr && line->itemNode == fActiveChannelNode)
             active++;
     }
-    if (active <= 150)
+    if (active <= 150) {
         RecalculateAllLineWraps();      // (draws again)
-    else
+    } else {
+        // a long channel: the newest lines, which are the ones in view when the log is at the bottom, are wrapped for the new
+        // width within a few milliseconds; the older ones (out of view) keep their wrap until the dragging pauses
+        BScrollBar* bar = ScrollBar(B_VERTICAL);
+        float lo, hi;
+        if (bar != nullptr) {
+            bar->GetRange(&lo, &hi);
+            if (bar->Value() >= hi - 2.0f)
+                RewrapNewestLines(6000);
+        }
         Invalidate();
+    }
+}
+
+void CustomChatView::RewrapNewestLines(bigtime_t budget)
+{
+    float maxWidth = Bounds().Width() - 36.0f;
+    if (maxWidth <= 50.0f) maxWidth = 50.0f;
+    const int32 sig = WrapSignature(maxWidth);
+    const bigtime_t start = system_time();
+
+    for (int32 i = fLines.CountItems() - 1; i >= 0; i--) {
+        StyledLine* line = fLines.ItemAt(i);
+        if (line == nullptr || line->itemNode != fActiveChannelNode || line->wrapSig == sig)
+            continue;
+        BObjectList<StyledRunFragment, true> rawFragments(10);
+        ParseTextAndIcons(line->text, line->runs, &rawFragments);
+        ComputeWrapForLine(line, maxWidth, &rawFragments);
+        line->wrapSig = sig;
+        if (system_time() - start > budget)
+            break;
+    }
+    UpdateScrollRange(true);        // the log was at the bottom and stays there
 }
 
 CustomChatView::~CustomChatView() {
@@ -3667,7 +3879,7 @@ void CustomChatView::MouseDown(BPoint point) {
             }
 
             // 2. Instantiate the sub-menu container using our dynamic header label string
-            BMenu* translateSubMenu = new BMenu(subMenuHeaderLabel.String());
+            BMenu* translateSubMenu = new RoundSubMenu(subMenuHeaderLabel.String());
 
             BString labelEng = BString("English");
             BString labelSpa = BString("Spanish");
@@ -3782,7 +3994,7 @@ void CustomChatView::MouseDown(BPoint point) {
         contextMenu->AddItem(clearItem);
         
         contextMenu->SetTargetForItems(this);
-        contextMenu->Go(ConvertToScreen(point), true, true, true);
+        { BPoint where = ConvertToScreen(point); RoundMenus::BeginPopup(contextMenu, where); contextMenu->Go(where, true, true, true); }
         return;
     }
 
@@ -4531,7 +4743,7 @@ public:
                         menu->AddItem(new BMenuItem("Clear Filter Bar", new BMessage('clrf')));
                         
                         menu->SetTargetForItems(this);
-                        menu->Go(fListView->ConvertToScreen(point), true, true, true);
+                        { BPoint where = fListView->ConvertToScreen(point); RoundMenus::BeginPopup(menu, where); menu->Go(where, true, true, true); }
                         return; 
                     }
                 }
@@ -7796,6 +8008,9 @@ public:
         //@constructor
 
         SetFlags(Flags() | B_QUIT_ON_WINDOW_CLOSE);        
+
+        // the window cannot be made smaller than this: below it the lists, the chat and the input box have no room left
+        SetSizeLimits(600, B_SIZE_UNLIMITED, 380, B_SIZE_UNLIMITED);
         
         if (gTranslatorService == nullptr) {
     		gTranslatorService = new GeminiTranslationService();
@@ -8756,6 +8971,7 @@ private:
 	        menu->AddItem(new BMenuItem("Remove Channel", removeMsg));
 	        
 	        menu->SetTargetForItems(this);
+	        RoundMenus::BeginPopup(menu, screenPoint);
 	        menu->Go(screenPoint, true, true, true);
 	        return;
 	    }
@@ -8881,6 +9097,7 @@ private:
 	        menu->AddItem(new BMenuItem("About...", aboutMsg));    
 	        
 	        menu->SetTargetForItems(this);
+	        RoundMenus::BeginPopup(menu, screenPoint);
 	        menu->Go(screenPoint, true, true, true);
 	    }
 	}
@@ -14107,7 +14324,7 @@ public:
                 if (iamOperator) {
                     contextMenu->AddSeparatorItem();
                     
-                    BMenu* modesMenu = new BMenu("Channel Modes");
+                    BMenu* modesMenu = new RoundSubMenu("Channel Modes");
                     struct {
                         const char* label;
                         uint32 command;
@@ -14133,7 +14350,7 @@ public:
             contextMenu->SetTargetForItems(this);
             
             // Open the menu asynchronously so it doesn't block the app message loop
-            contextMenu->Go(fUserList->ConvertToScreen(mousePoint), true, true, true);
+            { BPoint where = fUserList->ConvertToScreen(mousePoint); RoundMenus::BeginPopup(contextMenu, where); contextMenu->Go(where, true, true, true); }
             break;
         }
 
