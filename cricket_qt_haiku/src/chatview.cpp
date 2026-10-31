@@ -19,6 +19,9 @@ ChatView::ChatView(QWidget* parent) : QTextBrowser(parent)
     setFocusPolicy(Qt::ClickFocus);
     document()->setDocumentMargin(6);
     connect(this, &QTextBrowser::anchorClicked, this, [](const QUrl& url) { QDesktopServices::openUrl(url); });
+    fResizeTimer.setSingleShot(true);
+    fResizeTimer.setInterval(80);
+    connect(&fResizeTimer, &QTimer::timeout, this, [this]() { updateBackground(true); });
 }
 
 bool ChatView::isDark() const
@@ -61,7 +64,7 @@ void ChatView::setBackgroundImage(const QString& path, int opacityPercent)
     updateBackground();
 }
 
-void ChatView::updateBackground()
+void ChatView::updateBackground(bool smooth)
 {
     QPalette pal = viewport()->palette();
     QColor base = palette().color(QPalette::Base);
@@ -79,7 +82,9 @@ void ChatView::updateBackground()
     QPainter p(&canvas);
     // The setting is the dimming level, as in the native Cricket: higher = the picture fainter
     p.setOpacity(1.0 - fOpacity / 100.0);
-    QPixmap scaled = fImage.scaled(size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    // (while the window is resized the picture is scaled quickly at every step, and smoothly once when the dragging pauses)
+    QPixmap scaled = fImage.scaled(size, Qt::KeepAspectRatioByExpanding,
+        smooth ? Qt::SmoothTransformation : Qt::FastTransformation);
     p.drawPixmap((size.width() - scaled.width()) / 2, (size.height() - scaled.height()) / 2, scaled);
     p.end();
     pal.setBrush(QPalette::Base, QBrush(canvas));
@@ -91,8 +96,10 @@ void ChatView::resizeEvent(QResizeEvent* e)
 {
     bool follow = atBottom();
     QTextBrowser::resizeEvent(e);
-    if (!fImage.isNull())
-        updateBackground();
+    if (!fImage.isNull()) {
+        updateBackground(false);
+        fResizeTimer.start();
+    }
     if (follow)
         scrollToBottom();
 }

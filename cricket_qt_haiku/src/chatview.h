@@ -7,6 +7,7 @@
 
 #include <QPixmap>
 #include <QTextBrowser>
+#include <QTimer>
 
 // Read-only chat log. Lines are appended as HTML paragraphs; an optional
 // background image is blended behind the text, dimmed by the configured level (0 = full picture, 100 = none).
@@ -30,11 +31,12 @@ protected:
     void changeEvent(QEvent* e) override;
 
 private:
-    void updateBackground();
+    void updateBackground(bool smooth = true);
     bool atBottom() const;
     void scrollToBottom();
 
     QPixmap fImage;
+    QTimer fResizeTimer;        // the picture is scaled smoothly when the dragging of the window's edge pauses
     int fOpacity = 30;
 };
 

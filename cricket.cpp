@@ -2099,6 +2099,8 @@ private:
     int32    fBackgroundDimmingLevel; 
     bool     fIsSelecting;       // Is the user actively dragging the mouse?
     bool     fBarGrab = false;   // is the scroll bar's thumb held? (the bar lies over this view)
+    bool     fResizing = false;  // the window is being resized: the wraps and the pictures catch up when it stops
+    BMessageRunner* fResizeRunner = nullptr;
     BPoint   fSelectionStart;    // Mouse down starting point
     BPoint   fSelectionEnd;      // Current mouse dragging point
     
@@ -2591,12 +2593,29 @@ void CustomChatView::SetLineHeight(float height) {
 
 void CustomChatView::FrameResized(float newWidth, float newHeight) {
     BView::FrameResized(newWidth, newHeight);
-    RecalculateAllLineWraps();
-    UpdateScrollRange(false); 
-    Invalidate();
+
+    // While the edge is dragged, the wrapping of a long scrollback and the scaling of the pictures are not done at every step
+    // (each step would wait for them): the old wraps and the stretched pictures stand in, and one timer that is started again
+    // by every step does the work once the dragging pauses. A short channel is wrapped at every step, that is cheap.
+    fResizing = true;
+    delete fResizeRunner;
+    BMessage done('rszD');
+    fResizeRunner = new BMessageRunner(BMessenger(this), &done, 80000, 1);
+
+    int32 active = 0;
+    for (int32 i = 0; i < fLines.CountItems() && active <= 150; i++) {
+        StyledLine* line = fLines.ItemAt(i);
+        if (line != nullptr && line->itemNode == fActiveChannelNode)
+            active++;
+    }
+    if (active <= 150)
+        RecalculateAllLineWraps();      // (draws again)
+    else
+        Invalidate();
 }
 
 CustomChatView::~CustomChatView() {
+	delete fResizeRunner;
 	delete fWallpaperCache;
 	delete fBoxCache;
 	for (auto it = fPictureCache.begin(); it != fPictureCache.end(); ++it)
@@ -2945,6 +2964,14 @@ void CustomChatView::SetActiveChannel(BStringItem* activeNode) {
 // Intercept System-wide Color/Theme Changes Live
 void CustomChatView::MessageReceived(BMessage* message) {
     switch (message->what) {
+        case 'rszD': {
+            // the dragging paused: the wraps and the pictures for the size the window has now
+            delete fResizeRunner;
+            fResizeRunner = nullptr;
+            fResizing = false;
+            RecalculateAllLineWraps();      // (draws again)
+            break;
+        }
         case B_MOUSE_WHEEL_CHANGED: {
             float deltaY = 0.0f;
             if (message->FindFloat("be:wheel_delta_y", &deltaY) == B_OK && deltaY != 0.0f) {
@@ -3119,9 +3146,17 @@ void CustomChatView::Draw(BRect updateRect) {
         BRect box = Bounds();
         boxPicture = BoxBackdrop((int32)ceilf(box.Width() + 1.0f), (int32)ceilf(box.Height() + 1.0f));
     }
+    bool boxStretched = false;
+    if (boxPicture == nullptr && fBoxMode && fResizing && fBoxCache != nullptr) {
+        boxPicture = fBoxCache;         // the box of the old size, stretched, until the dragging pauses
+        boxStretched = true;
+    }
     if (boxPicture != nullptr) {
         SetDrawingMode(B_OP_COPY);
-        DrawBitmap(boxPicture, Bounds().LeftTop());
+        if (boxStretched)
+            DrawBitmap(boxPicture, Bounds());
+        else
+            DrawBitmap(boxPicture, Bounds().LeftTop());
     } else
     // --- BRANCH A: SCALED CUSTOM BACKGROUND REFRESH ---
     if (fBackgroundBitmap != nullptr) {
@@ -3129,9 +3164,13 @@ void CustomChatView::Draw(BRect updateRect) {
         BRect bounds = Bounds();
         const int32 w = (int32)ceilf(bounds.Width() + 1.0f);
         const int32 h = (int32)ceilf(bounds.Height() + 1.0f);
-        if (fWallpaperCache == nullptr || fWallpaperSource != fBackgroundBitmap
+        // (while the window is resized the picture of the old size is stretched instead of made again at every step)
+        const bool wallpaperStretched = fResizing && fWallpaperCache != nullptr && fWallpaperSource == fBackgroundBitmap
+                && fWallpaperDim == fBackgroundDimmingLevel && fWallpaperLight == isLightTheme
+                && (fWallpaperW != w || fWallpaperH != h);
+        if (!wallpaperStretched && (fWallpaperCache == nullptr || fWallpaperSource != fBackgroundBitmap
                 || fWallpaperW != w || fWallpaperH != h
-                || fWallpaperDim != fBackgroundDimmingLevel || fWallpaperLight != isLightTheme) {
+                || fWallpaperDim != fBackgroundDimmingLevel || fWallpaperLight != isLightTheme)) {
             delete fWallpaperCache;
             fWallpaperCache = nullptr;
             BRect r(0, 0, w - 1, h - 1);
@@ -3167,7 +3206,9 @@ void CustomChatView::Draw(BRect updateRect) {
         }
 
         SetDrawingMode(B_OP_COPY);
-        if (fWallpaperCache != nullptr) {
+        if (wallpaperStretched) {
+            DrawBitmap(fWallpaperCache, bounds);
+        } else if (fWallpaperCache != nullptr) {
             DrawBitmap(fWallpaperCache, bounds.LeftTop());
         } else {
             DrawBitmap(fBackgroundBitmap, bounds);
@@ -4004,6 +4045,10 @@ BBitmap* CustomChatView::BoxBackdrop(int32 w, int32 h)
     if (fBoxCache != nullptr && fBoxW == w && fBoxH == h && fBoxSource == fBackgroundBitmap
             && fBoxDim == fBackgroundDimmingLevel && fBoxLight == isLight && fBoxColors == colors)
         return fBoxCache;
+    // while the window is resized the box of the old size stands in (Draw stretches it); nothing is made at every step
+    if (fResizing && fBoxCache != nullptr && fBoxSource == fBackgroundBitmap && fBoxDim == fBackgroundDimmingLevel
+            && fBoxLight == isLight && fBoxColors == colors)
+        return nullptr;
 
     delete fBoxCache;
     fBoxCache = nullptr;
@@ -16477,13 +16522,19 @@ private:
 	void WriteLogToFile(BStringItem* itemNode, const BString& rawLineText) {
 	    if (itemNode == nullptr || rawLineText.Length() == 0) return;
 	
-	    // 1. Resolve our exact server state profile target pointer context
-	    size_t activeIdx = (size_t)selectedConfig;
+	    // 1. Resolve the profile of the server the line belongs to: the item's own server in the tree (a channel's parent, or
+	    // the item itself when it is a server), not the server that happens to be selected, which is another one when the
+	    // line arrives on a network in the background
+	    BListItem* owner = fChannelTree != nullptr ? fChannelTree->Superitem(itemNode) : nullptr;
+	    const char* serverName = (owner != nullptr ? static_cast<BStringItem*>(owner) : itemNode)->Text();
 	    ServerConfig* activeSrv = nullptr;
-	    if (activeIdx < cfg.servers.size()) {
-	        activeSrv = &cfg.servers[activeIdx];
-	    } else if ((size_t)(activeIdx - cfg.servers.size()) < cfg.customServers.size()) {
-	        activeSrv = &cfg.customServers[activeIdx - cfg.servers.size()];
+	    for (auto& srv : cfg.servers) {
+	        if (srv.name == serverName) { activeSrv = &srv; break; }
+	    }
+	    if (activeSrv == nullptr) {
+	        for (auto& srv : cfg.customServers) {
+	            if (srv.name == serverName) { activeSrv = &srv; break; }
+	        }
 	    }
 	
 	    // Fast return if logging is completely turned off for this specific server context
