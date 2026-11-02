@@ -577,14 +577,29 @@ static BBitmap* WallpaperPicture(int32 w, int32 h, bool light) {
 
 // Draws into dest of target the part of the picture that lies at windowPos, the window coordinates of
 // dest's corner. False if there is no picture (the caller paints its own background then).
-static bool DrawWallpaperPart(BView* target, BRect dest, BPoint windowPos) {
-    if (!WallpaperActive()) return false;
+// The size of the area the picture covers
+static void WallpaperCanvasSize(int32& w, int32& h) {
     BRect canvasBounds = gWall.canvas->Bounds();
     if (gWall.below != nullptr && gWall.below->Window() != nullptr)
         canvasBounds.bottom = gWall.below->ConvertToScreen(BPoint(0, gWall.below->Bounds().bottom)).y
             - gWall.canvas->ConvertToScreen(BPoint(0, 0)).y;
-    const int32 w = (int32)ceilf(canvasBounds.Width() + 1.0f);
-    const int32 h = (int32)ceilf(canvasBounds.Height() + 1.0f);
+    w = (int32)ceilf(canvasBounds.Width() + 1.0f);
+    h = (int32)ceilf(canvasBounds.Height() + 1.0f);
+}
+
+// The picture of the shared cache is for the size the area has now (a pane or a list is moved: only what is cut out of
+// the picture changes, which costs next to nothing; the window is resized: the picture itself has to be scaled again)
+static bool WallpaperCacheCurrent() {
+    if (!WallpaperActive() || gWall.cache == nullptr) return false;
+    int32 w, h;
+    WallpaperCanvasSize(w, h);
+    return gWall.cacheSource == gWall.source && gWall.cacheW == w && gWall.cacheH == h;
+}
+
+static bool DrawWallpaperPart(BView* target, BRect dest, BPoint windowPos) {
+    if (!WallpaperActive()) return false;
+    int32 w, h;
+    WallpaperCanvasSize(w, h);
     if (w < 2 || h < 2) return false;
     const rgb_color doc = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
     const bool light = (0.2126f * doc.red + 0.7152f * doc.green + 0.0722f * doc.blue) > 128.0f;
@@ -4450,8 +4465,9 @@ BBitmap* CustomChatView::BoxBackdrop(int32 w, int32 h)
             && fBoxPos == pos && fBoxSerial == gWall.serial)
         return fBoxCache;
     // while the window is resized the box of the old size stands in (Draw stretches it); nothing is made at every step
+    // (not when only the box changed, with the picture the same size: the panes of the window are dragged; the box is made again then)
     if (fResizing && fBoxCache != nullptr && fBoxSource == fBackgroundBitmap && fBoxDim == fBackgroundDimmingLevel
-            && fBoxLight == isLight && fBoxColors == colors)
+            && fBoxLight == isLight && fBoxColors == colors && !(fBackgroundBitmap != nullptr && WallpaperCacheCurrent()))
         return nullptr;
 
     delete fBoxCache;
