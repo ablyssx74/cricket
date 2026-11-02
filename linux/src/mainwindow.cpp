@@ -455,17 +455,16 @@ void MainWindow::applyRoundedEdges()
     }
     applyChatMargin();
     fTopic->setStyleSheet("QLineEdit { " + frame + " }");
-    fInput->setStyleSheet("QPlainTextEdit { " + frame.left(frame.lastIndexOf("background-color")) + "background-color: "
-        + pal.color(QPalette::Base).name() + "; }");
+    fInput->setStyleSheet("QPlainTextEdit { " + frame + " }");
     applyWallpaper();
 }
 
-// While there is a picture, the server list, the chat, the user list and the topic bar have no background of their own
+// While there is a picture, the server list, the chat, the user list, the topic bar and the input box have no background of their own
 // (the picture is painted behind all of them, as one); without it they have the palette's.
 void MainWindow::applyWallpaper()
 {
     const bool on = fWallpaper->hasWallpaper();
-    QAbstractScrollArea* areas[] = { fTree, fUsers, fChat };
+    QAbstractScrollArea* areas[] = { fTree, fUsers, fChat, fInput };
     for (QAbstractScrollArea* area : areas) {
         QWidget* view = area->viewport();
         if (view->autoFillBackground() == !on)

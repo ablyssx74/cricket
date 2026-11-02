@@ -459,12 +459,16 @@ struct SharedWallpaper {
     BBitmap* source = nullptr;          // the picture (owned by the chat view's picture cache); nullptr = none
     int32    dim = 30;
     BView*   canvas = nullptr;          // the view the three lie in
+    BView*   below = nullptr;           // the input row under it: the picture reaches down to its bottom
     BView*   panes[2] = { nullptr, nullptr };   // the server list and the user list (the chat view is the third)
-    BTextControl* topic = nullptr;      // the topic bar over the chat: it shows the wallpaper too
-    uint32   topicSerial = 0;           // which picture, and where, the topic's text view has its background from
-    BPoint   topicPos;
-    BSize    topicSize;
-    int32    topicDim = -1;
+    struct Bar {                        // the topic bar over the chat and the input box under it: they show the wallpaper too
+        BTextControl* control = nullptr;
+        uint32   serial = 0;            // which picture, and where, the control's text view has its background from
+        BPoint   pos;
+        BSize    size;
+        int32    dim = -1;
+    };
+    Bar      bars[2];
     BBitmap* cache = nullptr;           // the picture scaled to the canvas and dimmed, ready to copy
     BBitmap* cacheSource = nullptr;
     int32    cacheW = 0, cacheH = 0, cacheDim = -1;
@@ -510,9 +514,10 @@ static void WallpaperChanged() {
         pane->UnlockLooper();
     }
 
-    // The topic bar: its text view draws no background of its own (what lies under it is the picture, drawn by
-    // the bar), and its text is laid over that
-    BTextControl* topic = gWall.topic;
+    // The topic bar and the input box: their text views draw no background of their own (what lies under them is
+    // the picture, drawn by the control), and the text is laid over that
+    for (int i = 0; i < 2; i++) {
+    BTextControl* topic = gWall.bars[i].control;
     if (topic != nullptr && topic->Window() != nullptr && topic->LockLooper()) {
         BTextView* text = topic->TextView();
         if (text != nullptr) {
@@ -525,12 +530,13 @@ static void WallpaperChanged() {
                 text->SetViewUIColor(B_DOCUMENT_BACKGROUND_COLOR);
                 text->SetLowColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
                 text->SetDrawingMode(B_OP_COPY);
-                gWall.topicSerial = 0;
+                gWall.bars[i].serial = 0;
             }
             text->Invalidate();
         }
         topic->Invalidate();
         topic->UnlockLooper();
+    }
     }
 }
 
@@ -574,6 +580,9 @@ static BBitmap* WallpaperPicture(int32 w, int32 h, bool light) {
 static bool DrawWallpaperPart(BView* target, BRect dest, BPoint windowPos) {
     if (!WallpaperActive()) return false;
     BRect canvasBounds = gWall.canvas->Bounds();
+    if (gWall.below != nullptr && gWall.below->Window() != nullptr)
+        canvasBounds.bottom = gWall.below->ConvertToScreen(BPoint(0, gWall.below->Bounds().bottom)).y
+            - gWall.canvas->ConvertToScreen(BPoint(0, 0)).y;
     const int32 w = (int32)ceilf(canvasBounds.Width() + 1.0f);
     const int32 h = (int32)ceilf(canvasBounds.Height() + 1.0f);
     if (w < 2 || h < 2) return false;
@@ -2352,23 +2361,24 @@ public:
     virtual void ScrollTo(BPoint where) override { BListView::ScrollTo(where); if (IsWallpaperPane(this)) Invalidate(); }
 };
 
-// The picture under the topic's text view, as the view's own background bitmap (a child is drawn over its parent's
+// The picture under a bar's text view, as the view's own background bitmap (a child is drawn over its parent's
 // background, so the text view has to bring the picture itself; it draws its text over it without a background)
-static void SyncTopicBackdrop() {
-    BTextControl* topic = gWall.topic;
-    BTextView* text = topic != nullptr ? topic->TextView() : nullptr;
-    if (text == nullptr || topic->Window() == nullptr) return;
+static void SyncBarBackdrop(BTextControl* control) {
+    SharedWallpaper::Bar* bar = nullptr;
+    for (int i = 0; i < 2; i++)
+        if (gWall.bars[i].control == control) bar = &gWall.bars[i];
+    BTextView* text = bar != nullptr ? control->TextView() : nullptr;
+    if (text == nullptr || control->Window() == nullptr) return;
     BRect bounds = text->Bounds();
     const BPoint pos = ViewWindowPos(text, bounds.LeftTop());
     const BSize size(bounds.Width(), bounds.Height());
-    if (gWall.topicSerial == gWall.serial && gWall.topicDim == gWall.dim && gWall.topicPos == pos
-            && gWall.topicSize == size)
+    if (bar->serial == gWall.serial && bar->dim == gWall.dim && bar->pos == pos && bar->size == size)
         return;
 
     BRect r(0, 0, ceilf(bounds.Width()), ceilf(bounds.Height()));
     BBitmap* part = new BBitmap(r, B_RGB32, true);
     if (part->InitCheck() == B_OK && part->Lock()) {
-        BView* v = new BView(r, "topic_backdrop", B_FOLLOW_NONE, 0);
+        BView* v = new BView(r, "bar_backdrop", B_FOLLOW_NONE, 0);
         part->AddChild(v);
         bool done = DrawWallpaperPart(v, r, pos);
         v->Sync();
@@ -2376,8 +2386,8 @@ static void SyncTopicBackdrop() {
         if (done) {
             text->SetViewBitmap(part, part->Bounds(), BRect(bounds.left, bounds.top, bounds.left + r.right, bounds.top + r.bottom),
                 B_FOLLOW_LEFT | B_FOLLOW_TOP, 0);
-            gWall.topicSerial = gWall.serial; gWall.topicDim = gWall.dim;
-            gWall.topicPos = pos; gWall.topicSize = size;
+            bar->serial = gWall.serial; bar->dim = gWall.dim;
+            bar->pos = pos; bar->size = size;
             text->Invalidate();
         }
     }
@@ -2396,11 +2406,12 @@ public:
             BTextControl::Draw(updateRect);
             return;
         }
-        if (this != gWall.topic || !DrawWallpaperPart(this, updateRect, ViewWindowPos(this, updateRect.LeftTop()))) {
+        if ((this != gWall.bars[0].control && this != gWall.bars[1].control)
+                || !DrawWallpaperPart(this, updateRect, ViewWindowPos(this, updateRect.LeftTop()))) {
             SetHighColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
             FillRect(updateRect);
         } else {
-            SyncTopicBackdrop();
+            SyncBarBackdrop(this);
         }
         const char* text = Label();
         if (text != nullptr && text[0] != '\0') {
@@ -8381,11 +8392,13 @@ public:
         mainSplitter->AddChild(centerStackView, 0.73f); 
         mainSplitter->AddChild(userFrame, 0.11f);     
 
-        // the wallpaper is one picture across the three panes
+        // the wallpaper is one picture across the three panes and the input row
         gWall.canvas = mainSplitter;
         gWall.panes[0] = fChannelTree;
         gWall.panes[1] = fUserList;
-        gWall.topic = fTopicView;
+        gWall.bars[0].control = fTopicView;
+        gWall.bars[1].control = fInputControl;
+        gWall.below = inputFrame;
 
         channelFrame->SetExplicitPreferredSize(BSize(130, B_SIZE_UNLIMITED)); 
         userFrame->SetExplicitPreferredSize(BSize(110, B_SIZE_UNLIMITED));    
@@ -8532,8 +8545,9 @@ public:
 
     ~CricketWindow() {
         gWall.canvas = nullptr;
+        gWall.below = nullptr;
         gWall.panes[0] = gWall.panes[1] = nullptr;
-        gWall.topic = nullptr;
+        gWall.bars[0].control = gWall.bars[1].control = nullptr;
         // 0. Stop DCC first: cancels transfers and removes the router port mappings.
         if (gDccManager != nullptr) {
             gDccManager->Shutdown();
