@@ -42,7 +42,6 @@
 #include <QSettings>
 #include <QSplitter>
 #include <QStyleOptionViewItem>
-#include <QStatusBar>
 #include <QStyledItemDelegate>
 #include <QStyleOption>
 #include <QTextStream>
@@ -407,9 +406,6 @@ void MainWindow::buildUi()
     wl->setContentsMargins(6, 6, 6, 6);
     wl->addWidget(fSplitter);
     setCentralWidget(wrapper);
-
-    fStatusLabel = new QLabel;
-    statusBar()->addWidget(fStatusLabel, 1);
 
     // Typing anywhere in the chat log goes to the input line.
     fChat->installEventFilter(this);
@@ -816,20 +812,8 @@ void MainWindow::refreshTopic()
 void MainWindow::refreshStatus()
 {
     Session* s = currentSession();
-    if (!s) {
-        fStatusLabel->clear();
+    if (!s)
         return;
-    }
-    QString state;
-    if (s->conn->isRegistered())
-        state = tr("Connected as %1").arg(s->conn->nick());
-    else if (s->conn->isConnected())
-        state = tr("Connecting…");
-    else
-        state = tr("Disconnected");
-    if (s->away)
-        state += tr(" (away)");
-    fStatusLabel->setText(QString("%1 — %2").arg(s->profile().name, state));
     if (fAwayAction) {
         QSignalBlocker block(fAwayAction);
         fAwayAction->setChecked(s->away);

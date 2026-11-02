@@ -170,7 +170,6 @@ private:
     QListWidget* fUsers = nullptr;
     QLabel* fUserCount = nullptr;
     QWidget* fUserPanel = nullptr;
-    QLabel* fStatusLabel = nullptr;
     QAction* fAwayAction = nullptr;
     QPointer<ChannelModesDialog> fModesDialog;
     QTimer* fAwayPollTimer = nullptr;
