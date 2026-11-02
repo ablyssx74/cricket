@@ -14,6 +14,7 @@
 #include <QPointer>
 
 class ChatView;
+class WallpaperHost;
 class DccManager;
 class ChannelListDialog;
 class ChannelModesDialog;
@@ -91,6 +92,7 @@ private:
     void buildMenus();
     void applyRoundedEdges();
     void applyChatMargin();
+    void applyWallpaper();
     void clearChat();
     Session* createSession(bool custom, int index);
     void wireConnection(Session* s);
@@ -162,6 +164,7 @@ private:
     Buffer* fActive = nullptr;
 
     QSplitter* fSplitter = nullptr;
+    WallpaperHost* fWallpaper = nullptr;
     QTreeWidget* fTree = nullptr;
     OverlayBar* fOverlayBars[3] = {nullptr, nullptr, nullptr};
     QLineEdit* fTopic = nullptr;

@@ -7,9 +7,33 @@
 
 #include <QPixmap>
 #include <QTextBrowser>
+#include <QWidget>
 
-// Read-only chat log. Lines are appended as HTML paragraphs; an optional
-// background image is blended behind the text at the configured opacity.
+// The widget the server list, the chat and the user list lie on. It paints the wallpaper, one picture across the
+// rectangle of the canvas widget (the splitter that holds the three), blended over the base color at the configured
+// opacity; the three show it through their own backgrounds, which are made see-through while there is a picture.
+class WallpaperHost : public QWidget {
+    Q_OBJECT
+public:
+    explicit WallpaperHost(QWidget* parent = nullptr);
+
+    void setCanvas(QWidget* canvas);
+    void setWallpaper(const QString& path, int opacityPercent);
+    bool hasWallpaper() const { return !fImage.isNull(); }
+
+protected:
+    void paintEvent(QPaintEvent* e) override;
+
+private:
+    QWidget* fCanvas = nullptr;
+    QString fPath;
+    QPixmap fImage;
+    QPixmap fScaled;        // the picture scaled to fill the canvas, made again only when the canvas changes size
+    QSize fScaledFor;
+    int fOpacity = 30;
+};
+
+// Read-only chat log. Lines are appended as HTML paragraphs.
 class ChatView : public QTextBrowser {
     Q_OBJECT
 public:
@@ -17,7 +41,6 @@ public:
 
     void setLines(const QStringList& htmlLines);
     void appendLine(const QString& html);
-    void setBackgroundImage(const QString& path, int opacityPercent);
     bool isDark() const;
 
 signals:
@@ -27,15 +50,11 @@ signals:
 protected:
     void resizeEvent(QResizeEvent* e) override;
     void contextMenuEvent(QContextMenuEvent* e) override;
-    void changeEvent(QEvent* e) override;
 
 private:
-    void updateBackground();
     bool atBottom() const;
     void scrollToBottom();
 
-    QPixmap fImage;
-    int fOpacity = 30;
 };
 
 #endif

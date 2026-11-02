@@ -110,7 +110,8 @@ ServerDialog::ServerDialog(const ServerConfig& profile, bool isNew, QWidget* par
     fAutoConnect->setChecked(profile.autoConnect);
     fAutoReconnect = new QCheckBox(tr("Reconnect automatically when dropped"));
     fAutoReconnect->setChecked(profile.autoReconnect);
-    fHideStatus = new QCheckBox(tr("Hide join/part/quit messages"));
+    fHideStatus = new QCheckBox(tr("Hide All Channel Status Messages"));
+    fHideStatus->setToolTip(tr("Hides the joins, parts, quits, nick changes, kicks, mode changes and topic changes of other users."));
     fHideStatus->setChecked(profile.hideStatusMessages);
     fNickAlert = new QCheckBox(tr("Desktop notification when my nick is mentioned"));
     fNickAlert->setChecked(profile.nickAlert);

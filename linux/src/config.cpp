@@ -94,6 +94,7 @@ static QJsonObject serverToJson(const ServerConfig& srv)
     s["autoConnect"] = srv.autoConnect;
     s["autoReconnect"] = srv.autoReconnect;
     s["hideStatusMessages"] = srv.hideStatusMessages;
+    s["hideStatusChannels"] = toArray(srv.hideStatusChannels);
     s["timestampInterval"] = srv.timestampInterval;
     s["nick_alert"] = srv.nickAlert;
     s["use_sasl"] = srv.useSASL;
@@ -148,6 +149,7 @@ static ServerConfig serverFromJson(const QJsonObject& s, const QString& fallback
     srv.autoReconnect = s.value("autoReconnect").toBool(false);
     srv.autoConnect = s.value("autoConnect").toBool(false);
     srv.hideStatusMessages = s.value("hideStatusMessages").toBool(false);
+    srv.hideStatusChannels = fromArray(s.value("hideStatusChannels"));
     srv.timestampInterval = s.value("timestampInterval").toInt(cfg.timestampInterval);
     srv.nickAlert = s.value("nick_alert").toBool(true);
     srv.backgroundImagePath = s.value("background_image").toString();

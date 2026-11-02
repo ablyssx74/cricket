@@ -31,7 +31,8 @@ struct ServerConfig {
     QStringList autocmdlist;
     bool autoConnect = false;
     bool autoReconnect = false;
-    bool hideStatusMessages = false;
+    bool hideStatusMessages = false;       // hide all channel status messages (joins, parts, quits, nicks, kicks, modes, topics)
+    QStringList hideStatusChannels;        // channels whose joins, parts and quits are hidden
     bool enableEmoticons = true;
     QString backgroundImagePath;
     int backgroundOpacity = 30;

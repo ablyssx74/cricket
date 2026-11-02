@@ -100,6 +100,7 @@ enum {
     MSG_CONTEXT_CHAN_LIST = 'cxcl',
     MSG_CLEAR_LIST_ROW   = 'cllr',
     MSG_TOGGLE_HIDE_STATUS = 'tghs',
+    MSG_TOGGLE_HIDE_JOINPART = 'tghj',
     MSG_CONTEXT_ABOUT      = 'cxab',
     MSG_TOGGLE_AUTORECONNECT = 'tgar',
     MSG_RECONNECT_SERVER = 'rcsv',
@@ -369,7 +370,8 @@ struct ServerConfig {
     std::vector<std::string> autocmdlist; 
     bool autoConnect; 
     bool autoReconnect;
-    bool hideStatusMessages = false;
+    bool hideStatusMessages = false;     // hide all channel status messages (joins, parts, quits, nick changes, kicks, topic changes)
+    std::vector<std::string> hideStatusChannels; // channels whose joins, parts and quits are hidden
     bool enableEmoticons;    
     std::string backgroundImagePath; 
     int32 backgroundOpacity;     
@@ -417,6 +419,25 @@ struct Config {
     bool dccForcePassive = false;        // always offer files with passive DCC
 } cfg;
 
+// Whether the status lines of a server are hidden: with 'all' the server's option for everything (joins, parts, quits,
+// nick changes, kicks, topic changes); with a channel also that channel's own option for joins, parts and quits
+static bool ServerHidesStatus(const char* serverName, bool all, const char* channel = nullptr) {
+    const std::string name(serverName != nullptr ? serverName : "");
+    for (int custom = 0; custom < 2; custom++) {
+        const std::vector<ServerConfig>& list = custom ? cfg.customServers : cfg.servers;
+        for (size_t i = 0; i < list.size(); i++) {
+            if (list[i].name != name) continue;
+            if (list[i].hideStatusMessages) return true;
+            if (all || channel == nullptr) return false;
+            for (size_t c = 0; c < list[i].hideStatusChannels.size(); c++) {
+                if (strcasecmp(list[i].hideStatusChannels[c].c_str(), channel) == 0) return true;
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
 // A list item that is as wide as it can be, so that the list redraws the whole row when the
 // item changes (selected, deselected, new text). An item as wide as its text leaves the rest of
 // the row alone, and the pill of a selection that moved on is left behind there.
@@ -431,14 +452,173 @@ public:
     }
 };
 
+// One wallpaper across the server list, the chat and the user list: the picture is scaled to the box
+// the three lie in (the splitter), dimmed, and each of them shows the part of it that lies under it,
+// so it is one piece and not three.
+struct SharedWallpaper {
+    BBitmap* source = nullptr;          // the picture (owned by the chat view's picture cache); nullptr = none
+    int32    dim = 30;
+    BView*   canvas = nullptr;          // the view the three lie in
+    BView*   panes[2] = { nullptr, nullptr };   // the server list and the user list (the chat view is the third)
+    BTextControl* topic = nullptr;      // the topic bar over the chat: it shows the wallpaper too
+    uint32   topicSerial = 0;           // which picture, and where, the topic's text view has its background from
+    BPoint   topicPos;
+    BSize    topicSize;
+    int32    topicDim = -1;
+    BBitmap* cache = nullptr;           // the picture scaled to the canvas and dimmed, ready to copy
+    BBitmap* cacheSource = nullptr;
+    int32    cacheW = 0, cacheH = 0, cacheDim = -1;
+    bool     cacheLight = false;
+    bool     resizing = false;          // the window is being resized: the picture of the old size is stretched
+    uint32   serial = 0;                // changes with every new cache
+};
+static SharedWallpaper gWall;
+
+static bool IsWallpaperPane(const BView* view) {
+    return view != nullptr && (view == gWall.panes[0] || view == gWall.panes[1]);
+}
+
+// A scroll bar beside a list that shows the wallpaper shows it under its thumb too
+static bool IsWallpaperBar(const BScrollBar* bar) {
+    return bar != nullptr && IsWallpaperPane(bar->Target());
+}
+
+static bool WallpaperActive() {
+    return gWall.source != nullptr && gWall.canvas != nullptr && gWall.canvas->Window() != nullptr;
+}
+
+// Where a point of a view lies in the window
+static BPoint ViewWindowPos(BView* view, BPoint point) {
+    return view->ConvertToScreen(point) - view->Window()->Frame().LeftTop();
+}
+
+// The picture or its dimming changed: the lists show it (they draw their own background then) or not
+static void WallpaperChanged() {
+    const bool on = gWall.source != nullptr;
+    for (int i = 0; i < 2; i++) {
+        BView* pane = gWall.panes[i];
+        if (pane == nullptr || pane->Window() == nullptr) continue;
+        // (the picture is also set from Show(), which does not run in the window's thread)
+        if (!pane->LockLooper()) continue;
+        if (on) pane->SetViewColor(B_TRANSPARENT_COLOR);
+        else pane->SetViewUIColor(B_LIST_BACKGROUND_COLOR);
+        pane->Invalidate();
+        // the bar beside it
+        BView* box = pane->Parent();
+        for (int32 c = 0; box != nullptr && c < box->CountChildren(); c++)
+            box->ChildAt(c)->Invalidate();
+        pane->UnlockLooper();
+    }
+
+    // The topic bar: its text view draws no background of its own (what lies under it is the picture, drawn by
+    // the bar), and its text is laid over that
+    BTextControl* topic = gWall.topic;
+    if (topic != nullptr && topic->Window() != nullptr && topic->LockLooper()) {
+        BTextView* text = topic->TextView();
+        if (text != nullptr) {
+            if (on && cfg.roundedEdges) {
+                text->SetViewColor(B_TRANSPARENT_COLOR);
+                text->SetDrawingMode(B_OP_ALPHA);
+                text->SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+            } else {
+                text->ClearViewBitmap();
+                text->SetViewUIColor(B_DOCUMENT_BACKGROUND_COLOR);
+                text->SetLowColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
+                text->SetDrawingMode(B_OP_COPY);
+                gWall.topicSerial = 0;
+            }
+            text->Invalidate();
+        }
+        topic->Invalidate();
+        topic->UnlockLooper();
+    }
+}
+
+static BBitmap* WallpaperPicture(int32 w, int32 h, bool light) {
+    if (gWall.cache != nullptr && gWall.cacheSource == gWall.source && gWall.cacheDim == gWall.dim
+            && gWall.cacheLight == light && ((gWall.cacheW == w && gWall.cacheH == h) || gWall.resizing))
+        return gWall.cache;
+
+    delete gWall.cache;
+    gWall.cache = nullptr;
+    gWall.cacheSource = gWall.source;
+    gWall.cacheW = w; gWall.cacheH = h; gWall.cacheDim = gWall.dim; gWall.cacheLight = light;
+    gWall.serial++;
+
+    BRect r(0, 0, w - 1, h - 1);
+    BBitmap* off = new BBitmap(r, B_RGB32, true);
+    if (off->InitCheck() != B_OK || !off->Lock()) {
+        delete off;
+        return nullptr;
+    }
+    BView* v = new BView(r, "wallpaper", B_FOLLOW_NONE, 0);
+    off->AddChild(v);
+    v->SetDrawingMode(B_OP_COPY);
+    v->DrawBitmap(gWall.source, r);
+    if (gWall.dim > 0) {
+        // over light themes wash with white, over dark themes dim with black
+        uint8 alpha = (uint8)((gWall.dim / 100.0f) * 255.0f);
+        v->SetHighColor(light ? rgb_color{ 255, 255, 255, alpha } : rgb_color{ 0, 0, 0, alpha });
+        v->SetDrawingMode(B_OP_ALPHA);
+        v->FillRect(r);
+        v->SetDrawingMode(B_OP_COPY);
+    }
+    v->Sync();
+    off->Unlock();
+    gWall.cache = off;
+    return off;
+}
+
+// Draws into dest of target the part of the picture that lies at windowPos, the window coordinates of
+// dest's corner. False if there is no picture (the caller paints its own background then).
+static bool DrawWallpaperPart(BView* target, BRect dest, BPoint windowPos) {
+    if (!WallpaperActive()) return false;
+    BRect canvasBounds = gWall.canvas->Bounds();
+    const int32 w = (int32)ceilf(canvasBounds.Width() + 1.0f);
+    const int32 h = (int32)ceilf(canvasBounds.Height() + 1.0f);
+    if (w < 2 || h < 2) return false;
+    const rgb_color doc = ui_color(B_DOCUMENT_BACKGROUND_COLOR);
+    const bool light = (0.2126f * doc.red + 0.7152f * doc.green + 0.0722f * doc.blue) > 128.0f;
+    BBitmap* picture = WallpaperPicture(w, h, light);
+    if (picture == nullptr) return false;
+
+    // (the picture of the old size is stretched while the window is resized)
+    const float sx = (float)gWall.cacheW / w;
+    const float sy = (float)gWall.cacheH / h;
+    const BPoint origin = ViewWindowPos(gWall.canvas, BPoint(0, 0));
+    BRect source((windowPos.x - origin.x) * sx, (windowPos.y - origin.y) * sy, 0, 0);
+    source.right = source.left + dest.Width() * sx;
+    source.bottom = source.top + dest.Height() * sy;
+
+    // what lies outside the picture (a pixel of rounding) is left out
+    BRect inside = source & picture->Bounds();
+    if (!inside.IsValid()) return false;
+    dest.left += (inside.left - source.left) / sx;
+    dest.top += (inside.top - source.top) / sy;
+    dest.right -= (source.right - inside.right) / sx;
+    dest.bottom -= (source.bottom - inside.bottom) / sy;
+
+    target->SetDrawingMode(B_OP_COPY);
+    target->DrawBitmap(picture, inside, dest);
+    return true;
+}
+
+// The picture behind what a list draws (the part that is to be drawn over)
+static void PaintWallpaperBehind(BView* list, BRect updateRect) {
+    if (IsWallpaperPane(list))
+        DrawWallpaperPart(list, updateRect, ViewWindowPos(list, updateRect.LeftTop()));
+}
+
 // The background of a list row. A selected row is a rounded pill when Rounded Edges is on.
 static void FillListRowBackground(BView* owner, BRect rect, bool selected) {
     // The row is the whole width of the list: the items are made that wide (see
     // WideRowItem below), but a row is drawn over the visible width in any case
     rect.left = owner->Bounds().left;
     rect.right = owner->Bounds().right;
-    owner->SetHighColor(ui_color(B_LIST_BACKGROUND_COLOR));
-    owner->FillRect(rect);
+    if (!IsWallpaperPane(owner) || !DrawWallpaperPart(owner, rect, ViewWindowPos(owner, rect.LeftTop()))) {
+        owner->SetHighColor(ui_color(B_LIST_BACKGROUND_COLOR));
+        owner->FillRect(rect);
+    }
     if (!selected) return;
     if (cfg.roundedEdges) {
         BRect pill = rect;
@@ -515,6 +695,7 @@ void save_config() {
         s["autoConnect"] = srv.autoConnect; 
         s["autoReconnect"] = srv.autoReconnect;
         s["hideStatusMessages"] = srv.hideStatusMessages; 
+        s["hideStatusChannels"] = srv.hideStatusChannels;
         s["timestampInterval"] = srv.timestampInterval;
         s["nick_alert"] = srv.nickAlert;
 
@@ -596,6 +777,7 @@ void save_config() {
         s["autoConnect"] = srv.autoConnect; 
         s["autoReconnect"] = srv.autoReconnect;
         s["hideStatusMessages"] = srv.hideStatusMessages; 
+        s["hideStatusChannels"] = srv.hideStatusChannels;
         s["timestampInterval"] = srv.timestampInterval;
         s["nick_alert"] = srv.nickAlert;
 
@@ -756,6 +938,7 @@ void load_config() {
                         srv.autoReconnect = s.value("autoReconnect", false); 
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
+                        srv.hideStatusChannels = s.value("hideStatusChannels", std::vector<std::string>());
                         srv.timestampInterval = s.value("timestampInterval", cfg.timestampInterval);
                         srv.nickAlert = s.value("nick_alert", true);
 
@@ -840,6 +1023,7 @@ void load_config() {
                         srv.autoReconnect = s.value("autoReconnect", false); 
                         srv.autoConnect = s.value("autoConnect", false); 
                         srv.hideStatusMessages = s.value("hideStatusMessages", false);
+                        srv.hideStatusChannels = s.value("hideStatusChannels", std::vector<std::string>());
                         srv.timestampInterval = s.value("timestampInterval", cfg.timestampInterval);
                         srv.nickAlert = s.value("nick_alert", true);
 						srv.backgroundImagePath = s.value("background_image", ""); 
@@ -1819,7 +2003,7 @@ public:
         }
         if (backdrop != nullptr) {
             DrawBitmap(backdrop, Frame(), Bounds());     // the part of the box's picture under the bar
-        } else {
+        } else if (!IsWallpaperBar(this) || !DrawWallpaperPart(this, updateRect, ViewWindowPos(this, updateRect.LeftTop()))) {
             SetHighColor(ui_color(fBackground));
             FillRect(updateRect);
         }
@@ -2148,6 +2332,9 @@ public:
     virtual BListItem* RemoveItem(int32 fullListIndex) override { BListItem* r = BOutlineListView::RemoveItem(fullListIndex); ScrollNeedChanged(); return r; }
     virtual void MakeEmpty() override { BOutlineListView::MakeEmpty(); ScrollNeedChanged(); }
     virtual void FrameResized(float width, float height) override { BOutlineListView::FrameResized(width, height); ScrollNeedChanged(); }
+    // the wallpaper lies still under the rows that scroll
+    virtual void Draw(BRect updateRect) override { PaintWallpaperBehind(this, updateRect); BOutlineListView::Draw(updateRect); }
+    virtual void ScrollTo(BPoint where) override { BOutlineListView::ScrollTo(where); if (IsWallpaperPane(this)) Invalidate(); }
 
 private:
     void ScrollNeedChanged() {
@@ -2155,6 +2342,47 @@ private:
         if (view != nullptr) view->UpdateBar();
     }
 };
+
+// The user list: shows the wallpaper behind its rows
+class UserListView : public BListView {
+public:
+    UserListView(const char* name) : BListView(name) {}
+
+    virtual void Draw(BRect updateRect) override { PaintWallpaperBehind(this, updateRect); BListView::Draw(updateRect); }
+    virtual void ScrollTo(BPoint where) override { BListView::ScrollTo(where); if (IsWallpaperPane(this)) Invalidate(); }
+};
+
+// The picture under the topic's text view, as the view's own background bitmap (a child is drawn over its parent's
+// background, so the text view has to bring the picture itself; it draws its text over it without a background)
+static void SyncTopicBackdrop() {
+    BTextControl* topic = gWall.topic;
+    BTextView* text = topic != nullptr ? topic->TextView() : nullptr;
+    if (text == nullptr || topic->Window() == nullptr) return;
+    BRect bounds = text->Bounds();
+    const BPoint pos = ViewWindowPos(text, bounds.LeftTop());
+    const BSize size(bounds.Width(), bounds.Height());
+    if (gWall.topicSerial == gWall.serial && gWall.topicDim == gWall.dim && gWall.topicPos == pos
+            && gWall.topicSize == size)
+        return;
+
+    BRect r(0, 0, ceilf(bounds.Width()), ceilf(bounds.Height()));
+    BBitmap* part = new BBitmap(r, B_RGB32, true);
+    if (part->InitCheck() == B_OK && part->Lock()) {
+        BView* v = new BView(r, "topic_backdrop", B_FOLLOW_NONE, 0);
+        part->AddChild(v);
+        bool done = DrawWallpaperPart(v, r, pos);
+        v->Sync();
+        part->Unlock();
+        if (done) {
+            text->SetViewBitmap(part, part->Bounds(), BRect(bounds.left, bounds.top, bounds.left + r.right, bounds.top + r.bottom),
+                B_FOLLOW_LEFT | B_FOLLOW_TOP, 0);
+            gWall.topicSerial = gWall.serial; gWall.topicDim = gWall.dim;
+            gWall.topicPos = pos; gWall.topicSize = size;
+            text->Invalidate();
+        }
+    }
+    delete part;
+}
 
 // A BTextControl without its square frame while Rounded Edges is on (the RoundedFrame round it
 // is its frame then). The label is still drawn.
@@ -2168,8 +2396,12 @@ public:
             BTextControl::Draw(updateRect);
             return;
         }
-        SetHighColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
-        FillRect(updateRect);
+        if (this != gWall.topic || !DrawWallpaperPart(this, updateRect, ViewWindowPos(this, updateRect.LeftTop()))) {
+            SetHighColor(ui_color(B_DOCUMENT_BACKGROUND_COLOR));
+            FillRect(updateRect);
+        } else {
+            SyncTopicBackdrop();
+        }
         const char* text = Label();
         if (text != nullptr && text[0] != '\0') {
             font_height fh;
@@ -2267,16 +2499,14 @@ private:
     BBitmap* fBackgroundBitmap;      // the picture (owned by fPictureCache)
     BString  fBackgroundPath;        // the file fBackgroundBitmap was read from
     std::map<std::string, BBitmap*> fPictureCache;   // pictures already read, by file
-    BBitmap* fWallpaperCache;        // the picture scaled to the view and dimmed, ready to copy
     BBitmap* fBoxCache;              // the whole box (picture, outline, rounded corners), ready to copy
     int32    fBoxW, fBoxH, fBoxDim;
     bool     fBoxLight;
     uint32   fBoxColors;
+    BPoint   fBoxPos;                // where the box lay in the window, and which shared picture, when it was made
+    uint32   fBoxSerial;
     BBitmap* fBoxSource;
     bool     fBoxMode;               // Rounded Edges: this view fills the whole box and draws it
-    int32    fWallpaperW, fWallpaperH, fWallpaperDim;
-    bool     fWallpaperLight;
-    BBitmap* fWallpaperSource;
     int32    fBackgroundDimmingLevel; 
     bool     fIsSelecting;       // Is the user actively dragging the mouse?
     bool     fBarGrab = false;   // is the scroll bar's thumb held? (the bar lies over this view)
@@ -2301,11 +2531,8 @@ CustomChatView::CustomChatView(BRect frame, const char* name, uint32 resizingMod
       fLines(20),
       fBulk(false),
       fBackgroundBitmap(nullptr),
-      fWallpaperCache(nullptr),
-      fBoxCache(nullptr), fBoxW(0), fBoxH(0), fBoxDim(-1), fBoxLight(false), fBoxColors(0),
+      fBoxCache(nullptr), fBoxW(0), fBoxH(0), fBoxDim(-1), fBoxLight(false), fBoxColors(0), fBoxPos(-1, -1), fBoxSerial(0),
       fBoxSource(nullptr), fBoxMode(false),
-      fWallpaperW(0), fWallpaperH(0), fWallpaperDim(-1), fWallpaperLight(false),
-      fWallpaperSource(nullptr),
       fBackgroundDimmingLevel(30), 
       fServerIdx(0),
       fIsCustom(false)
@@ -2704,6 +2931,8 @@ void CustomChatView::SetBackgroundDimming(int32 level)
     fBackgroundDimmingLevel = level;
     if (fBackgroundDimmingLevel < 0) fBackgroundDimmingLevel = 0;
     if (fBackgroundDimmingLevel > 100) fBackgroundDimmingLevel = 100;
+    gWall.dim = fBackgroundDimmingLevel;
+    WallpaperChanged();
     Invalidate(); // Refresh canvas
     if (fBoxMode && Parent() != nullptr) Parent()->Invalidate();    // the bar shows part of it
 }
@@ -2779,6 +3008,7 @@ void CustomChatView::FrameResized(float newWidth, float newHeight) {
     // (each step would wait for them): the old wraps and the stretched pictures stand in, and one timer that is started again
     // by every step does the work once the dragging pauses. A short channel is wrapped at every step, that is cheap.
     fResizing = true;
+    gWall.resizing = true;
     delete fResizeRunner;
     BMessage done('rszD');
     fResizeRunner = new BMessageRunner(BMessenger(this), &done, 80000, 1);
@@ -2828,7 +3058,6 @@ void CustomChatView::RewrapNewestLines(bigtime_t budget)
 
 CustomChatView::~CustomChatView() {
 	delete fResizeRunner;
-	delete fWallpaperCache;
 	delete fBoxCache;
 	for (auto it = fPictureCache.begin(); it != fPictureCache.end(); ++it)
 		delete it->second;
@@ -3181,6 +3410,8 @@ void CustomChatView::MessageReceived(BMessage* message) {
             delete fResizeRunner;
             fResizeRunner = nullptr;
             fResizing = false;
+            gWall.resizing = false;
+            WallpaperChanged();             // the lists take the picture of the size the window has now
             RecalculateAllLineWraps();      // (draws again)
             break;
         }
@@ -3370,62 +3601,8 @@ void CustomChatView::Draw(BRect updateRect) {
         else
             DrawBitmap(boxPicture, Bounds().LeftTop());
     } else
-    // --- BRANCH A: SCALED CUSTOM BACKGROUND REFRESH ---
-    if (fBackgroundBitmap != nullptr) {
-        // The picture scaled to the view and dimmed is made once, then only copied
-        BRect bounds = Bounds();
-        const int32 w = (int32)ceilf(bounds.Width() + 1.0f);
-        const int32 h = (int32)ceilf(bounds.Height() + 1.0f);
-        // (while the window is resized the picture of the old size is stretched instead of made again at every step)
-        const bool wallpaperStretched = fResizing && fWallpaperCache != nullptr && fWallpaperSource == fBackgroundBitmap
-                && fWallpaperDim == fBackgroundDimmingLevel && fWallpaperLight == isLightTheme
-                && (fWallpaperW != w || fWallpaperH != h);
-        if (!wallpaperStretched && (fWallpaperCache == nullptr || fWallpaperSource != fBackgroundBitmap
-                || fWallpaperW != w || fWallpaperH != h
-                || fWallpaperDim != fBackgroundDimmingLevel || fWallpaperLight != isLightTheme)) {
-            delete fWallpaperCache;
-            fWallpaperCache = nullptr;
-            BRect r(0, 0, w - 1, h - 1);
-            BBitmap* off = new BBitmap(r, B_RGB32, true);
-            if (off->InitCheck() == B_OK && off->Lock()) {
-                BView* v = new BView(r, "wallpaper", B_FOLLOW_NONE, 0);
-                off->AddChild(v);
-                v->SetDrawingMode(B_OP_COPY);
-                v->DrawBitmap(fBackgroundBitmap, r);
-
-                // --- DIMMING OVERLAY ---
-                if (fBackgroundDimmingLevel > 0) {
-                    uint8 alphaIntensity = (uint8)((fBackgroundDimmingLevel / 100.0f) * 255.0f);
-
-                    // Over light themes, wash with white. Over dark themes, dim with black.
-                    rgb_color dimColor = isLightTheme ? rgb_color{ 255, 255, 255, alphaIntensity }
-                                                      : rgb_color{ 0, 0, 0, alphaIntensity };
-
-                    v->SetHighColor(dimColor);
-                    v->SetDrawingMode(B_OP_ALPHA);
-                    v->FillRect(r);
-                    v->SetDrawingMode(B_OP_COPY);
-                }
-                v->Sync();
-                off->Unlock();
-                fWallpaperCache = off;
-            } else {
-                delete off;
-            }
-            fWallpaperSource = fBackgroundBitmap;
-            fWallpaperW = w; fWallpaperH = h;
-            fWallpaperDim = fBackgroundDimmingLevel; fWallpaperLight = isLightTheme;
-        }
-
-        SetDrawingMode(B_OP_COPY);
-        if (wallpaperStretched) {
-            DrawBitmap(fWallpaperCache, bounds);
-        } else if (fWallpaperCache != nullptr) {
-            DrawBitmap(fWallpaperCache, bounds.LeftTop());
-        } else {
-            DrawBitmap(fBackgroundBitmap, bounds);
-        }
-    } else {
+    // --- BRANCH A: THE PART OF THE SHARED WALLPAPER THAT LIES UNDER THIS VIEW ---
+    if (fBackgroundBitmap == nullptr || !DrawWallpaperPart(this, updateRect, ViewWindowPos(this, updateRect.LeftTop()))) {
         SetHighColor(systemBgColor); 
         FillRect(updateRect); 
     }
@@ -4229,6 +4406,8 @@ void CustomChatView::SetBackgroundImage(const char* filePath)
         }
     }
 
+    gWall.source = fBackgroundBitmap;
+    WallpaperChanged();
     Invalidate();
     if (fBoxMode && Parent() != nullptr) Parent()->Invalidate();    // the bar shows part of it
 }
@@ -4254,8 +4433,10 @@ BBitmap* CustomChatView::BoxBackdrop(int32 w, int32 h)
         ^ ((uint32)doc.red << 20) ^ ((uint32)doc.green << 12) ^ ((uint32)doc.blue << 4)
         ^ ((uint32)border.red << 18) ^ ((uint32)border.blue << 2);
 
+    const BPoint pos = Window() != nullptr ? ViewWindowPos(this, Bounds().LeftTop()) : BPoint(0, 0);
     if (fBoxCache != nullptr && fBoxW == w && fBoxH == h && fBoxSource == fBackgroundBitmap
-            && fBoxDim == fBackgroundDimmingLevel && fBoxLight == isLight && fBoxColors == colors)
+            && fBoxDim == fBackgroundDimmingLevel && fBoxLight == isLight && fBoxColors == colors
+            && fBoxPos == pos && fBoxSerial == gWall.serial)
         return fBoxCache;
     // while the window is resized the box of the old size stands in (Draw stretches it); nothing is made at every step
     if (fResizing && fBoxCache != nullptr && fBoxSource == fBackgroundBitmap && fBoxDim == fBackgroundDimmingLevel
@@ -4266,6 +4447,7 @@ BBitmap* CustomChatView::BoxBackdrop(int32 w, int32 h)
     fBoxCache = nullptr;
     fBoxSource = fBackgroundBitmap;
     fBoxW = w; fBoxH = h; fBoxDim = fBackgroundDimmingLevel; fBoxLight = isLight; fBoxColors = colors;
+    fBoxPos = pos;
 
     BRect r(0, 0, w - 1, h - 1);
     BBitmap* off = new BBitmap(r, B_RGB32, true);
@@ -4275,19 +4457,8 @@ BBitmap* CustomChatView::BoxBackdrop(int32 w, int32 h)
     }
     BView* v = new BView(r, "box", B_FOLLOW_NONE, 0);
     off->AddChild(v);
-    if (fBackgroundBitmap != nullptr) {
-        v->SetDrawingMode(B_OP_COPY);
-        v->DrawBitmap(fBackgroundBitmap, r);
-        if (fBackgroundDimmingLevel > 0) {
-            uint8 alphaIntensity = (uint8)((fBackgroundDimmingLevel / 100.0f) * 255.0f);
-            rgb_color dimColor = isLight ? rgb_color{ 255, 255, 255, alphaIntensity }
-                                         : rgb_color{ 0, 0, 0, alphaIntensity };
-            v->SetHighColor(dimColor);
-            v->SetDrawingMode(B_OP_ALPHA);
-            v->FillRect(r);
-            v->SetDrawingMode(B_OP_COPY);
-        }
-    } else {
+    // (the part of the shared picture that lies under the box)
+    if (fBackgroundBitmap == nullptr || !DrawWallpaperPart(v, r, pos)) {
         v->SetHighColor(doc);
         v->FillRect(r);
     }
@@ -4341,6 +4512,7 @@ BBitmap* CustomChatView::BoxBackdrop(int32 w, int32 h)
             }
         }
     }
+    fBoxSerial = gWall.serial;
     fBoxCache = off;
     return fBoxCache;
 }
@@ -5286,9 +5458,9 @@ public:
         fAutoReconnectCheck->SetValue(srv.autoReconnect ? B_CONTROL_ON : B_CONTROL_OFF);
         fAutoReconnectCheck->SetToolTip("Attempt to automatically reconnect if the network connection drops unexpectedly.");
 
-        fHideStatusCheck = new BCheckBox("hidestatus", "Hide channel status messages (Joins/Parts/Quits)", nullptr);
+        fHideStatusCheck = new BCheckBox("hidestatus", "Hide All Channel Status Messages", nullptr);
         fHideStatusCheck->SetValue(srv.hideStatusMessages ? B_CONTROL_ON : B_CONTROL_OFF);
-        fHideStatusCheck->SetToolTip("Hides user join, part, and quit messages to keep busy chat channels less cluttered.");
+        fHideStatusCheck->SetToolTip("Hides the joins, parts, quits, nick changes, kicks and topic changes of other users.");
 
         fDebugEnableCheck = new BCheckBox("debug", "Enable Debug log to termnial", nullptr);
         fDebugEnableCheck->SetValue(cfg.debugEnable ? B_CONTROL_ON : B_CONTROL_OFF);
@@ -8122,7 +8294,7 @@ public:
         // --- NEW: Layout-Safe Group View Container Setup ---
         fChatContainer = new BGroupView(B_VERTICAL, 0);
         
-        fUserList = new BListView("user_list");
+        fUserList = new UserListView("user_list");
         fUserList->SetFlags(fUserList->Flags() | B_FULL_UPDATE_ON_RESIZE);
         
         // 1. Change the Selection Message so it doesn't trick the app into thinking a context click happened on every left-click
@@ -8208,6 +8380,12 @@ public:
         mainSplitter->AddChild(channelFrame, 0.16f);  
         mainSplitter->AddChild(centerStackView, 0.73f); 
         mainSplitter->AddChild(userFrame, 0.11f);     
+
+        // the wallpaper is one picture across the three panes
+        gWall.canvas = mainSplitter;
+        gWall.panes[0] = fChannelTree;
+        gWall.panes[1] = fUserList;
+        gWall.topic = fTopicView;
 
         channelFrame->SetExplicitPreferredSize(BSize(130, B_SIZE_UNLIMITED)); 
         userFrame->SetExplicitPreferredSize(BSize(110, B_SIZE_UNLIMITED));    
@@ -8353,6 +8531,9 @@ public:
     int32 GetServerIndexFromNode(BStringItem* node);
 
     ~CricketWindow() {
+        gWall.canvas = nullptr;
+        gWall.panes[0] = gWall.panes[1] = nullptr;
+        gWall.topic = nullptr;
         // 0. Stop DCC first: cancels transfers and removes the router port mappings.
         if (gDccManager != nullptr) {
             gDccManager->Shutdown();
@@ -8583,6 +8764,7 @@ public:
 			fRoundFrames[i]->Apply();
 		if (fTopicView) fTopicView->Invalidate();
 		if (fInputControl) fInputControl->Invalidate();
+		WallpaperChanged();
 	}
 
 	// The BTextView engine's view for this channel, put in place of the one shown.
@@ -8915,12 +9097,41 @@ private:
 	    ChannelTreeItem* chanItem = dynamic_cast<ChannelTreeItem*>(item);
 	    if (chanItem != nullptr) {
 	        BPopUpMenu* menu = new BPopUpMenu("ChannelOptions", false, false);
+
+	        // Buffers that are not IRC channels (private chats, DCC chats) can only be removed
+	        {
+	            const char firstChar = chanItem->Text()[0];
+	            if (firstChar != '#' && firstChar != '&' && firstChar != '!' && firstChar != '+') {
+	                BMessage* onlyRemoveMsg = new BMessage('rmch');
+	                onlyRemoveMsg->AddPointer("channel_item", chanItem);
+	                menu->AddItem(new BMenuItem("Remove Channel", onlyRemoveMsg));
+	                menu->SetTargetForItems(this);
+	                RoundMenus::BeginPopup(menu, screenPoint);
+	                menu->Go(screenPoint, true, true, true);
+	                return;
+	            }
+	        }
 	        
 	        BString label = chanItem->IsAutoJoin() ? "Disable Auto-Join" : "Enable Auto-Join";
 	        BMessage* toggleMsg = new BMessage(MSG_TOGGLE_AUTOJOIN);
 	        toggleMsg->AddPointer("chan_item", chanItem); 
 	        menu->AddItem(new BMenuItem(label.String(), toggleMsg));
 	        
+        // Hides the join, part and quit lines of this channel only
+        BMessage* hideJoinPartMsg = new BMessage(MSG_TOGGLE_HIDE_JOINPART);
+        hideJoinPartMsg->AddPointer("chan_item", chanItem);
+        BMenuItem* hideJoinPartItem = new BMenuItem("Hide Channel Status Messages", hideJoinPartMsg);
+        {
+            ServerTreeItem* chanServer = dynamic_cast<ServerTreeItem*>(fChannelTree->Superitem(chanItem));
+            BString chanName(chanItem->Text());
+            int32 chanTag = chanName.FindFirst(" [");
+            if (chanTag != B_ERROR) chanName.Truncate(chanTag);
+            chanName.Trim();
+            if (chanServer != nullptr && ServerHidesStatus(chanServer->Text(), false, chanName.String()))
+                hideJoinPartItem->SetMarked(true);
+        }
+        menu->AddItem(hideJoinPartItem);
+
 	        menu->AddSeparatorItem();
 	        
 	             // 1. Determine active Operator capability status for this specific channel tab
@@ -9051,7 +9262,7 @@ private:
 	        menu->AddItem(reconnectMenuItem);
 	        
 	        // Status Messages Suppression Option
-	        BString toggleStatusLabel = "Hide Status Messages";
+	        BString toggleStatusLabel = "Hide All Channel Status Messages";
 	        BMessage* toggleStatusMsg = new BMessage(MSG_TOGGLE_HIDE_STATUS);
 	        toggleStatusMsg->AddPointer("server_item", srvItem);
 	        BMenuItem* statusMenuItem = new BMenuItem(toggleStatusLabel.String(), toggleStatusMsg);
@@ -9784,14 +9995,13 @@ private:
         bool foundServerInConfig = false;
         size_t resolvedIndex = 0;
         bool resolvedIsCustom = false;
-        bool hideStatusOnThisServer = false;
+        const bool hideStatusOnThisServer = ServerHidesStatus(contextServer->Text(), false, channelJoined.String());
 
         for (size_t i = 0; i < cfg.servers.size(); i++) {
             if (cfg.servers[i].name == targetServerName) {
                 resolvedIndex = i;
                 resolvedIsCustom = false;
-                hideStatusOnThisServer = cfg.servers[i].hideStatusMessages;
-                foundServerInConfig = true;
+                                foundServerInConfig = true;
                 break;
             }
         }
@@ -9800,7 +10010,6 @@ private:
                 if (cfg.customServers[i].name == targetServerName) {
                     resolvedIndex = i;
                     resolvedIsCustom = true;
-                    hideStatusOnThisServer = cfg.customServers[i].hideStatusMessages;
                     foundServerInConfig = true;
                     break;
                 }
@@ -11131,7 +11340,8 @@ private:
                             } else {
                                 logLine << "\n";
                             }
-                            LogToItemBuffer(chanNode, logLine);
+                            if (!ServerHidesStatus(contextServer->Text(), true) || targetNick.ICompare(fMyNick) == 0)
+                                LogToItemBuffer(chanNode, logLine);
 
                             if (fActiveBufferItem == chanNode) {
                                 RefreshUserListUI();
@@ -11373,24 +11583,13 @@ private:
                             // Since the list is "Owning" (true), this automatically calls delete for you.
                             userVector->RemoveItemAt(i);
                             
-                            // Check "Hide Status Messages" preference
-                            bool hideStatusOnThisServer = false;
-                            std::string checkServerName = contextServer->Text();
-                            for (const auto& srv : cfg.servers) {
-                                if (srv.name == checkServerName) { 
-                                    hideStatusOnThisServer = srv.hideStatusMessages; 
-                                    break; 
-                                }
-                            }
-                            if (!hideStatusOnThisServer) {
-                                for (const auto& srv : cfg.customServers) {
-                                    if (srv.name == checkServerName) { 
-                                        hideStatusOnThisServer = srv.hideStatusMessages; 
-                                        break; 
-                                    }
-                                }
-                            }
-                            
+                            // Check "Hide Status Messages" preference of the server and of this channel
+                            BString statusChanName(chanNode->Text());
+                            int32 statusTag = statusChanName.FindFirst(" [");
+                            if (statusTag != B_ERROR) statusChanName.Truncate(statusTag);
+                            statusChanName.Trim();
+                            const bool hideStatusOnThisServer = ServerHidesStatus(contextServer->Text(), false, statusChanName.String());
+
                             if (!hideStatusOnThisServer) {
                                 BString partNotice = (command == "PART") ? "has left" : "has quit";
                                 BString logLine;
@@ -11723,7 +11922,8 @@ private:
                     int32 exclamIdx = changingUser.FindFirst("!");
                     if (exclamIdx != B_ERROR) changingUser.Truncate(exclamIdx);
                     
-                    LogToItemBuffer(chanNode, BString("--- ") << changingUser << " has changed the topic to: " << dynamicTopic << "\n");
+                    if (!ServerHidesStatus(contextServer->Text(), true))
+                        LogToItemBuffer(chanNode, BString("--- ") << changingUser << " has changed the topic to: " << dynamicTopic << "\n");
                 } else {
                     LogToItemBuffer(chanNode, "--- No channel topic is set.\n");
                 }
@@ -12024,7 +12224,8 @@ private:
                             
                             BString nickNotice;
                             nickNotice << "--- " << oldNick << " is now known as " << newNick << "\n";
-                            LogToItemBuffer(chanNode, nickNotice);
+                            if (!ServerHidesStatus(contextServer->Text(), true))
+                                LogToItemBuffer(chanNode, nickNotice);
                             
                             // Force the UI to refresh live if the nickname changed in the active channel view
                             if (fActiveBufferItem == chanNode) {
@@ -15137,6 +15338,34 @@ public:
             }
 
         	
+		    case MSG_TOGGLE_HIDE_JOINPART: {
+        		ChannelTreeItem* chanItem = nullptr;
+        		if (message->FindPointer("chan_item", (void**)&chanItem) == B_OK && chanItem != nullptr) {
+            		ServerTreeItem* item = dynamic_cast<ServerTreeItem*>(fChannelTree->Superitem(chanItem));
+            		if (item == nullptr) break;
+            		BString chanName(chanItem->Text());
+            		int32 chanTag = chanName.FindFirst(" [");
+            		if (chanTag != B_ERROR) chanName.Truncate(chanTag);
+            		chanName.Trim();
+            		size_t targetIndex = item->GetIndex();
+            		std::vector<ServerConfig>& list = item->IsCustom() ? cfg.customServers : cfg.servers;
+            		if (targetIndex < list.size()) {
+            		    std::vector<std::string>& hidden = list[targetIndex].hideStatusChannels;
+            		    bool found = false;
+            		    for (size_t h = 0; h < hidden.size(); h++) {
+            		        if (strcasecmp(hidden[h].c_str(), chanName.String()) == 0) {
+            		            hidden.erase(hidden.begin() + h);
+            		            found = true;
+            		            break;
+            		        }
+            		    }
+            		    if (!found) hidden.push_back(chanName.String());
+            		    save_config();
+            		}
+        		}
+        		break;
+    		}
+
 		    case MSG_TOGGLE_HIDE_STATUS: {
         		ServerTreeItem* item = nullptr;
         		if (message->FindPointer("server_item", (void**)&item) == B_OK && item != nullptr) {
@@ -15303,6 +15532,7 @@ public:
                         topicText->Invalidate();
                     }
                     fTopicView->Invalidate();
+                    WallpaperChanged();
                 }
 
                 // 5. Instruct the layout engine to completely refresh container structures

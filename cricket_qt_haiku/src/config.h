@@ -32,6 +32,7 @@ struct ServerConfig {
     bool autoConnect = false;
     bool autoReconnect = false;
     bool hideStatusMessages = false;
+    QStringList hideStatusChannels;        // channels whose joins, parts and quits are hidden
     bool enableEmoticons = true;
     QString backgroundImagePath;
     int backgroundOpacity = 30;

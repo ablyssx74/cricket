@@ -7,6 +7,7 @@
 #include <QContextMenuEvent>
 #include <QDesktopServices>
 #include <QMenu>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QScrollBar>
 
@@ -54,53 +55,53 @@ void ChatView::appendLine(const QString& html)
         verticalScrollBar()->setValue(keep);
 }
 
-void ChatView::setBackgroundImage(const QString& path, int opacityPercent)
-{
-    fImage = path.isEmpty() ? QPixmap() : QPixmap(path);
-    fOpacity = qBound(0, opacityPercent, 100);
-    updateBackground();
-}
-
-void ChatView::updateBackground()
-{
-    QPalette pal = viewport()->palette();
-    QColor base = palette().color(QPalette::Base);
-    if (fImage.isNull()) {
-        pal.setBrush(QPalette::Base, base);
-        viewport()->setPalette(pal);
-        viewport()->setAutoFillBackground(true);
-        return;
-    }
-    QSize size = viewport()->size();
-    if (size.isEmpty())
-        return;
-    QPixmap canvas(size);
-    canvas.fill(base);
-    QPainter p(&canvas);
-    p.setOpacity(fOpacity / 100.0);
-    QPixmap scaled = fImage.scaled(size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-    p.drawPixmap((size.width() - scaled.width()) / 2, (size.height() - scaled.height()) / 2, scaled);
-    p.end();
-    pal.setBrush(QPalette::Base, QBrush(canvas));
-    viewport()->setPalette(pal);
-    viewport()->setAutoFillBackground(true);
-}
-
 void ChatView::resizeEvent(QResizeEvent* e)
 {
     bool follow = atBottom();
     QTextBrowser::resizeEvent(e);
-    if (!fImage.isNull())
-        updateBackground();
     if (follow)
         scrollToBottom();
 }
 
-void ChatView::changeEvent(QEvent* e)
+WallpaperHost::WallpaperHost(QWidget* parent) : QWidget(parent)
 {
-    QTextBrowser::changeEvent(e);
-    if (e->type() == QEvent::PaletteChange || e->type() == QEvent::StyleChange)
-        updateBackground();
+}
+
+void WallpaperHost::setCanvas(QWidget* canvas)
+{
+    fCanvas = canvas;
+}
+
+void WallpaperHost::setWallpaper(const QString& path, int opacityPercent)
+{
+    const int opacity = qBound(0, opacityPercent, 100);
+    if (path == fPath && opacity == fOpacity && (fPath.isEmpty() || !fImage.isNull()))
+        return;     // the same picture again (every switch of buffer asks) costs nothing
+    fPath = path;
+    fOpacity = opacity;
+    fImage = path.isEmpty() ? QPixmap() : QPixmap(path);
+    fScaled = QPixmap();
+    update();
+}
+
+void WallpaperHost::paintEvent(QPaintEvent* e)
+{
+    QPainter p(this);
+    p.fillRect(e->rect(), palette().color(QPalette::Window));
+    if (fImage.isNull() || !fCanvas)
+        return;
+    const QRect canvas = fCanvas->geometry();
+    if (canvas.isEmpty())
+        return;
+    if (fScaled.isNull() || fScaledFor != canvas.size()) {
+        fScaled = fImage.scaled(canvas.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        fScaledFor = canvas.size();
+    }
+    p.setClipRect(canvas);
+    p.fillRect(canvas, palette().color(QPalette::Base));
+    p.setOpacity(fOpacity / 100.0);
+    p.drawPixmap(canvas.left() + (canvas.width() - fScaled.width()) / 2,
+                 canvas.top() + (canvas.height() - fScaled.height()) / 2, fScaled);
 }
 
 void ChatView::contextMenuEvent(QContextMenuEvent* e)

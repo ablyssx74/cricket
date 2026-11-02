@@ -7,6 +7,7 @@
 #include <QContextMenuEvent>
 #include <QDesktopServices>
 #include <QMenu>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QScrollBar>
 
@@ -19,9 +20,6 @@ ChatView::ChatView(QWidget* parent) : QTextBrowser(parent)
     setFocusPolicy(Qt::ClickFocus);
     document()->setDocumentMargin(6);
     connect(this, &QTextBrowser::anchorClicked, this, [](const QUrl& url) { QDesktopServices::openUrl(url); });
-    fResizeTimer.setSingleShot(true);
-    fResizeTimer.setInterval(80);
-    connect(&fResizeTimer, &QTimer::timeout, this, [this]() { updateBackground(true); });
 }
 
 bool ChatView::isDark() const
@@ -57,58 +55,67 @@ void ChatView::appendLine(const QString& html)
         verticalScrollBar()->setValue(keep);
 }
 
-void ChatView::setBackgroundImage(const QString& path, int opacityPercent)
-{
-    fImage = path.isEmpty() ? QPixmap() : QPixmap(path);
-    fOpacity = qBound(0, opacityPercent, 100);
-    updateBackground();
-}
-
-void ChatView::updateBackground(bool smooth)
-{
-    QPalette pal = viewport()->palette();
-    QColor base = palette().color(QPalette::Base);
-    if (fImage.isNull()) {
-        pal.setBrush(QPalette::Base, base);
-        viewport()->setPalette(pal);
-        viewport()->setAutoFillBackground(true);
-        return;
-    }
-    QSize size = viewport()->size();
-    if (size.isEmpty())
-        return;
-    QPixmap canvas(size);
-    canvas.fill(base);
-    QPainter p(&canvas);
-    // The setting is the dimming level, as in the native Cricket: higher = the picture fainter
-    p.setOpacity(1.0 - fOpacity / 100.0);
-    // (while the window is resized the picture is scaled quickly at every step, and smoothly once when the dragging pauses)
-    QPixmap scaled = fImage.scaled(size, Qt::KeepAspectRatioByExpanding,
-        smooth ? Qt::SmoothTransformation : Qt::FastTransformation);
-    p.drawPixmap((size.width() - scaled.width()) / 2, (size.height() - scaled.height()) / 2, scaled);
-    p.end();
-    pal.setBrush(QPalette::Base, QBrush(canvas));
-    viewport()->setPalette(pal);
-    viewport()->setAutoFillBackground(true);
-}
-
 void ChatView::resizeEvent(QResizeEvent* e)
 {
     bool follow = atBottom();
     QTextBrowser::resizeEvent(e);
-    if (!fImage.isNull()) {
-        updateBackground(false);
-        fResizeTimer.start();
-    }
     if (follow)
         scrollToBottom();
 }
 
-void ChatView::changeEvent(QEvent* e)
+WallpaperHost::WallpaperHost(QWidget* parent) : QWidget(parent)
 {
-    QTextBrowser::changeEvent(e);
-    if (e->type() == QEvent::PaletteChange || e->type() == QEvent::StyleChange)
-        updateBackground();
+    fSmoothTimer.setSingleShot(true);
+    fSmoothTimer.setInterval(80);
+    connect(&fSmoothTimer, &QTimer::timeout, this, [this]() {
+        if (fSmooth || fImage.isNull() || !fCanvas || fCanvas->geometry().isEmpty())
+            return;
+        fScaled = QPixmap();    // the next paint scales it smoothly
+        update();
+    });
+}
+
+void WallpaperHost::setCanvas(QWidget* canvas)
+{
+    fCanvas = canvas;
+}
+
+void WallpaperHost::setWallpaper(const QString& path, int opacityPercent)
+{
+    const int dimming = qBound(0, opacityPercent, 100);
+    if (path == fPath && dimming == fOpacity && (fPath.isEmpty() || !fImage.isNull()))
+        return;     // the same picture again (every switch of buffer asks) costs nothing
+    fPath = path;
+    fOpacity = dimming;
+    fImage = path.isEmpty() ? QPixmap() : QPixmap(path);
+    fScaled = QPixmap();
+    update();
+}
+
+void WallpaperHost::paintEvent(QPaintEvent* e)
+{
+    QPainter p(this);
+    p.fillRect(e->rect(), palette().color(QPalette::Window));
+    if (fImage.isNull() || !fCanvas)
+        return;
+    const QRect canvas = fCanvas->geometry();
+    if (canvas.isEmpty())
+        return;
+    if (fScaled.isNull() || fScaledFor != canvas.size()) {
+        // (while the window is resized the picture is scaled quickly at every step, and smoothly once when the dragging pauses)
+        fSmooth = fScaled.isNull();
+        fScaled = fImage.scaled(canvas.size(), Qt::KeepAspectRatioByExpanding,
+            fSmooth ? Qt::SmoothTransformation : Qt::FastTransformation);
+        fScaledFor = canvas.size();
+        if (!fSmooth)
+            fSmoothTimer.start();
+    }
+    p.setClipRect(canvas);
+    p.fillRect(canvas, palette().color(QPalette::Base));
+    // The setting is the dimming level, as in the native Cricket: higher = the picture fainter
+    p.setOpacity(1.0 - fOpacity / 100.0);
+    p.drawPixmap(canvas.left() + (canvas.width() - fScaled.width()) / 2,
+                 canvas.top() + (canvas.height() - fScaled.height()) / 2, fScaled);
 }
 
 void ChatView::contextMenuEvent(QContextMenuEvent* e)

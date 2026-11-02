@@ -65,6 +65,12 @@ ServerConfig& Session::profile() const
 
 static const int kMaxLines = 3000;
 
+// The joins, parts and quits of other users are hidden by the server's option or by the channel's own
+static bool hidesJoinPartQuit(const ServerConfig& p, const QString& channel)
+{
+    return p.hideStatusMessages || p.hideStatusChannels.contains(channel, Qt::CaseInsensitive);
+}
+
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
@@ -394,7 +400,9 @@ void MainWindow::buildUi()
     fSplitter->setCollapsible(1, false);
     fSplitter->setCollapsible(2, true);
 
-    auto* wrapper = new QWidget;
+    fWallpaper = new WallpaperHost;
+    fWallpaper->setCanvas(fSplitter);
+    QWidget* wrapper = fWallpaper;
     auto* wl = new QVBoxLayout(wrapper);
     wl->setContentsMargins(6, 6, 6, 6);
     wl->addWidget(fSplitter);
@@ -423,11 +431,13 @@ void MainWindow::applyRoundedEdges()
             areas[i]->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         }
         applyChatMargin();
+        applyWallpaper();
         return;
     }
     const QPalette pal = palette();
+    // (the picture lies behind the boxes: those that show it are see-through)
     const QString frame = QString("border: 1px solid %1; border-radius: 7px; padding: 3px; background-color: %2;")
-        .arg(pal.color(QPalette::Mid).name(), pal.color(QPalette::Base).name());
+        .arg(pal.color(QPalette::Mid).name(), fWallpaper->hasWallpaper() ? QString("transparent") : pal.color(QPalette::Base).name());
     const QString pill = QString("::item { padding: 2px; border-radius: 6px; } "
         "::item:selected { background-color: %1; color: %2; border-radius: 6px; }")
         .arg(pal.color(QPalette::Highlight).name(), pal.color(QPalette::HighlightedText).name());
@@ -445,7 +455,38 @@ void MainWindow::applyRoundedEdges()
     }
     applyChatMargin();
     fTopic->setStyleSheet("QLineEdit { " + frame + " }");
-    fInput->setStyleSheet("QPlainTextEdit { " + frame + " }");
+    fInput->setStyleSheet("QPlainTextEdit { " + frame.left(frame.lastIndexOf("background-color")) + "background-color: "
+        + pal.color(QPalette::Base).name() + "; }");
+    applyWallpaper();
+}
+
+// While there is a picture, the server list, the chat, the user list and the topic bar have no background of their own
+// (the picture is painted behind all of them, as one); without it they have the palette's.
+void MainWindow::applyWallpaper()
+{
+    const bool on = fWallpaper->hasWallpaper();
+    QAbstractScrollArea* areas[] = { fTree, fUsers, fChat };
+    for (QAbstractScrollArea* area : areas) {
+        QWidget* view = area->viewport();
+        if (view->autoFillBackground() == !on)
+            continue;
+        QPalette pal = view->palette();
+        if (on) {
+            pal.setBrush(QPalette::Base, QColor(0, 0, 0, 0));
+            view->setPalette(pal);
+        } else {
+            view->setPalette(QPalette());
+        }
+        view->setAutoFillBackground(!on);
+    }
+    QPalette topic = fTopic->palette();
+    if (on) {
+        topic.setBrush(QPalette::Base, QColor(0, 0, 0, 0));
+        fTopic->setPalette(topic);
+    } else if (fTopic->palette().brush(QPalette::Base).color().alpha() == 0) {
+        fTopic->setPalette(QPalette());
+    }
+    fWallpaper->update();
 }
 
 // The chat's text keeps clear of the scroll bar's handle. (The margin is lost when the chat is cleared.)
@@ -812,7 +853,10 @@ void MainWindow::applyAppearance()
     QFont uf = QApplication::font();
     uf.setPointSize(p.userListFontSize);
     fUsers->setFont(uf);
-    fChat->setBackgroundImage(p.backgroundImagePath, p.backgroundOpacity);
+    const bool hadWallpaper = fWallpaper->hasWallpaper();
+    fWallpaper->setWallpaper(p.backgroundImagePath, p.backgroundOpacity);
+    if (fWallpaper->hasWallpaper() != hadWallpaper)
+        applyRoundedEdges();
     for (Session* ss : fSessions) {
         updateTreeItem(ss->server);
         for (Buffer* b : ss->buffers)
@@ -1410,7 +1454,7 @@ void MainWindow::onMessage(Session* s, const IrcMessage& m)
         ChannelUser u;
         u.nick = nick;
         b->users.insert(nick.toLower(), u);
-        if (!p.hideStatusMessages)
+        if (!hidesJoinPartQuit(p, chan))
             print(b, QString("--&gt; %1 (%2) has joined %3").arg(nick.toHtmlEscaped(), m.userHost().toHtmlEscaped(), chan.toHtmlEscaped()), LineKind::Join);
         if (b == fActive)
             refreshUserList();
@@ -1430,7 +1474,7 @@ void MainWindow::onMessage(Session* s, const IrcMessage& m)
             updateTreeItem(b);
         } else {
             b->users.remove(nick.toLower());
-            if (!p.hideStatusMessages && !isIgnored(s, nick))
+            if (!hidesJoinPartQuit(p, b->name) && !isIgnored(s, nick))
                 print(b, QString("&lt;-- %1 has left %2%3").arg(nick.toHtmlEscaped(), chan.toHtmlEscaped(),
                     reason.isEmpty() ? QString() : " (" + formatBody(s, reason) + ")"), LineKind::Part);
         }
@@ -1446,7 +1490,7 @@ void MainWindow::onMessage(Session* s, const IrcMessage& m)
             bool present = b->users.remove(key) > 0;
             if (b->type == Buffer::Query && b->name.compare(nick, Qt::CaseInsensitive) == 0)
                 present = true;
-            if (present && !p.hideStatusMessages && !isIgnored(s, nick))
+            if (present && !hidesJoinPartQuit(p, b->name) && !isIgnored(s, nick))
                 print(b, QString("&lt;-- %1 has quit (%2)").arg(nick.toHtmlEscaped(), formatBody(s, reason)), LineKind::Part);
             if (present && b == fActive)
                 refreshUserList();
@@ -1491,9 +1535,10 @@ void MainWindow::onMessage(Session* s, const IrcMessage& m)
             return;
         b->users.remove(victim.toLower());
         bool meKicked = victim.compare(me, Qt::CaseInsensitive) == 0;
-        print(b, QString("&lt;-- %1 was kicked from %2 by %3 (%4)").arg(
-            meKicked ? tr("You") : victim.toHtmlEscaped(), chan.toHtmlEscaped(), nick.toHtmlEscaped(), formatBody(s, m.param(2))),
-            meKicked ? LineKind::Error : LineKind::Part);
+        if (meKicked || !p.hideStatusMessages)
+            print(b, QString("&lt;-- %1 was kicked from %2 by %3 (%4)").arg(
+                meKicked ? tr("You") : victim.toHtmlEscaped(), chan.toHtmlEscaped(), nick.toHtmlEscaped(), formatBody(s, m.param(2))),
+                meKicked ? LineKind::Error : LineKind::Part);
         if (meKicked) {
             b->joined = false;
             b->users.clear();
@@ -1515,7 +1560,8 @@ void MainWindow::onMessage(Session* s, const IrcMessage& m)
         if (!b)
             return;
         b->topic = m.last();
-        print(b, QString("--- %1 changed the topic to: %2").arg(nick.toHtmlEscaped(), formatBody(s, b->topic)));
+        if (!p.hideStatusMessages)
+            print(b, QString("--- %1 changed the topic to: %2").arg(nick.toHtmlEscaped(), formatBody(s, b->topic)));
         if (b == fActive)
             refreshTopic();
         return;
@@ -1863,7 +1909,8 @@ void MainWindow::handleMode(Session* s, const IrcMessage& m)
         if (adding && !b->modes.contains(ch)) b->modes += ch;
         if (!adding) b->modes.remove(ch);
     }
-    print(b, QString("--- %1 sets mode %2").arg(setter.toHtmlEscaped(), modeText.toHtmlEscaped()));
+    if (!s->profile().hideStatusMessages)
+        print(b, QString("--- %1 sets mode %2").arg(setter.toHtmlEscaped(), modeText.toHtmlEscaped()));
     if (usersChanged && b == fActive)
         refreshUserList();
     if (fModesDialog && fModesDialog->channel().compare(b->name, Qt::CaseInsensitive) == 0)
@@ -2325,7 +2372,7 @@ void MainWindow::showTreeMenu(const QPoint& pos)
             s->conn->setProfile(s->profile());
             saveConfig();
         });
-        QAction* hs = menu.addAction(tr("Hide Join/Part Messages"));
+        QAction* hs = menu.addAction(tr("Hide All Channel Status Messages"));
         hs->setCheckable(true);
         hs->setChecked(s->profile().hideStatusMessages);
         connect(hs, &QAction::toggled, this, [s](bool on) { s->profile().hideStatusMessages = on; saveConfig(); });
@@ -2345,6 +2392,18 @@ void MainWindow::showTreeMenu(const QPoint& pos)
                     c->sendRaw("JOIN " + b->name + (b->key.isEmpty() ? QString() : " " + b->key));
                 })->setEnabled(c->isRegistered());
             }
+            QAction* hj = menu.addAction(tr("Hide Channel Status Messages"));
+            hj->setCheckable(true);
+            hj->setChecked(s->profile().hideStatusChannels.contains(b->name, Qt::CaseInsensitive));
+            connect(hj, &QAction::toggled, this, [s, b](bool on) {
+                QStringList& l = s->profile().hideStatusChannels;
+                for (int i = l.size() - 1; i >= 0; --i)
+                    if (l.at(i).compare(b->name, Qt::CaseInsensitive) == 0)
+                        l.removeAt(i);
+                if (on)
+                    l << b->name;
+                saveConfig();
+            });
             QAction* aj = menu.addAction(tr("Auto-Join This Channel"));
             aj->setCheckable(true);
             QStringList& list = s->profile().autojoin;
