@@ -11,6 +11,7 @@
 #include "ircconnection.h"
 #include "ircformat.h"
 #include "services.h"
+#include "wallpaper.h"
 
 #include <QAbstractSocket>
 #include <QApplication>
@@ -607,7 +608,58 @@ Session* MainWindow::createSession(bool custom, int index)
     fSessions << s;
     wireConnection(s);
     updateTreeItem(s->server);
+    restartWallpaperTimer(s);
     return s;
+}
+
+// The profile's wallpaper: one picture at a time, a new one every interval (when "change automatically" is on)
+void MainWindow::restartWallpaperTimer(Session* s)
+{
+    QTimer* t = fWallpaperTimers.value(s);
+    const ServerConfig& p = s->profile();
+    if (!p.wallpaperOn) {
+        if (t)
+            t->stop();
+        return;
+    }
+    if (!t) {
+        t = new QTimer(this);
+        connect(t, &QTimer::timeout, this, [this, s]() { advanceWallpaper(s); });
+        fWallpaperTimers.insert(s, t);
+    }
+    const QVector<int>& minutes = Wallpaper::intervalMinutes();
+    t->start(minutes.at(qBound(0, p.wallpaperInterval, minutes.size() - 1)) * 60 * 1000);
+    // (no picture yet, or it is gone from the cache: get one now)
+    if (p.backgroundImagePath.isEmpty() || !QFile::exists(p.backgroundImagePath))
+        QTimer::singleShot(0, this, [this, s]() { advanceWallpaper(s); });
+}
+
+void MainWindow::advanceWallpaper(Session* s)
+{
+    if (!fSessions.contains(s) || fWallpaperBusy.contains(s))
+        return;
+    const ServerConfig& p = s->profile();
+    Wallpaper::Settings w;
+    w.sources = p.wallpaperSources;
+    w.folders = p.wallpaperFolders;
+    w.random = p.wallpaperRandom;
+    w.index = p.wallpaperIndex;
+    fWallpaperBusy.insert(s);
+    Wallpaper::next(this, w, p.backgroundImagePath, [this, s](const Wallpaper::Result& r) {
+        fWallpaperBusy.remove(s);
+        if (!r.ok) {
+            qWarning().noquote() << "Wallpaper:" << r.error;
+            return;
+        }
+        if (!fSessions.contains(s))
+            return;
+        ServerConfig& pp = s->profile();
+        pp.backgroundImagePath = r.path;
+        pp.wallpaperIndex = r.nextIndex;
+        saveConfig();
+        if (fActive && fActive->session == s)
+            applyAppearance();
+    });
 }
 
 void MainWindow::wireConnection(Session* s)
@@ -2083,6 +2135,7 @@ void MainWindow::configureSession(Session* s)
     s->server->name = s->profile().name;
     s->conn->setProfile(s->profile());
     saveConfig();
+    restartWallpaperTimer(s);
     updateTreeItem(s->server);
     if (fActive && fActive->session == s) {
         applyAppearance();
@@ -2251,6 +2304,8 @@ void MainWindow::removeSession(Session* s)
 
     fDcc->forgetServer(s);
     fSessions.removeAll(s);
+    delete fWallpaperTimers.take(s);
+    fWallpaperBusy.remove(s);
     if (fActive && fActive->session == s)
         fActive = nullptr;
     s->conn->disconnect(this);

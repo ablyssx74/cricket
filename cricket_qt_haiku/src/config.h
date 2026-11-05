@@ -34,8 +34,14 @@ struct ServerConfig {
     bool hideStatusMessages = false;
     QStringList hideStatusChannels;        // channels whose joins, parts and quits are hidden
     bool enableEmoticons = true;
-    QString backgroundImagePath;
+    QString backgroundImagePath;           // the wallpaper picture shown now (put there by the Wallpaper tab)
     int backgroundOpacity = 30;
+    bool wallpaperOn = false;              // change the picture now and then
+    QStringList wallpaperSources = {"folders"};   // any of: folders, bing, wikimedia, wallhaven, picsum, artic
+    QStringList wallpaperFolders;
+    int wallpaperInterval = 2;             // index into Wallpaper::intervalMinutes()
+    bool wallpaperRandom = true;           // folders: random order (off: in order)
+    int wallpaperIndex = 0;                // folders, in order: the next picture
     int serverListFontSize = 12;
     int chatLogFontSize = 12;
     int userListFontSize = 12;

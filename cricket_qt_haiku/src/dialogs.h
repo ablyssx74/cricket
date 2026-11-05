@@ -11,6 +11,9 @@
 #include <QVector>
 
 class QCheckBox;
+class QGroupBox;
+class QListWidget;
+class QPushButton;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -36,7 +39,11 @@ signals:
 
 private:
     void generateCertificate();
-    void browseBackground();
+    void addWallpaperFolder();
+    void changeWallpaperNow();
+    void showWallpaperCredit();
+    void sourcesChanged();
+    QStringList wallpaperSourceKeys() const;
     void accept() override;
 
     ServerConfig fProfile;
@@ -49,8 +56,16 @@ private:
     QLabel* fFingerprint;
     QPlainTextEdit *fAutojoin, *fAutocmd, *fIgnored;
     QCheckBox *fEmoticons, *fColorCodes;
-    QLineEdit* fBgImage;
     QSlider* fBgOpacity;
+    QCheckBox *fWpOn, *fWpRandom;
+    QList<QCheckBox*> fWpSources;
+    QGroupBox* fWpFolderBox;
+    QListWidget* fWpFolders;
+    QComboBox* fWpInterval;
+    QPushButton* fWpChangeNow;
+    QLabel* fWpStatus;
+    QString fCurrentPicture;    // the wallpaper picture the profile will have
+    int fWpIndex = 0;
     QSpinBox *fTimestamp, *fServerFont, *fChatFont, *fUserFont;
     QTableWidget* fNickColors;
     QCheckBox *fInbound, *fOutbound, *fAutoSend;

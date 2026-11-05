@@ -109,6 +109,8 @@ private:
     void logToFile(Buffer* b, const QString& plainLine);
 
     // Output
+    void restartWallpaperTimer(Session* s);
+    void advanceWallpaper(Session* s);
     enum class LineKind { Normal, Action, Notice, Status, Join, Part, Error, Own, Highlight };
     void print(Buffer* b, const QString& html, LineKind kind = LineKind::Status, const QString& plain = QString());
     void printStatus(Session* s, const QString& text, LineKind kind = LineKind::Status);
@@ -158,6 +160,8 @@ private:
     void pollAwayStatus();
 
     QList<Session*> fSessions;
+    QHash<Session*, QTimer*> fWallpaperTimers;   // one per server profile that changes its wallpaper now and then
+    QSet<Session*> fWallpaperBusy;               // sessions a picture is being fetched for
     Buffer* fActive = nullptr;
 
     QSplitter* fSplitter = nullptr;

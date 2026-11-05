@@ -5,6 +5,7 @@
 
 #include <aspell.h>
 #include "icons.h"
+#include "wallpaper.h"
 #include "dcc.h"
 #include "nlohmann/json.hpp"
 #include <Alert.h>
@@ -65,6 +66,8 @@
 #include <curl/curl.h> 
 #include <fstream>
 #include <map>
+#include <set>
+#include <thread>
 #include <Screen.h>
 #include <ScrollBar.h>
 #include <GroupLayout.h>
@@ -375,6 +378,12 @@ struct ServerConfig {
     bool enableEmoticons;    
     std::string backgroundImagePath; 
     int32 backgroundOpacity;     
+    bool wallpaperOn = false;                                   // change the picture now and then
+    std::vector<std::string> wallpaperSources = {"folders"};    // any of: folders, bing, wikimedia, wallhaven, picsum, artic
+    std::vector<std::string> wallpaperFolders;
+    int32 wallpaperInterval = 2;                                // index into CricketWallpaper::IntervalMinutes()
+    bool wallpaperRandom = true;                                // folders: random order (off: in order)
+    int32 wallpaperIndex = 0;                                   // folders, in order: the next picture
     int32 serverListFontSize = 12;
     int32 chatLogFontSize = 12;
     int32 userListFontSize = 12;
@@ -678,6 +687,28 @@ void ensure_config_dir() {
     }
 }
 
+// The wallpaper settings of a server profile from its JSON object (names as in the Linux and Qt versions)
+static void LoadWallpaperSettings(const json& s, ServerConfig& srv) {
+    srv.wallpaperOn = s.value("wallpaper_on", false);
+    srv.wallpaperSources.clear();
+    srv.wallpaperFolders.clear();
+    if (s.contains("wallpaper_sources") && s["wallpaper_sources"].is_array()) {
+        for (const auto& item : s["wallpaper_sources"])
+            if (item.is_string()) srv.wallpaperSources.push_back(item.get<std::string>());
+    }
+    if (srv.wallpaperSources.empty()) srv.wallpaperSources.push_back("folders");
+    if (s.contains("wallpaper_folders") && s["wallpaper_folders"].is_array()) {
+        for (const auto& item : s["wallpaper_folders"])
+            if (item.is_string()) srv.wallpaperFolders.push_back(item.get<std::string>());
+    }
+    srv.wallpaperInterval = s.value("wallpaper_interval", 2);
+    if (srv.wallpaperInterval < 0) srv.wallpaperInterval = 0;
+    if (srv.wallpaperInterval > 6) srv.wallpaperInterval = 6;
+    srv.wallpaperRandom = s.value("wallpaper_random", true);
+    srv.wallpaperIndex = s.value("wallpaper_index", 0);
+    if (srv.wallpaperIndex < 0) srv.wallpaperIndex = 0;
+}
+
 void save_config() {
     ensure_config_dir();
     json j;
@@ -732,6 +763,12 @@ void save_config() {
       
         s["background_image"] = srv.backgroundImagePath;         
         s["bg_opacity"] = srv.backgroundOpacity; 
+        s["wallpaper_on"] = srv.wallpaperOn;
+        s["wallpaper_sources"] = srv.wallpaperSources;
+        s["wallpaper_folders"] = srv.wallpaperFolders;
+        s["wallpaper_interval"] = srv.wallpaperInterval;
+        s["wallpaper_random"] = srv.wallpaperRandom;
+        s["wallpaper_index"] = srv.wallpaperIndex;
         s["enable_emoticons"] = srv.enableEmoticons; 
         s["useCustomDrawFunction"] = srv.useCustomDrawFunction;
         s["logChatsToFile"] = srv.logChatsToFile;
@@ -819,6 +856,12 @@ void save_config() {
         s["background_image"] = srv.backgroundImagePath;
         
         s["bg_opacity"] = srv.backgroundOpacity; 
+        s["wallpaper_on"] = srv.wallpaperOn;
+        s["wallpaper_sources"] = srv.wallpaperSources;
+        s["wallpaper_folders"] = srv.wallpaperFolders;
+        s["wallpaper_interval"] = srv.wallpaperInterval;
+        s["wallpaper_random"] = srv.wallpaperRandom;
+        s["wallpaper_index"] = srv.wallpaperIndex;
         s["enable_emoticons"] = srv.enableEmoticons;  
         s["useCustomDrawFunction"] = srv.useCustomDrawFunction;
         s["logChatsToFile"] = srv.logChatsToFile;
@@ -968,6 +1011,7 @@ void load_config() {
 
 						srv.backgroundImagePath = s.value("background_image", ""); 
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
+                        LoadWallpaperSettings(s, srv);
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
                         srv.useCustomDrawFunction = s.value("useCustomDrawFunction", cfg.useCustomDrawFunction);
                         srv.logChatsToFile = s.value("logChatsToFile", false);
@@ -1052,6 +1096,7 @@ void load_config() {
                         srv.nickAlert = s.value("nick_alert", true);
 						srv.backgroundImagePath = s.value("background_image", ""); 
                         srv.backgroundOpacity = s.value("bg_opacity", 30); 
+                        LoadWallpaperSettings(s, srv);
                         srv.enableEmoticons = s.value("enable_emoticons", true); 
                         srv.useCustomDrawFunction = s.value("useCustomDrawFunction", cfg.useCustomDrawFunction);
                         srv.logChatsToFile = s.value("logChatsToFile", false);
@@ -5467,14 +5512,60 @@ public:
         fChatLogFontMenu    = CreateFontMenu("Chat Log Font:", srv.chatLogFontSize);
         fUserListFontMenu   = CreateFontMenu("User List Font:", srv.userListFontSize);
 
-        fBgPathInput = new BTextControl("bg_path", "Wallpaper Image:", srv.backgroundImagePath.c_str(), nullptr);
-        fBrowseBgBtn = new BButton("browse_bg", "Browse…", new BMessage('adbg'));
-        fFilePanel = new BFilePanel(B_OPEN_PANEL, new BMessenger(this), nullptr, B_FILE_NODE, false);
 
         fBgOpacitySlider = new BSlider("bg_opacity_sld", "Wallpaper Dimming Level:", nullptr, 0, 100, B_HORIZONTAL);
         fBgOpacitySlider->SetValue(srv.backgroundOpacity);
         fBgOpacitySlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
         fBgOpacitySlider->SetHashMarkCount(11); 
+
+        // --- Wallpaper tab controls ---
+        fWpCurrentPicture = srv.backgroundImagePath;
+        fWpIndex = srv.wallpaperIndex;
+        fWpIntervalIndex = srv.wallpaperInterval;
+        fWpOnCheck = new BCheckBox("wp_on", "Change the wallpaper automatically", nullptr);
+        fWpOnCheck->SetValue(srv.wallpaperOn ? B_CONTROL_ON : B_CONTROL_OFF);
+        {
+            const std::vector<std::string>& keys = CricketWallpaper::SourceKeys();
+            for (size_t k = 0; k < keys.size(); k++) {
+                BString name("wp_src_"); name << keys[k].c_str();
+                BCheckBox* box = new BCheckBox(name.String(), CricketWallpaper::SourceTitle(keys[k]).c_str(), new BMessage('wpsc'));
+                bool on = std::find(srv.wallpaperSources.begin(), srv.wallpaperSources.end(), keys[k]) != srv.wallpaperSources.end();
+                box->SetValue(on ? B_CONTROL_ON : B_CONTROL_OFF);
+                fWpSourceKeys.push_back(keys[k]);
+                fWpSourceChecks.push_back(box);
+            }
+        }
+        fWpFolderList = new BListView("wp_folders");
+        for (size_t k = 0; k < srv.wallpaperFolders.size(); k++)
+            fWpFolderList->AddItem(new BStringItem(srv.wallpaperFolders[k].c_str()));
+        fWpFolderScroll = new BScrollView("wp_folders_scroll", fWpFolderList, 0, false, true);
+        fWpFolderScroll->SetExplicitMinSize(BSize(150, 45));
+        fWpFolderScroll->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 80));
+        fWpAddFolderBtn = new BButton("wp_add", "Add folder" B_UTF8_ELLIPSIS, new BMessage('wpfa'));
+        fWpRemoveFolderBtn = new BButton("wp_remove", "Remove", new BMessage('wpfr'));
+        {
+            BPopUpMenu* wpMenu = new BPopUpMenu("wp_interval_select");
+            const std::vector<int>& minutes = CricketWallpaper::IntervalMinutes();
+            for (size_t k = 0; k < minutes.size(); k++) {
+                BMessage* msg = new BMessage('wpiv');
+                msg->AddInt32("index", (int32)k);
+                BMenuItem* item = new BMenuItem(CricketWallpaper::IntervalTitle(minutes[k]).c_str(), msg);
+                if ((int32)k == fWpIntervalIndex) item->SetMarked(true);
+                wpMenu->AddItem(item);
+            }
+            fWpIntervalMenu = new BMenuField("wp_interval", "Change:", wpMenu);
+        }
+        fWpRandomCheck = new BCheckBox("wp_random", "Random order (my folders)", nullptr);
+        fWpRandomCheck->SetValue(srv.wallpaperRandom ? B_CONTROL_ON : B_CONTROL_OFF);
+        fWpChangeBtn = new BButton("wp_now", "Change now", new BMessage('wpnw'));
+        fWpClearBtn = new BButton("wp_none", "No wallpaper", new BMessage('wpnn'));
+        fWpStatusView = new BTextView("wp_status");
+        fWpStatusView->MakeEditable(false);
+        fWpStatusView->SetWordWrap(true);
+        fWpStatusView->SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
+        fWpStatusView->SetExplicitMinSize(BSize(150, 38));
+        UpdateWallpaperStatus();
+        UpdateWallpaperSources(false);
 
         // --- Checkbox Options ---
         fAutoConnectCheck = new BCheckBox("autoconnect", "Automatically connect at startup", nullptr);
@@ -5516,7 +5607,8 @@ public:
         // --- NEW: AUTOJOIN CHANNELS INTERFACE COMPONENTS ---
         fAutojoinListView = new BListView("autojoin_list");
         BScrollView* autojoinScroll = new BScrollView("autojoin_scroll", fAutojoinListView, 0, false, true);
-        autojoinScroll->SetExplicitMinSize(BSize(150, 100)); // Safeguard clear display box framing
+        autojoinScroll->SetExplicitMinSize(BSize(150, 55));
+        autojoinScroll->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 95));
 
         // Populate the interactive list view using our tracking vector elements
         for (const auto& chan : fLocalAutojoinList) {
@@ -5533,7 +5625,8 @@ public:
                 // --- AUTOJOIN COMMANDS INTERFACE COMPONENTS ---
         fCmdListView = new BListView("autocmd_list");
         BScrollView* cmdScroll = new BScrollView("autocmd_scroll", fCmdListView, 0, false, true);
-        cmdScroll->SetExplicitMinSize(BSize(150, 100)); // Safeguard clear display box framing
+        cmdScroll->SetExplicitMinSize(BSize(150, 55));
+        cmdScroll->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 95));
 
         // Populate the interactive list view using our tracking vector elements
         for (const auto& cmd : fLocalCmdList) {
@@ -5569,7 +5662,8 @@ public:
         // --- NEW: IGNORE FILTERS INTERFACE COMPONENTS ---
         fIgnoreListView = new BListView("ignore_list");
         BScrollView* ignoreScroll = new BScrollView("ignore_scroll", fIgnoreListView, 0, false, true);
-        ignoreScroll->SetExplicitMinSize(BSize(150, 100)); // Keeps the framing size identical to autojoin
+        ignoreScroll->SetExplicitMinSize(BSize(150, 55));
+        ignoreScroll->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 95));
 
         // Populate the interactive ignore list from configuration data
         fLocalIgnoreList = srv.ignoredNicks; 
@@ -5587,7 +5681,8 @@ public:
         // --- NEW: CUSTOM NICKNAME COLORS INTERFACE COMPONENTS ---
         fColorListView = new BListView("color_nicks_list");
         BScrollView* colorScroll = new BScrollView("color_scroll", fColorListView, 0, false, true);
-        colorScroll->SetExplicitMinSize(BSize(150, 60));
+        colorScroll->SetExplicitMinSize(BSize(150, 55));
+        colorScroll->SetExplicitMaxSize(BSize(B_SIZE_UNLIMITED, 110));
         fColorListView->SetSelectionMessage(new BMessage(0xCC005544));
 
         // Populate color entries from configuration data arrays
@@ -5652,39 +5747,37 @@ public:
         identityTab->SetName("Identity");
         BLayoutBuilder::Group<>(identityTab, B_VERTICAL, 0)
             .SetInsets(10)
-            .AddGrid(5.0f, 5.0f)
+            .AddGrid(8.0f, 5.0f)
                 .Add(fNickInput->CreateLabelLayoutItem(), 0, 0)
                 .Add(fNickInput->CreateTextViewLayoutItem(), 1, 0)
-                
+                .Add(fPassInput->CreateLabelLayoutItem(), 2, 0)
+                .Add(fPassInput->CreateTextViewLayoutItem(), 3, 0)
+
                 .Add(fAltNickInput->CreateLabelLayoutItem(), 0, 1)
                 .Add(fAltNickInput->CreateTextViewLayoutItem(), 1, 1)
-                
-                .Add(fAltNick2Input->CreateLabelLayoutItem(), 0, 2)
-                .Add(fAltNick2Input->CreateTextViewLayoutItem(), 1, 2)
-                
-                .Add(fPassInput->CreateLabelLayoutItem(), 0, 3)     
-                .Add(fPassInput->CreateTextViewLayoutItem(), 1, 3)
-     
-                .Add(fNickAlertCheckbox, 0, 4, 2, 1)  
+                .Add(fAltNick2Input->CreateLabelLayoutItem(), 2, 1)
+                .Add(fAltNick2Input->CreateTextViewLayoutItem(), 3, 1)
 
-                .Add(fUseSASLCheck, 0, 5, 2, 1)
-                .Add(fSASLUserInput->CreateLabelLayoutItem(), 0, 7)
-                .Add(fSASLUserInput->CreateTextViewLayoutItem(), 1, 7)
+                .Add(fNickAlertCheckbox, 0, 2, 4, 1)
 
-                .Add(fUseCertFPCheck, 0, 6, 2, 1)
-                
-                .Add(fCertProfileInput->CreateLabelLayoutItem(), 0, 9)
-                .Add(fCertProfileInput->CreateTextViewLayoutItem(), 1, 9)
+                .Add(fUseSASLCheck, 0, 3, 2, 1)
+                .Add(fSASLUserInput->CreateLabelLayoutItem(), 2, 3)
+                .Add(fSASLUserInput->CreateTextViewLayoutItem(), 3, 3)
 
-                .Add(fCertFileInput->CreateLabelLayoutItem(), 0, 10)
-                .Add(fCertFileInput->CreateTextViewLayoutItem(), 1, 10)
+                .Add(fUseCertFPCheck, 0, 4, 4, 1)
 
-                .Add(fKeyFileInput->CreateLabelLayoutItem(), 0, 11)
-                .Add(fKeyFileInput->CreateTextViewLayoutItem(), 1, 11)
-                
-                .Add(fGenerateCertsButton, 0, 12, 2, 1)
-                
-                .Add(certLocationNotice, 0, 13, 2, 1)
+                .Add(fCertProfileInput->CreateLabelLayoutItem(), 0, 5)
+                .Add(fCertProfileInput->CreateTextViewLayoutItem(), 1, 5)
+                .Add(fCertFileInput->CreateLabelLayoutItem(), 2, 5)
+                .Add(fCertFileInput->CreateTextViewLayoutItem(), 3, 5)
+
+                .Add(fKeyFileInput->CreateLabelLayoutItem(), 0, 6)
+                .Add(fKeyFileInput->CreateTextViewLayoutItem(), 1, 6)
+                .Add(fGenerateCertsButton, 2, 6, 2, 1)
+
+                .Add(certLocationNotice, 0, 7, 4, 1)
+                .SetColumnWeight(1, 1.0f)
+                .SetColumnWeight(3, 1.0f)
             .End()
             .AddGlue();
 
@@ -5703,7 +5796,8 @@ public:
             .Add(fEnableEmoticonsCheck)
             .Add(fUseCustomDrawCheck)
             .Add(fLogChatsToFileCheck)
-            .Add(fEnableColorCodesCheck);
+            .Add(fEnableColorCodesCheck)
+            .AddGlue();
 
         // --- INSTANTIATE THE TIMESTAMP INTERVAL POPUP MENU ---
         BPopUpMenu* tsMenu = new BPopUpMenu("timestamp_select");
@@ -5761,12 +5855,7 @@ public:
                     .Add(fChatLogFontMenu->CreateMenuBarLayoutItem(), 1, 1, 2, 1)
                     .Add(fUserListFontMenu->CreateLabelLayoutItem(), 0, 2)
                     .Add(fUserListFontMenu->CreateMenuBarLayoutItem(), 1, 2, 2, 1)
-                    .Add(fBgPathInput->CreateLabelLayoutItem(), 0, 3)
-                    .Add(fBgPathInput->CreateTextViewLayoutItem(), 1, 3, 1, 1)
-                    .Add(fBrowseBgBtn, 2, 3)
                 .End()
-                .Add(fBgOpacitySlider)
-                // --- INJECTED DIRECTLY UNDERNEATH WALLPAPER SLIDER ---
                 .AddStrut(5.0f) // Soft micro-padding gap separator spacer
                 .Add(fTimestampMenu)
                 // --- NEW: INJECTED DIRECTLY UNDERNEATH TIMESTAMP FREQUENCY ---
@@ -5808,8 +5897,9 @@ public:
         // 3. Stack both boxes vertically inside the tab view
         BLayoutBuilder::Group<>(autojoinTab, B_VERTICAL, 8)
             .SetInsets(10)
-            .Add(autojoinBox, 1.0)
-            .Add(cmdBox, 1.0);  
+            .Add(autojoinBox, 0.0)
+            .Add(cmdBox, 0.0)
+            .AddGlue();
          
 
         // --- TAB 4: FILTERS & COLORS INTERFACE ---
@@ -5853,8 +5943,9 @@ public:
         BLayoutBuilder::Group<>(filtersTab, B_VERTICAL, 8)
             .SetInsets(10)
             .Add(wildcardNotice, 0.0) // Positioned directly above both configurations boxes
-            .Add(colorBox, 1.0)     
-            .Add(filtersBox, 1.0);
+            .Add(colorBox, 0.0)
+            .Add(filtersBox, 0.0)
+            .AddGlue();
 
         // =========================================================================
         // --- TAB 5: AI TRANSLATOR INTERFACE TAB WITH LANGUAGE & MODEL SELECTION ---
@@ -5967,26 +6058,25 @@ public:
             .SetInsets(12, 24, 12, 12)
             .Add(fEnableLiveTranslationCheck)
             .AddStrut(5.0f)
-            .AddGrid(5.0f, 5.0f)
+            .AddGrid(8.0f, 5.0f)
                 .Add(fTranslationKeyInput->CreateLabelLayoutItem(), 0, 0)
-                .Add(fTranslationKeyInput->CreateTextViewLayoutItem(), 1, 0)
-                
+                .Add(fTranslationKeyInput->CreateTextViewLayoutItem(), 1, 0, 3, 1)
+
                 .Add(fModelMenuField->CreateLabelLayoutItem(), 0, 1)
                 .Add(fModelMenuField->CreateMenuBarLayoutItem(), 1, 1)
-
-                .Add(fLanguageMenuField->CreateLabelLayoutItem(), 0, 2)
-                .Add(fLanguageMenuField->CreateMenuBarLayoutItem(), 1, 2)
+                .Add(fLanguageMenuField->CreateLabelLayoutItem(), 2, 1)
+                .Add(fLanguageMenuField->CreateMenuBarLayoutItem(), 3, 1)
+                .SetColumnWeight(1, 1.0f)
+                .SetColumnWeight(3, 1.0f)
             .End()
-            .AddStrut(15.0f)
+            .AddStrut(8.0f)
             .Add(fEnableOutboundTranslationCheck)
-            .AddStrut(5.0f)
-            .AddGrid(5.0f, 5.0f)
+            .AddGrid(8.0f, 5.0f)
                 .Add(fOutboundLanguageMenuField->CreateLabelLayoutItem(), 0, 0)
                 .Add(fOutboundLanguageMenuField->CreateMenuBarLayoutItem(), 1, 0)
+                .SetColumnWeight(1, 1.0f)
             .End()
-            .AddStrut(5.0f)
             .Add(fAutoSendTranslatedCheck)
-            .AddStrut(5.0f)
             .Add(studioLinkNotice);
 
         // 6. Package layout vertically inside the container frame tab view
@@ -6025,11 +6115,13 @@ public:
             .AddGrid(5.0f, 5.0f)
                 .Add(fDccDirInput->CreateLabelLayoutItem(), 0, 0)
                 .Add(fDccDirInput->CreateTextViewLayoutItem(), 1, 0)
-                .Add(fDccBrowseBtn, 2, 0)
+                .Add(fDccBrowseBtn, 2, 0, 2, 1)
                 .Add(fDccPortInput->CreateLabelLayoutItem(), 0, 1)
                 .Add(fDccPortInput->CreateTextViewLayoutItem(), 1, 1)
-                .Add(fDccExternalIPInput->CreateLabelLayoutItem(), 0, 2)
-                .Add(fDccExternalIPInput->CreateTextViewLayoutItem(), 1, 2)
+                .Add(fDccExternalIPInput->CreateLabelLayoutItem(), 2, 1)
+                .Add(fDccExternalIPInput->CreateTextViewLayoutItem(), 3, 1)
+                .SetColumnWeight(1, 1.0f)
+                .SetColumnWeight(3, 1.0f)
             .End()
             .Add(fDccPortMapCheck)
             .Add(fDccPassiveCheck)
@@ -6040,9 +6132,52 @@ public:
             .Add(dccBox, 0.0)
             .AddGlue();
 
+        // --- TAB: WALLPAPER ---
+        BGroupView* wallpaperTab = new BGroupView(B_VERTICAL, 5);
+        wallpaperTab->SetName("Wallpaper");
+        BBox* wpSourceBox = new BBox(B_FANCY_BORDER);
+        wpSourceBox->SetLabel("Pictures from");
+        {
+            BGridLayout* sourceLayout = new BGridLayout(12.0f, 2.0f);
+            wpSourceBox->SetLayout(sourceLayout);
+            sourceLayout->SetInsets(10, 18, 10, 8);
+            const int32 perColumn = (int32)((fWpSourceChecks.size() + 1) / 2);
+            for (size_t k = 0; k < fWpSourceChecks.size(); k++)
+                sourceLayout->AddView(fWpSourceChecks[k], (int32)k / perColumn, (int32)k % perColumn);
+        }
+        BBox* wpFolderBox = new BBox(B_FANCY_BORDER);
+        wpFolderBox->SetLabel("My folders");
+        BLayoutBuilder::Group<>(wpFolderBox, B_VERTICAL, 5)
+            .SetInsets(10, 18, 10, 8)
+            .Add(fWpFolderScroll, 1.0)
+            .AddGroup(B_HORIZONTAL, 5)
+                .Add(fWpAddFolderBtn)
+                .Add(fWpRemoveFolderBtn)
+                .AddGlue()
+            .End();
+        BLayoutBuilder::Group<>(wallpaperTab, B_VERTICAL, 6)
+            .SetInsets(10)
+            .Add(fWpOnCheck)
+            .Add(wpSourceBox)
+            .Add(wpFolderBox, 1.0)
+            .AddGroup(B_HORIZONTAL, 10)
+                .Add(fWpIntervalMenu->CreateLabelLayoutItem())
+                .Add(fWpIntervalMenu->CreateMenuBarLayoutItem())
+                .Add(fWpRandomCheck)
+                .AddGlue()
+            .End()
+            .Add(fBgOpacitySlider)
+            .AddGroup(B_HORIZONTAL, 5)
+                .Add(fWpChangeBtn)
+                .Add(fWpClearBtn)
+                .AddGlue()
+            .End()
+            .Add(fWpStatusView);
+
         // --- Assemble ALL Tabs into the Master Tab Container ---
         tabView->AddTab(identityTab);
         tabView->AddTab(prefsTab);
+        tabView->AddTab(wallpaperTab);
         tabView->AddTab(autojoinTab);
         tabView->AddTab(filtersTab); 
         tabView->AddTab(translatorTab);
@@ -6058,26 +6193,25 @@ public:
 		messageBox->SetLayout(boxGrid);
 		
 		// Explicitly anchor column scaling metrics cleanly outside the continuous builder loop
-		boxGrid->SetColumnWeight(1, 1.0f); // Allow input tracking boxes to claim expanding window text room
 		
 		// Dynamically populate the layout sequentially without static numeric position coordinates
 		BLayoutBuilder::Grid<>(boxGrid)
-		    .SetInsets(12, 24, 12, 12)
-		
-		    .Add(fDebugEnableCheck, 0, 0, 2, 1)     
-		    .Add(fShowUpdateCheck, 0, 1, 2, 1)
-		    .Add(fEnableSpellCheck, 0, 2, 2, 1)
-		    .Add(fRoundedEdgesCheck, 0, 3, 2, 1)
-		    .Add(fSearchEngineMenu, 0, 4, 2, 1)
-		
-		    // Row 5: Away Message Options Group
-		    .Add(fAwayInput->CreateLabelLayoutItem(), 0, 5)
-		    .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 5) 
-		    
-		    // Row 6: Quit Message Options Group
-		    .Add(fQuitInput->CreateLabelLayoutItem(), 0, 6)
-		    .Add(fQuitInput->CreateTextViewLayoutItem(), 1, 6)
-		
+		    .SetInsets(12, 22, 12, 10)
+		    .SetSpacing(10.0f, 4.0f)
+
+		    .Add(fDebugEnableCheck, 0, 0, 2, 1)
+		    .Add(fShowUpdateCheck, 2, 0, 2, 1)
+		    .Add(fEnableSpellCheck, 0, 1, 2, 1)
+		    .Add(fRoundedEdgesCheck, 2, 1, 2, 1)
+		    .Add(fSearchEngineMenu, 0, 2, 2, 1)
+
+		    .Add(fAwayInput->CreateLabelLayoutItem(), 0, 3)
+		    .Add(fAwayInput->CreateTextViewLayoutItem(), 1, 3)
+		    .Add(fQuitInput->CreateLabelLayoutItem(), 2, 3)
+		    .Add(fQuitInput->CreateTextViewLayoutItem(), 3, 3)
+
+		    .SetColumnWeight(1, 1.0f)
+		    .SetColumnWeight(3, 1.0f)
 		;
 		
 		// 2. Build the Master Window layout
@@ -6097,7 +6231,7 @@ public:
 		    .End();
 		
 		
-		ResizeTo(560, 520);
+		ResizeTo(560, 420);
 
             
         if (parent) {
@@ -6798,24 +6932,110 @@ public:
                 break;
             }
 
-        	case 'adbg':
-                if (fFilePanel != nullptr) {
-                    fFilePanel->Show();
-                }
+            case 'wpsc':
+                UpdateWallpaperSources(true);
                 break;
 
-            case B_REFS_RECEIVED: {
+            case 'wpiv': {
+                int32 index;
+                if (message->FindInt32("index", &index) == B_OK)
+                    fWpIntervalIndex = index;
+                break;
+            }
+
+            case 'wpfa': {
+                if (fWpFolderPanel == nullptr) {
+                    BMessage chosen('wpfd');
+                    fWpFolderPanel = new BFilePanel(B_OPEN_PANEL, new BMessenger(this), nullptr,
+                        B_DIRECTORY_NODE, false, &chosen);
+                    fWpFolderPanel->SetButtonLabel(B_DEFAULT_BUTTON, "Add");
+                }
+                fWpFolderPanel->Show();
+                break;
+            }
+
+            case 'wpfd': {
                 entry_ref ref;
                 if (message->FindRef("refs", &ref) == B_OK) {
                     BEntry entry(&ref, true);
                     BPath path;
                     if (entry.GetPath(&path) == B_OK) {
-                        fBgPathInput->SetText(path.Path());
+                        bool have = false;
+                        for (int32 k = 0; k < fWpFolderList->CountItems(); k++) {
+                            BStringItem* item = dynamic_cast<BStringItem*>(fWpFolderList->ItemAt(k));
+                            if (item != nullptr && strcmp(item->Text(), path.Path()) == 0) have = true;
+                        }
+                        if (!have) fWpFolderList->AddItem(new BStringItem(path.Path()));
                     }
                 }
                 break;
             }
-        	
+
+            case 'wpfr': {
+                int32 selected = fWpFolderList->CurrentSelection();
+                if (selected >= 0)
+                    delete fWpFolderList->RemoveItem(selected);
+                break;
+            }
+
+            case 'wpnn':
+                fWpCurrentPicture.clear();
+                UpdateWallpaperStatus();
+                break;
+
+            case 'wpnw': {
+                if (fWpBusy) break;
+                CricketWallpaper::Settings w;
+                w.sources = WallpaperSourceKeys();
+                for (int32 k = 0; k < fWpFolderList->CountItems(); k++) {
+                    BStringItem* item = dynamic_cast<BStringItem*>(fWpFolderList->ItemAt(k));
+                    if (item != nullptr) w.folders.push_back(item->Text());
+                }
+                w.random = (fWpRandomCheck->Value() == B_CONTROL_ON);
+                w.index = fWpIndex;
+                if (w.sources.size() == 1 && w.sources[0] == "folders" && w.folders.empty()) {
+                    fWpStatusView->SetText("Add a folder with pictures first.");
+                    break;
+                }
+                fWpBusy = true;
+                fWpChangeBtn->SetEnabled(false);
+                fWpStatusView->SetText("Getting a picture" B_UTF8_ELLIPSIS);
+                BMessenger me(this);
+                const std::string current = fWpCurrentPicture;
+                std::thread([me, w, current]() {
+                    CricketWallpaper::Result r = CricketWallpaper::PickOne(w, current);
+                    BMessage done('wpcd');
+                    done.AddBool("ok", r.ok);
+                    done.AddString("path", r.path.c_str());
+                    done.AddString("error", r.error.c_str());
+                    done.AddInt32("next", r.nextIndex);
+                    BMessenger target(me);
+                    target.SendMessage(&done);
+                }).detach();
+                break;
+            }
+
+            case 'wpcd': {
+                fWpBusy = false;
+                fWpChangeBtn->SetEnabled(true);
+                bool ok = false;
+                message->FindBool("ok", &ok);
+                if (!ok) {
+                    const char* error = nullptr;
+                    message->FindString("error", &error);
+                    fWpStatusView->SetText(error != nullptr && error[0] != '\0' ? error : "No picture could be had");
+                    break;
+                }
+                const char* path = nullptr;
+                int32 next = 0;
+                message->FindString("path", &path);
+                message->FindInt32("next", &next);
+                if (path != nullptr) fWpCurrentPicture = path;
+                fWpIndex = next;
+                UpdateWallpaperStatus();
+                break;
+            }
+
             case 'cfcn': {
                 // Clear and free item pointers from the local list box view to prevent memory leaking
                 while (fAutojoinListView->CountItems() > 0) {
@@ -6827,7 +7047,7 @@ public:
                     delete fCmdListView->RemoveItem((int32)0);
                 }
                 
-                delete fFilePanel; 
+                delete fWpFolderPanel;
                 Quit();
                 break;
             }
@@ -6854,8 +7074,18 @@ public:
 	            srv.keyFileName  = fKeyFileInput->Text();
 	            
 	            // 2. Flush Appearance, Wallpaper, and Dimming Level Data
-	            srv.backgroundImagePath = fBgPathInput->Text();
+	            srv.backgroundImagePath = fWpCurrentPicture;
 	            srv.backgroundOpacity = fBgOpacitySlider->Value(); 
+	            srv.wallpaperOn = (fWpOnCheck->Value() == B_CONTROL_ON);
+	            srv.wallpaperSources = WallpaperSourceKeys();
+	            srv.wallpaperFolders.clear();
+	            for (int32 k = 0; k < fWpFolderList->CountItems(); k++) {
+	                BStringItem* item = dynamic_cast<BStringItem*>(fWpFolderList->ItemAt(k));
+	                if (item != nullptr) srv.wallpaperFolders.push_back(item->Text());
+	            }
+	            srv.wallpaperInterval = fWpIntervalIndex;
+	            srv.wallpaperRandom = (fWpRandomCheck->Value() == B_CONTROL_ON);
+	            srv.wallpaperIndex = fWpIndex;
 	
 	            // 3. Synchronize Global Profile Configurations
 	            cfg.debugEnable = (fDebugEnableCheck->Value() == B_CONTROL_ON);
@@ -6965,7 +7195,7 @@ public:
 	            BMessage updateNotify('mscf'); 
 	            if (fParentWindow) fParentWindow->PostMessage(&updateNotify);
 	            
-	            delete fFilePanel; 
+	            delete fWpFolderPanel;
 	            Quit();
 	            break;
 	        }
@@ -7032,10 +7262,64 @@ private:
 	BMenuField*					fUserListFontMenu;
 
 	// Appearance & Custom Draw
-	BTextControl*				fBgPathInput;
-	BButton*					fBrowseBgBtn;
-	BFilePanel*					fFilePanel;
 	BSlider*					fBgOpacitySlider;
+	// Wallpaper tab
+	BCheckBox*					fWpOnCheck = nullptr;
+	std::vector<std::string>	fWpSourceKeys;
+	std::vector<BCheckBox*>		fWpSourceChecks;
+	BListView*					fWpFolderList = nullptr;
+	BScrollView*				fWpFolderScroll = nullptr;
+	BButton*					fWpAddFolderBtn = nullptr;
+	BButton*					fWpRemoveFolderBtn = nullptr;
+	BMenuField*					fWpIntervalMenu = nullptr;
+	BCheckBox*					fWpRandomCheck = nullptr;
+	BButton*					fWpChangeBtn = nullptr;
+	BButton*					fWpClearBtn = nullptr;
+	BTextView*					fWpStatusView = nullptr;
+	BFilePanel*					fWpFolderPanel = nullptr;
+	std::string					fWpCurrentPicture;
+	int32						fWpIndex = 0;
+	int32						fWpIntervalIndex = 2;
+	bool						fWpBusy = false;
+
+	// The sources that are ticked (at least one stays on)
+	std::vector<std::string> WallpaperSourceKeys() const {
+		std::vector<std::string> keys;
+		for (size_t k = 0; k < fWpSourceChecks.size(); k++)
+			if (fWpSourceChecks[k]->Value() == B_CONTROL_ON) keys.push_back(fWpSourceKeys[k]);
+		if (keys.empty()) keys.push_back("folders");
+		return keys;
+	}
+
+	// Keeps one source on and enables the folder controls only when "my folders" is one of them
+	void UpdateWallpaperSources(bool fromClick) {
+		bool any = false;
+		for (size_t k = 0; k < fWpSourceChecks.size(); k++)
+			if (fWpSourceChecks[k]->Value() == B_CONTROL_ON) any = true;
+		if (!any && !fWpSourceChecks.empty()) fWpSourceChecks[0]->SetValue(B_CONTROL_ON);
+		(void)fromClick;
+		const std::vector<std::string> keys = WallpaperSourceKeys();
+		const bool folders = std::find(keys.begin(), keys.end(), "folders") != keys.end();
+		fWpAddFolderBtn->SetEnabled(folders);
+		fWpRemoveFolderBtn->SetEnabled(folders);
+		fWpRandomCheck->SetEnabled(folders);
+	}
+
+	void UpdateWallpaperStatus() {
+		if (fWpCurrentPicture.empty()) {
+			fWpStatusView->SetText("No wallpaper picture.");
+			return;
+		}
+		std::string title, credit;
+		CricketWallpaper::Describe(fWpCurrentPicture, &title, &credit);
+		if (title.empty()) {
+			const size_t slash = fWpCurrentPicture.rfind('/');
+			title = slash == std::string::npos ? fWpCurrentPicture : fWpCurrentPicture.substr(slash + 1);
+		}
+		std::string text = "Picture: " + title;
+		if (!credit.empty()) text += "\n" + credit;
+		fWpStatusView->SetText(text.c_str());
+	}
 	BCheckBox*					fEnableEmoticonsCheck;
 	BCheckBox*					fUseCustomDrawCheck;
 	BCheckBox*					fRoundedEdgesCheck;
@@ -8195,6 +8479,9 @@ private:
 class CricketWindow : public BWindow {
 private:
 SpellPopup* fSpellPopup = nullptr;
+    BMessageRunner* fWallpaperRunner = nullptr;
+    std::map<std::string, time_t> fWallpaperLast;     // server name -> when its picture was asked for last
+    std::set<std::string> fWallpaperBusy;             // server names a picture is being got for
 public:
     // --- Restore flexible window border decoration masks ---
     CricketWindow() : BWindow(BRect(100, 100, 900, 600), "Cricket IRC Client", 
@@ -8207,6 +8494,12 @@ public:
         //@constructor
 
         SetFlags(Flags() | B_QUIT_ON_WINDOW_CLOSE);        
+
+        // the wallpaper tab's timer: every 20 seconds, see which server profile is due a new picture
+        {
+            BMessage tick('wptk');
+            fWallpaperRunner = new BMessageRunner(BMessenger(this), &tick, 20000000);
+        }
 
         // the window cannot be made smaller than this: below it the lists, the chat and the input box have no room left
         SetSizeLimits(600, B_SIZE_UNLIMITED, 380, B_SIZE_UNLIMITED);
@@ -8560,6 +8853,8 @@ public:
     int32 GetServerIndexFromNode(BStringItem* node);
 
     ~CricketWindow() {
+        delete fWallpaperRunner;
+        fWallpaperRunner = nullptr;
         gWall.canvas = nullptr;
         gWall.below = nullptr;
         gWall.panes[0] = gWall.panes[1] = nullptr;
@@ -15117,8 +15412,95 @@ public:
 
 
         	
+      case 'wptk': {
+        // a profile that changes its wallpaper is due when its interval has passed, or when it has no picture (any more)
+        std::vector<ServerConfig*> all;
+        for (size_t i = 0; i < cfg.servers.size(); i++) all.push_back(&cfg.servers[i]);
+        for (size_t i = 0; i < cfg.customServers.size(); i++) all.push_back(&cfg.customServers[i]);
+        const time_t now = time(nullptr);
+        for (size_t i = 0; i < all.size(); i++) {
+            ServerConfig* srv = all[i];
+            if (!srv->wallpaperOn || fWallpaperBusy.count(srv->name) > 0) continue;
+            const std::vector<int>& minutes = CricketWallpaper::IntervalMinutes();
+            int32 at = srv->wallpaperInterval;
+            if (at < 0) at = 0;
+            if (at >= (int32)minutes.size()) at = (int32)minutes.size() - 1;
+            const std::string& shown = srv->backgroundImagePath;
+            const bool missing = shown.empty() || access(shown.c_str(), R_OK) != 0;
+            std::map<std::string, time_t>::iterator last = fWallpaperLast.find(srv->name);
+            if (last == fWallpaperLast.end()) {
+                // (first look: the picture on show stays until the interval has passed)
+                fWallpaperLast[srv->name] = now;
+                if (!missing) continue;
+            } else if (!missing && now - last->second < (time_t)minutes[at] * 60) {
+                continue;
+            } else if (missing && now - last->second < 60) {
+                continue;
+            }
+            fWallpaperLast[srv->name] = now;
+            fWallpaperBusy.insert(srv->name);
+            CricketWallpaper::Settings w;
+            w.sources = srv->wallpaperSources;
+            w.folders = srv->wallpaperFolders;
+            w.random = srv->wallpaperRandom;
+            w.index = srv->wallpaperIndex;
+            BMessenger me(this);
+            const std::string name = srv->name, current = srv->backgroundImagePath;
+            std::thread([me, w, name, current]() {
+                CricketWallpaper::Result r = CricketWallpaper::PickOne(w, current);
+                BMessage done('wpdn');
+                done.AddString("server", name.c_str());
+                done.AddBool("ok", r.ok);
+                done.AddString("path", r.path.c_str());
+                done.AddString("error", r.error.c_str());
+                done.AddInt32("next", r.nextIndex);
+                BMessenger target(me);
+                target.SendMessage(&done);
+            }).detach();
+        }
+        break;
+      }
+
+      case 'wpdn': {
+        const char* name = nullptr;
+        message->FindString("server", &name);
+        if (name == nullptr) break;
+        fWallpaperBusy.erase(name);
+        bool ok = false;
+        message->FindBool("ok", &ok);
+        if (!ok) {
+            const char* error = nullptr;
+            message->FindString("error", &error);
+            if (cfg.debugEnable) fprintf(stderr, "wallpaper (%s): %s\n", name, error != nullptr ? error : "");
+            break;
+        }
+        const char* path = nullptr;
+        int32 next = 0;
+        message->FindString("path", &path);
+        message->FindInt32("next", &next);
+        if (path == nullptr) break;
+        ServerConfig* target = nullptr;
+        for (size_t i = 0; i < cfg.servers.size() && target == nullptr; i++)
+            if (cfg.servers[i].name == name) target = &cfg.servers[i];
+        for (size_t i = 0; i < cfg.customServers.size() && target == nullptr; i++)
+            if (cfg.customServers[i].name == name) target = &cfg.customServers[i];
+        if (target == nullptr || !target->wallpaperOn) break;
+        target->backgroundImagePath = path;
+        target->wallpaperIndex = next;
+        save_config();
+        // (the picture shows at once when this server is the one on screen)
+        if (fCustomChatLog != nullptr && fCurrentServerNode != nullptr
+            && BString(fCurrentServerNode->Text()) == BString(name)) {
+            fCustomChatLog->SetBackgroundImage(path);
+            fCustomChatLog->SetBackgroundDimming(target->backgroundOpacity);
+            fCustomChatLog->Invalidate();
+        }
+        break;
+      }
+
       case 'mscf': {
         save_config(); 
+        PostMessage('wptk');
         ApplyRoundedEdges();
         // Options the wrapping reads (emoticons, colour codes, nick colours) may have changed
         if (fCustomChatLog != nullptr) {

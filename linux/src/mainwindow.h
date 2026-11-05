@@ -109,6 +109,8 @@ private:
     void refreshTopic();
     void refreshStatus();
     void applyAppearance();
+    void restartWallpaperTimer(Session* s);
+    void advanceWallpaper(Session* s);
     void logToFile(Buffer* b, const QString& plainLine);
 
     // Output
@@ -161,6 +163,8 @@ private:
     void pollAwayStatus();
 
     QList<Session*> fSessions;
+    QHash<Session*, QTimer*> fWallpaperTimers;   // one per server profile that changes its wallpaper now and then
+    QSet<Session*> fWallpaperBusy;               // sessions a picture is being fetched for
     Buffer* fActive = nullptr;
 
     QSplitter* fSplitter = nullptr;

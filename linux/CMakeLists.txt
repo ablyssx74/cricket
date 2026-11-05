@@ -36,6 +36,7 @@ add_executable(cricket
     src/dialogs.cpp
     src/mainwindow.cpp
     src/dcc.cpp
+    src/wallpaper.cpp
     src/portmapper.cpp
     resources/resources.qrc
 )

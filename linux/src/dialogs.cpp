@@ -5,15 +5,18 @@
 #include "dialogs.h"
 
 #include "services.h"
+#include "wallpaper.h"
 
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QFileInfo>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QListWidget>
 #include <QStandardPaths>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -188,15 +191,6 @@ ServerDialog::ServerDialog(const ServerConfig& profile, bool isNew, QWidget* par
     fEmoticons->setChecked(profile.enableEmoticons);
     fColorCodes = new QCheckBox(tr("Render mIRC colour and formatting codes"));
     fColorCodes->setChecked(profile.enableColorCodes);
-    fBgImage = new QLineEdit(profile.backgroundImagePath);
-    auto* browse = new QPushButton(tr("Browse…"));
-    connect(browse, &QPushButton::clicked, this, &ServerDialog::browseBackground);
-    auto* bgRow = new QHBoxLayout;
-    bgRow->addWidget(fBgImage);
-    bgRow->addWidget(browse);
-    fBgOpacity = new QSlider(Qt::Horizontal);
-    fBgOpacity->setRange(0, 100);
-    fBgOpacity->setValue(profile.backgroundOpacity);
     fTimestamp = spin(0, 1440, profile.timestampInterval, tr(" min"));
     fTimestamp->setSpecialValueText(tr("Every line"));
     fServerFont = spin(6, 48, profile.serverListFontSize, " pt");
@@ -204,13 +198,82 @@ ServerDialog::ServerDialog(const ServerConfig& profile, bool isNew, QWidget* par
     fUserFont = spin(6, 48, profile.userListFontSize, " pt");
     lf->addRow(fEmoticons);
     lf->addRow(fColorCodes);
-    lf->addRow(tr("Background image:"), bgRow);
-    lf->addRow(tr("Background opacity:"), fBgOpacity);
     lf->addRow(tr("Timestamp interval:"), fTimestamp);
     lf->addRow(tr("Server list font:"), fServerFont);
     lf->addRow(tr("Chat font:"), fChatFont);
     lf->addRow(tr("User list font:"), fUserFont);
     tabs->addTab(look, tr("Appearance"));
+
+    // --- Wallpaper ---
+    auto* wall = new QWidget;
+    auto* wl = new QVBoxLayout(wall);
+    fCurrentPicture = profile.backgroundImagePath;
+    fWpIndex = profile.wallpaperIndex;
+    fWpOn = new QCheckBox(tr("Change the wallpaper automatically"));
+    fWpOn->setChecked(profile.wallpaperOn);
+    wl->addWidget(fWpOn);
+    auto* sources = new QGroupBox(tr("Pictures from"));
+    auto* sourcesLayout = new QVBoxLayout(sources);
+    for (const QString& key : Wallpaper::sourceKeys()) {
+        auto* box = new QCheckBox(Wallpaper::sourceTitle(key));
+        box->setChecked(profile.wallpaperSources.contains(key));
+        box->setProperty("source", key);
+        fWpSources << box;
+        sourcesLayout->addWidget(box);
+        connect(box, &QCheckBox::toggled, this, [this](bool) { sourcesChanged(); });
+    }
+    wl->addWidget(sources);
+    fWpFolderBox = new QGroupBox(tr("My folders"));
+    auto* folderLayout = new QVBoxLayout(fWpFolderBox);
+    fWpFolders = new QListWidget;
+    fWpFolders->addItems(profile.wallpaperFolders);
+    fWpFolders->setMaximumHeight(110);
+    auto* folderButtons = new QHBoxLayout;
+    auto* addFolder = new QPushButton(tr("Add folder…"));
+    auto* removeFolder = new QPushButton(tr("Remove"));
+    connect(addFolder, &QPushButton::clicked, this, &ServerDialog::addWallpaperFolder);
+    connect(removeFolder, &QPushButton::clicked, this, [this]() { qDeleteAll(fWpFolders->selectedItems()); });
+    folderButtons->addWidget(addFolder);
+    folderButtons->addWidget(removeFolder);
+    folderButtons->addStretch();
+    folderLayout->addWidget(fWpFolders);
+    folderLayout->addLayout(folderButtons);
+    wl->addWidget(fWpFolderBox);
+    auto* wf = new QFormLayout;
+    fWpInterval = new QComboBox;
+    for (int minutes : Wallpaper::intervalMinutes()) {
+        if (minutes < 60) fWpInterval->addItem(minutes == 1 ? tr("Every minute") : tr("Every %1 minutes").arg(minutes));
+        else if (minutes == 60) fWpInterval->addItem(tr("Every hour"));
+        else if (minutes < 1440) fWpInterval->addItem(tr("Every %1 hours").arg(minutes / 60));
+        else fWpInterval->addItem(tr("Every day"));
+    }
+    fWpInterval->setCurrentIndex(qBound(0, profile.wallpaperInterval, Wallpaper::intervalMinutes().size() - 1));
+    fWpRandom = new QCheckBox(tr("Random order (my folders)"));
+    fWpRandom->setChecked(profile.wallpaperRandom);
+    fBgOpacity = new QSlider(Qt::Horizontal);
+    fBgOpacity->setRange(0, 100);
+    fBgOpacity->setValue(profile.backgroundOpacity);
+    wf->addRow(tr("Change:"), fWpInterval);
+    wf->addRow(QString(), fWpRandom);
+    wf->addRow(tr("Wallpaper opacity:"), fBgOpacity);
+    wl->addLayout(wf);
+    auto* changeRow = new QHBoxLayout;
+    fWpChangeNow = new QPushButton(tr("Change now"));
+    connect(fWpChangeNow, &QPushButton::clicked, this, &ServerDialog::changeWallpaperNow);
+    auto* clearPicture = new QPushButton(tr("No wallpaper"));
+    connect(clearPicture, &QPushButton::clicked, this, [this]() { fCurrentPicture.clear(); showWallpaperCredit(); });
+    changeRow->addWidget(fWpChangeNow);
+    changeRow->addWidget(clearPicture);
+    changeRow->addStretch();
+    wl->addLayout(changeRow);
+    fWpStatus = new QLabel;
+    fWpStatus->setWordWrap(true);
+    fWpStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    wl->addWidget(fWpStatus);
+    wl->addStretch();
+    tabs->addTab(wall, tr("Wallpaper"));
+    sourcesChanged();
+    showWallpaperCredit();
 
     // --- Ignore & colours ---
     auto* people = new QWidget;
@@ -337,8 +400,16 @@ ServerConfig ServerDialog::result() const
     s.ignoredNicks = splitLines(fIgnored->toPlainText());
     s.enableEmoticons = fEmoticons->isChecked();
     s.enableColorCodes = fColorCodes->isChecked();
-    s.backgroundImagePath = fBgImage->text().trimmed();
+    s.backgroundImagePath = fCurrentPicture;
     s.backgroundOpacity = fBgOpacity->value();
+    s.wallpaperOn = fWpOn->isChecked();
+    s.wallpaperSources = wallpaperSourceKeys();
+    s.wallpaperFolders.clear();
+    for (int i = 0; i < fWpFolders->count(); ++i)
+        s.wallpaperFolders << fWpFolders->item(i)->text();
+    s.wallpaperInterval = fWpInterval->currentIndex();
+    s.wallpaperRandom = fWpRandom->isChecked();
+    s.wallpaperIndex = fWpIndex;
     s.timestampInterval = fTimestamp->value();
     s.serverListFontSize = fServerFont->value();
     s.chatLogFontSize = fChatFont->value();
@@ -362,12 +433,89 @@ ServerConfig ServerDialog::result() const
     return s;
 }
 
-void ServerDialog::browseBackground()
+QStringList ServerDialog::wallpaperSourceKeys() const
 {
-    QString file = QFileDialog::getOpenFileName(this, tr("Choose background image"), fBgImage->text(),
-        tr("Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"));
-    if (!file.isEmpty())
-        fBgImage->setText(file);
+    QStringList keys;
+    for (QCheckBox* box : fWpSources)
+        if (box->isChecked())
+            keys << box->property("source").toString();
+    if (keys.isEmpty())
+        keys << "folders";
+    return keys;
+}
+
+// At least one source stays on; the folders box shows only when "my folders" is one of them
+void ServerDialog::sourcesChanged()
+{
+    int on = 0;
+    QCheckBox* last = nullptr;
+    for (QCheckBox* box : fWpSources) {
+        if (box->isChecked()) {
+            on++;
+            last = box;
+        }
+    }
+    if (on == 0) {
+        QSignalBlocker block(fWpSources.first());
+        fWpSources.first()->setChecked(true);
+        last = fWpSources.first();
+    }
+    fWpFolderBox->setEnabled(wallpaperSourceKeys().contains("folders"));
+    fWpRandom->setEnabled(wallpaperSourceKeys().contains("folders"));
+    for (QCheckBox* box : fWpSources)
+        box->setEnabled(!(box == last && wallpaperSourceKeys().size() == 1));
+}
+
+void ServerDialog::addWallpaperFolder()
+{
+    const QString dir = QFileDialog::getExistingDirectory(this, tr("Add a folder with pictures"),
+        QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
+    if (dir.isEmpty())
+        return;
+    for (int i = 0; i < fWpFolders->count(); ++i)
+        if (fWpFolders->item(i)->text() == dir)
+            return;
+    fWpFolders->addItem(dir);
+}
+
+void ServerDialog::showWallpaperCredit()
+{
+    if (fCurrentPicture.isEmpty()) {
+        fWpStatus->setText(tr("No wallpaper picture."));
+        return;
+    }
+    QString title, credit;
+    Wallpaper::describe(fCurrentPicture, &title, &credit);
+    QString text = tr("Picture: %1").arg(title.isEmpty() ? QFileInfo(fCurrentPicture).fileName() : title);
+    if (!credit.isEmpty())
+        text += "\n" + credit;
+    fWpStatus->setText(text);
+}
+
+void ServerDialog::changeWallpaperNow()
+{
+    Wallpaper::Settings w;
+    w.sources = wallpaperSourceKeys();
+    for (int i = 0; i < fWpFolders->count(); ++i)
+        w.folders << fWpFolders->item(i)->text();
+    w.random = fWpRandom->isChecked();
+    w.index = fWpIndex;
+    if (w.sources == QStringList{"folders"} && w.folders.isEmpty()) {
+        fWpStatus->setText(tr("Add a folder with pictures first."));
+        return;
+    }
+    fWpChangeNow->setEnabled(false);
+    fWpStatus->setText(tr("Getting a picture…"));
+    Wallpaper::next(this, w, fCurrentPicture, [this](const Wallpaper::Result& r) {
+        fWpChangeNow->setEnabled(true);
+        if (!r.ok) {
+            fWpStatus->setText(r.error);
+            return;
+        }
+        fCurrentPicture = r.path;
+        fWpIndex = r.nextIndex;
+        showWallpaperCredit();
+    });
 }
 
 void ServerDialog::generateCertificate()

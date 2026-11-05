@@ -105,6 +105,12 @@ static QJsonObject serverToJson(const ServerConfig& srv)
     s["key_file_name"] = srv.keyFileName;
     s["background_image"] = srv.backgroundImagePath;
     s["bg_opacity"] = srv.backgroundOpacity;
+    s["wallpaper_on"] = srv.wallpaperOn;
+    s["wallpaper_sources"] = toArray(srv.wallpaperSources);
+    s["wallpaper_folders"] = toArray(srv.wallpaperFolders);
+    s["wallpaper_interval"] = srv.wallpaperInterval;
+    s["wallpaper_random"] = srv.wallpaperRandom;
+    s["wallpaper_index"] = srv.wallpaperIndex;
     s["enable_emoticons"] = srv.enableEmoticons;
     s["logChatsToFile"] = srv.logChatsToFile;
     s["enableColorCodes"] = srv.enableColorCodes;
@@ -154,6 +160,14 @@ static ServerConfig serverFromJson(const QJsonObject& s, const QString& fallback
     srv.nickAlert = s.value("nick_alert").toBool(true);
     srv.backgroundImagePath = s.value("background_image").toString();
     srv.backgroundOpacity = s.value("bg_opacity").toInt(30);
+    srv.wallpaperOn = s.value("wallpaper_on").toBool(false);
+    srv.wallpaperSources = fromArray(s.value("wallpaper_sources"));
+    if (srv.wallpaperSources.isEmpty())
+        srv.wallpaperSources = {"folders"};
+    srv.wallpaperFolders = fromArray(s.value("wallpaper_folders"));
+    srv.wallpaperInterval = qBound(0, s.value("wallpaper_interval").toInt(2), 6);
+    srv.wallpaperRandom = s.value("wallpaper_random").toBool(true);
+    srv.wallpaperIndex = qMax(0, s.value("wallpaper_index").toInt(0));
     srv.enableEmoticons = s.value("enable_emoticons").toBool(true);
     srv.logChatsToFile = s.value("logChatsToFile").toBool(false);
     srv.enableColorCodes = s.value("enableColorCodes").toBool(true);

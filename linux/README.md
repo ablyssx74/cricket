@@ -64,7 +64,9 @@ Command-line options:
   from the user list
 * Knock and invite prompts, and prompts for channel keys and invite-only channels
 * Away status (with away-notify), nick tab-completion, input history
-* Per-server background image and opacity, font sizes, and timestamp interval
+* Per-server wallpaper (Wallpaper tab): pictures from your folders or from online sources (Bing, Wikimedia
+  Commons, Wallhaven, Picsum Photos, Art Institute of Chicago), one picture at a time, a new one every
+  minute to day, with the picture's credit and an opacity setting. Also font sizes and timestamp interval
 * Optional chat logging to `~/.local/share/cricket/logs`
 * Checks GitHub for new versions
 * DCC file transfers (send / receive, passive DCC, resume) and DCC CHAT, with

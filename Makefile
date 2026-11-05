@@ -34,7 +34,7 @@ DEFINES += -DCRICKET_VERSION=\"$(VERSION)\"
 CXXFLAGS = -Wall -O3 -fdata-sections -ffunction-sections -Wno-reorder -Wno-unused-but-set-variable -I/boot/system/develop/headers/private/netservices2 -Iportmapper 
 
 # Source files, objects, and resources
-SRCS = cricket.cpp icons.cpp dcc.cpp portmapper/PortMapper.cpp
+SRCS = cricket.cpp icons.cpp dcc.cpp wallpaper.cpp portmapper/PortMapper.cpp
 OBJS = $(SRCS:.cpp=.o)
 RDEFS = cricket.rdef
 RSRCS = $(RDEFS:.rdef=.rsrc)
