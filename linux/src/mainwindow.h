@@ -46,6 +46,7 @@ struct Buffer {
     Session* session = nullptr;
     QTreeWidgetItem* item = nullptr;
     QStringList lines;             // rendered HTML
+    int bakedDark = -1;            // the colors in the lines are for a dark (1) or a light (0) background; -1: no line yet
     QMap<QString, ChannelUser> users; // keyed by lower-case nick
     QMap<QString, ChannelUser> pendingNames; // collecting 353 replies
     bool namesInProgress = false;
@@ -93,6 +94,12 @@ private:
     void applyRoundedEdges();
     void applyChatMargin();
     void applyWallpaper();
+    void previewWallpaper(Session* s, const QString& path, int opacityPercent);
+    void endWallpaperPreview(Session* s);
+    void applyTextContrast();
+    QColor textOverride() const;
+    bool darkBackgroundFor(Session* s) const;
+    void syncBufferColors(Buffer* b);
     void clearChat();
     Session* createSession(bool custom, int index);
     void wireConnection(Session* s);
@@ -181,6 +188,11 @@ private:
     QAction* fAwayAction = nullptr;
     QPointer<ChannelModesDialog> fModesDialog;
     QTimer* fAwayPollTimer = nullptr;
+    Session* fPreviewSession = nullptr;          // the server whose settings window is open: its picture and opacity are shown as they are there
+    QString fPreviewPath;
+    int fPreviewOpacity = 30;
+    QColor fTextOverride;                        // the text color the wallpaper asks for (invalid: the palette's own)
+    qint64 fContrastState = -1;                     // what the text was last made for, to draw the lists and the chat again only when it changes
 
     Translator* fTranslator = nullptr;
     DccManager* fDcc = nullptr;

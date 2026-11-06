@@ -209,6 +209,9 @@ ServerDialog::ServerDialog(const ServerConfig& profile, bool isNew, QWidget* par
     auto* wl = new QVBoxLayout(wall);
     fCurrentPicture = profile.backgroundImagePath;
     fWpIndex = profile.wallpaperIndex;
+    fWpShow = new QCheckBox(tr("Show the wallpaper"));
+    fWpShow->setChecked(profile.wallpaperShow);
+    wl->addWidget(fWpShow);
     fWpOn = new QCheckBox(tr("Change the wallpaper automatically"));
     fWpOn->setChecked(profile.wallpaperOn);
     wl->addWidget(fWpOn);
@@ -256,12 +259,19 @@ ServerDialog::ServerDialog(const ServerConfig& profile, bool isNew, QWidget* par
     wf->addRow(tr("Change:"), fWpInterval);
     wf->addRow(QString(), fWpRandom);
     wf->addRow(tr("Wallpaper opacity:"), fBgOpacity);
+    // (while the slider moves, not only when it is let go)
+    connect(fBgOpacity, &QSlider::valueChanged, this, [this](int) { previewWallpaper(); });
+    connect(fWpShow, &QCheckBox::toggled, this, [this](bool) { previewWallpaper(); });
     wl->addLayout(wf);
     auto* changeRow = new QHBoxLayout;
     fWpChangeNow = new QPushButton(tr("Change now"));
     connect(fWpChangeNow, &QPushButton::clicked, this, &ServerDialog::changeWallpaperNow);
     auto* clearPicture = new QPushButton(tr("No wallpaper"));
-    connect(clearPicture, &QPushButton::clicked, this, [this]() { fCurrentPicture.clear(); showWallpaperCredit(); });
+    connect(clearPicture, &QPushButton::clicked, this, [this]() {
+        fCurrentPicture.clear();
+        showWallpaperCredit();
+        previewWallpaper();
+    });
     changeRow->addWidget(fWpChangeNow);
     changeRow->addWidget(clearPicture);
     changeRow->addStretch();
@@ -403,6 +413,7 @@ ServerConfig ServerDialog::result() const
     s.backgroundImagePath = fCurrentPicture;
     s.backgroundOpacity = fBgOpacity->value();
     s.wallpaperOn = fWpOn->isChecked();
+    s.wallpaperShow = fWpShow->isChecked();
     s.wallpaperSources = wallpaperSourceKeys();
     s.wallpaperFolders.clear();
     for (int i = 0; i < fWpFolders->count(); ++i)
@@ -478,6 +489,12 @@ void ServerDialog::addWallpaperFolder()
     fWpFolders->addItem(dir);
 }
 
+// What the Wallpaper tab has now (the picture, or none when it is not to be shown, and the opacity) is shown in the window at once
+void ServerDialog::previewWallpaper()
+{
+    emit wallpaperPreview(fWpShow->isChecked() ? fCurrentPicture : QString(), fBgOpacity->value());
+}
+
 void ServerDialog::showWallpaperCredit()
 {
     if (fCurrentPicture.isEmpty()) {
@@ -515,6 +532,7 @@ void ServerDialog::changeWallpaperNow()
         fCurrentPicture = r.path;
         fWpIndex = r.nextIndex;
         showWallpaperCredit();
+        previewWallpaper();
     });
 }
 

@@ -106,6 +106,7 @@ static QJsonObject serverToJson(const ServerConfig& srv)
     s["background_image"] = srv.backgroundImagePath;
     s["bg_opacity"] = srv.backgroundOpacity;
     s["wallpaper_on"] = srv.wallpaperOn;
+    s["wallpaper_show"] = srv.wallpaperShow;
     s["wallpaper_sources"] = toArray(srv.wallpaperSources);
     s["wallpaper_folders"] = toArray(srv.wallpaperFolders);
     s["wallpaper_interval"] = srv.wallpaperInterval;
@@ -161,6 +162,7 @@ static ServerConfig serverFromJson(const QJsonObject& s, const QString& fallback
     srv.backgroundImagePath = s.value("background_image").toString();
     srv.backgroundOpacity = s.value("bg_opacity").toInt(30);
     srv.wallpaperOn = s.value("wallpaper_on").toBool(false);
+    srv.wallpaperShow = s.value("wallpaper_show").toBool(true);
     srv.wallpaperSources = fromArray(s.value("wallpaper_sources"));
     if (srv.wallpaperSources.isEmpty())
         srv.wallpaperSources = {"folders"};

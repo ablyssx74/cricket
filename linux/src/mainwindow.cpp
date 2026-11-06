@@ -71,6 +71,68 @@ static bool hidesJoinPartQuit(const ServerConfig& p, const QString& channel)
     return p.hideStatusMessages || p.hideStatusChannels.contains(channel, Qt::CaseInsensitive);
 }
 
+// Where the text of an item ends (x in the view's coordinates): the selection pill of Rounded Edges stops 22 px after it. The option
+// has the item's rect, text, font and icon in it.
+static int itemTextEnd(const QWidget* widget, const QStyleOptionViewItem& opt)
+{
+    QStyle* style = widget ? widget->style() : QApplication::style();
+    const QRect text = style->subElementRect(QStyle::SE_ItemViewItemText, &opt, widget);
+    const int margin = style->pixelMetric(QStyle::PM_FocusFrameHMargin, &opt, widget) + 1;
+    return text.left() + margin + opt.fontMetrics.horizontalAdvance(opt.text) + margin;
+}
+
+// The same for an item of a view whose own painting we do not go through (the server list): built from the item's data
+static int itemTextEnd(const QAbstractItemView* view, const QModelIndex& index, const QRect& cell)
+{
+    QStyleOptionViewItem opt;
+    opt.initFrom(view);
+    opt.rect = cell;
+    opt.text = index.data(Qt::DisplayRole).toString();
+    const QVariant font = index.data(Qt::FontRole);
+    opt.font = font.isValid() ? qvariant_cast<QFont>(font) : view->font();
+    opt.fontMetrics = QFontMetrics(opt.font);
+    opt.features |= QStyleOptionViewItem::HasDisplay;
+    const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+    if (!icon.isNull()) {
+        opt.features |= QStyleOptionViewItem::HasDecoration;
+        opt.icon = icon;
+        opt.decorationSize = view->iconSize().isValid() ? view->iconSize() : QSize(16, 16);
+    }
+    return itemTextEnd(view, opt);
+}
+
+// The list of the people of a channel. With Rounded Edges on, the selected item is a pill that ends 22 px after its text (the style
+// sheet can only fill the whole row); the text keeps the selected color, and the item's own colors (away) are not asked for then.
+class PillListDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        if (!cfg.roundedEdges || !(option.state & QStyle::State_Selected)) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+        QStyleOptionViewItem opt = option;
+        initStyleOption(&opt, index);
+        QRect pill = option.rect.adjusted(1, 0, -1, 0);
+        pill.setRight(qMin(itemTextEnd(option.widget, opt) + 22, option.rect.right() - 1));
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(option.palette.color(QPalette::Highlight));
+        painter->drawRoundedRect(pill, 6, 6);
+        painter->restore();
+        // (the style draws the text and the icon, without the selection and the focus box of its own)
+        opt.state &= ~(QStyle::State_Selected | QStyle::State_HasFocus);
+        opt.palette.setColor(QPalette::Text, option.palette.color(QPalette::HighlightedText));
+        opt.palette.setColor(QPalette::WindowText, option.palette.color(QPalette::HighlightedText));
+        QStyle* style = option.widget ? option.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, option.widget);
+    }
+};
+
+
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
@@ -149,8 +211,8 @@ protected:
     }
 };
 
-// The server list. With Rounded Edges on, the selected item is a pill with a dark outline, from its own cell to the right
-// edge; the branch lines to its left stay clear of it.
+// The server list. With Rounded Edges on, the selected item is a pill with a dark outline, from its own cell to 22 px after its
+// text; the branch lines to its left stay clear of it.
 class RoundedSelectionTree : public QTreeWidget {
 public:
     using QTreeWidget::QTreeWidget;
@@ -164,8 +226,9 @@ protected:
         }
         // the pill is the item's own cell, with its dark outline; the branch lines to the left of it stay as they are
         const QRect cell = visualRect(index.sibling(index.row(), 0));
-        QRect pill(cell.left(), option.rect.top(), viewport()->width() - cell.left(), option.rect.height());
-        pill.adjust(1, 1, -2, -1);
+        // (it ends 22 px after the item's text, or at the edge of the row when the name is longer than that)
+        const int right = qMin(itemTextEnd(this, index.sibling(index.row(), 0), cell) + 22, viewport()->width() - 2);
+        QRect pill(cell.left() + 1, option.rect.top() + 1, right - (cell.left() + 1), option.rect.height() - 2);
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
         painter->setPen(QPen(palette().color(QPalette::Shadow), 1));
@@ -376,7 +439,7 @@ void MainWindow::buildUi()
     ul->setSpacing(4);
     fUserCount = new QLabel;
     fUsers = new QListWidget;
-    fUsers->setItemDelegate(new NoFocusDelegate(fUsers));
+    fUsers->setItemDelegate(new PillListDelegate(fUsers));
     fUsers->setContextMenuPolicy(Qt::CustomContextMenu);
     fUsers->setSelectionMode(QAbstractItemView::ExtendedSelection);
     connect(fUsers, &QListWidget::customContextMenuRequested, this, &MainWindow::showUserMenu);
@@ -435,9 +498,8 @@ void MainWindow::applyRoundedEdges()
     // (the picture lies behind the boxes: those that show it are see-through)
     const QString frame = QString("border: 1px solid %1; border-radius: 7px; padding: 3px; background-color: %2;")
         .arg(pal.color(QPalette::Mid).name(), fWallpaper->hasWallpaper() ? QString("transparent") : pal.color(QPalette::Base).name());
-    const QString pill = QString("::item { padding: 2px; border-radius: 6px; } "
-        "::item:selected { background-color: %1; color: %2; border-radius: 6px; }")
-        .arg(pal.color(QPalette::Highlight).name(), pal.color(QPalette::HighlightedText).name());
+    // (the selected item of the user list is painted by PillListDelegate, as wide as its text)
+    const QString pill = QString("::item { padding: 2px; border-radius: 6px; }");
     // (the server list paints its own selection pill across the whole row, see RoundedSelectionTree)
     fTree->setStyleSheet("QTreeWidget { " + frame + " outline: 0; }");
     fUsers->setStyleSheet("QListWidget { " + frame + " outline: 0; } QListWidget" + pill);
@@ -448,7 +510,7 @@ void MainWindow::applyRoundedEdges()
     for (int i = 0; i < 3; ++i) {
         if (!fOverlayBars[i])
             fOverlayBars[i] = new OverlayBar(areas[i]);
-        fOverlayBars[i]->setColors(pal.color(QPalette::Text), pal.color(QPalette::Highlight));
+        fOverlayBars[i]->setColors(fTextOverride.isValid() ? fTextOverride : pal.color(QPalette::Text), pal.color(QPalette::Highlight));
     }
     applyChatMargin();
     fTopic->setStyleSheet("QLineEdit { " + frame + " }");
@@ -483,6 +545,169 @@ void MainWindow::applyWallpaper()
         fTopic->setPalette(QPalette());
     }
     fWallpaper->update();
+    applyTextContrast();
+}
+
+static QString kindColor(int kind, bool dark);
+
+// The picture a profile shows: none when it is switched off (its settings stay)
+static QString shownPicture(const ServerConfig& p)
+{
+    return p.wallpaperShow ? p.backgroundImagePath : QString();
+}
+
+// The text color the picture under the text asks for: dark over a light picture, light over a dark one, and none (the palette's
+// own) when the palette's text already reads well there or there is no picture.
+QColor MainWindow::textOverride() const
+{
+    Session* s = fActive ? fActive->session : nullptr;
+    if (!s || !fWallpaper->hasWallpaper())
+        return QColor();
+    const bool lightPicture = fWallpaper->isLight();
+    const bool themeTextLight = QApplication::palette().color(QPalette::Text).lightness() >= 128;
+    if (lightPicture && themeTextLight)
+        return QColor(0x1a, 0x1a, 0x1a);
+    if (!lightPicture && !themeTextLight)
+        return QColor(0xe8, 0xe8, 0xe8);
+    return QColor();
+}
+
+// Is the background the text of this server lies on dark? The picture of the server's profile decides when it has one, else the
+// palette. (Each server has its own picture, and its lines are drawn with the colors for that.)
+bool MainWindow::darkBackgroundFor(Session* s) const
+{
+    const ServerConfig& p = s->profile();
+    const QString path = fPreviewSession == s ? fPreviewPath : shownPicture(p);
+    const int opacity = fPreviewSession == s ? fPreviewOpacity : p.backgroundOpacity;
+    if (!path.isEmpty() && QFile::exists(path))
+        return !WallpaperContrast::isLight(path, opacity, fWallpaper->palette().color(QPalette::Base));
+    return fChat->paletteIsDark();
+}
+
+// The lines of a buffer hold their colors as HTML; when the background they are meant for changes (another picture, another
+// theme) the ones that were chosen by the program (the kinds of line, the highlight, the nicks without a color of the user's)
+// are swapped for the other set, so that a server's old lines read as well as its new ones.
+void MainWindow::syncBufferColors(Buffer* b)
+{
+    if (!b)
+        return;
+    const int dark = darkBackgroundFor(b->session) ? 1 : 0;
+    if (b->bakedDark == dark || b->bakedDark < 0 || b->lines.isEmpty()) {
+        b->bakedDark = dark;
+        return;
+    }
+    const bool toDark = dark == 1;
+    static const QRegularExpression nick("<b style=\"color:(#[0-9a-f]{6})\">([^<]*)</b>");
+    for (QString& line : b->lines) {
+        for (int kind = 1; kind <= 6; ++kind) {
+            line.replace("color:" + kindColor(kind, !toDark) + "\"", "color:" + kindColor(kind, toDark) + "\"");
+        }
+        line.replace(QString("background-color:%1\"").arg(toDark ? "#fff2a8" : "#5a4a10"),
+            QString("background-color:%1\"").arg(toDark ? "#5a4a10" : "#fff2a8"));
+        QString out;
+        int at = 0;
+        QRegularExpressionMatchIterator it = nick.globalMatch(line);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            out += line.mid(at, m.capturedStart() - at);
+            at = m.capturedEnd();
+            const QString name = QString(m.captured(2)).replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&");
+            if (m.captured(1) == IrcFormat::nickColor(name, !toDark).name())
+                out += QString("<b style=\"color:%1\">%2</b>").arg(IrcFormat::nickColor(name, toDark).name(), m.captured(2));
+            else
+                out += m.captured(0);
+        }
+        if (at > 0)
+            line = out + line.mid(at);
+    }
+    b->bakedDark = dark;
+}
+
+// The Wallpaper tab of a server's settings window shows its picture and opacity in the window at once, when the server is the one on
+// screen (for another one there is nothing to see). Nothing is saved: the window's Cancel calls endWallpaperPreview().
+void MainWindow::previewWallpaper(Session* s, const QString& path, int opacityPercent)
+{
+    if (!s || !fActive || fActive->session != s)
+        return;
+    fPreviewSession = s;
+    fPreviewPath = path;
+    fPreviewOpacity = opacityPercent;
+    applyAppearance();
+    syncBufferColors(fActive);
+    fChat->setLines(fActive->lines);
+}
+
+// The settings window is closed: the window shows the saved picture again (after OK the saved one is the new one).
+void MainWindow::endWallpaperPreview(Session* s)
+{
+    if (fPreviewSession != s)
+        return;
+    fPreviewSession = nullptr;
+    if (fActive && fActive->session == s) {
+        applyAppearance();
+        syncBufferColors(fActive);
+        fChat->setLines(fActive->lines);
+    }
+}
+
+// Makes the text of every pane (the server list, the chat, the user list, the topic bar, the input box) follow the picture under it.
+void MainWindow::applyTextContrast()
+{
+    fTextOverride = textOverride();
+    const QPalette app = QApplication::palette();
+    const QColor text = fTextOverride.isValid() ? fTextOverride : app.color(QPalette::Text);
+    QColor hint = text;
+    hint.setAlpha(150);
+    QColor disabled = text;
+    disabled.setAlpha(120);
+    auto paint = [&](QWidget* w) {
+        QPalette pal = w->palette();
+        pal.setColor(QPalette::Text, text);
+        pal.setColor(QPalette::WindowText, text);
+        pal.setColor(QPalette::ButtonText, text);
+        pal.setColor(QPalette::PlaceholderText, hint);
+        pal.setColor(QPalette::Disabled, QPalette::Text, disabled);
+        if (w == fChat || w == fChat->viewport()) {
+            // (a link over a light picture is the dark blue of a light page)
+            const bool onLight = fTextOverride.isValid() && fTextOverride.lightness() < 128;
+            pal.setColor(QPalette::Link, onLight ? QColor(0x0b, 0x4f, 0xb3) : app.color(QPalette::Link));
+            pal.setColor(QPalette::LinkVisited, onLight ? QColor(0x6a, 0x2b, 0xa8) : app.color(QPalette::LinkVisited));
+        }
+        w->setPalette(pal);
+    };
+    QAbstractScrollArea* areas[] = { fTree, fUsers, fChat, fInput };
+    for (QAbstractScrollArea* area : areas) {
+        paint(area);
+        paint(area->viewport());
+    }
+    paint(fTopic);
+    // (the colour of a link is taken when the HTML is read, so it goes in the document's style sheet; the lines are read again below
+    // when the picture changes from light to dark or back)
+    fChat->document()->setDefaultStyleSheet(fTextOverride.isValid() && fTextOverride.lightness() < 128
+        ? QString("a { color: #0b4fb3; }") : QString());
+    // the handles of the scroll bars are drawn in the text color too
+    for (OverlayBar* bar : fOverlayBars)
+        if (bar)
+            bar->setColors(text, palette().color(QPalette::Highlight));
+
+    // what has the colors of the background in it (the chat's lines, the server list's items, the user list) is made again when it changed
+    const int state = !fWallpaper->hasWallpaper() ? -1 : (fWallpaper->isLight() ? 0 : 1);
+    const qint64 key = qint64(state + 1) | (fTextOverride.isValid() ? (qint64(fTextOverride.rgb() & 0xffffff) + 1) << 2 : 0);
+    const qint64 was = fContrastState;
+    fContrastState = key;
+    fChat->setBackgroundDark(!fActive ? -1 : (state < 0 ? -1 : (darkBackgroundFor(fActive->session) ? 1 : 0)));
+    if (was == key)
+        return;
+    for (Session* ss : fSessions) {
+        updateTreeItem(ss->server);
+        for (Buffer* b : ss->buffers)
+            updateTreeItem(b);
+    }
+    refreshUserList();
+    if (fActive) {
+        syncBufferColors(fActive);
+        fChat->setLines(fActive->lines);
+    }
 }
 
 // The chat's text keeps clear of the scroll bar's handle. (The margin is lost when the chat is cleared.)
@@ -617,7 +842,7 @@ void MainWindow::restartWallpaperTimer(Session* s)
 {
     QTimer* t = fWallpaperTimers.value(s);
     const ServerConfig& p = s->profile();
-    if (!p.wallpaperOn) {
+    if (!p.wallpaperOn || !p.wallpaperShow) {
         if (t)
             t->stop();
         return;
@@ -636,7 +861,7 @@ void MainWindow::restartWallpaperTimer(Session* s)
 
 void MainWindow::advanceWallpaper(Session* s)
 {
-    if (!fSessions.contains(s) || fWallpaperBusy.contains(s))
+    if (!fSessions.contains(s) || fWallpaperBusy.contains(s) || !s->profile().wallpaperShow)
         return;
     const ServerConfig& p = s->profile();
     Wallpaper::Settings w;
@@ -765,6 +990,7 @@ void MainWindow::setActiveBuffer(Buffer* b)
     }
     if (sessionChanged)
         applyAppearance();
+    syncBufferColors(b);
     fChat->setLines(b->lines);
     refreshTopic();
     refreshUserList();
@@ -889,9 +1115,15 @@ void MainWindow::applyAppearance()
     uf.setPointSize(p.userListFontSize);
     fUsers->setFont(uf);
     const bool hadWallpaper = fWallpaper->hasWallpaper();
-    fWallpaper->setWallpaper(p.backgroundImagePath, p.backgroundOpacity);
+    // (while the server's settings window is open, what is chosen there shows, saved or not)
+    if (fPreviewSession == s)
+        fWallpaper->setWallpaper(fPreviewPath, fPreviewOpacity);
+    else
+        fWallpaper->setWallpaper(shownPicture(p), p.backgroundOpacity);
     if (fWallpaper->hasWallpaper() != hadWallpaper)
         applyRoundedEdges();
+    else
+        applyTextContrast();
     for (Session* ss : fSessions) {
         updateTreeItem(ss->server);
         for (Buffer* b : ss->buffers)
@@ -946,7 +1178,9 @@ void MainWindow::print(Buffer* b, const QString& html, LineKind kind, const QStr
 {
     if (!b)
         return;
-    const bool dark = fChat->isDark();
+    syncBufferColors(b);
+    const bool dark = darkBackgroundFor(b->session);
+    b->bakedDark = dark ? 1 : 0;
     QString line;
     const bool isChat = kind == LineKind::Normal || kind == LineKind::Action || kind == LineKind::Notice
         || kind == LineKind::Own || kind == LineKind::Highlight;
@@ -1015,7 +1249,7 @@ QString MainWindow::nickHtml(Session* s, const QString& nick) const
         }
     }
     if (!color.isValid())
-        color = IrcFormat::nickColor(nick, fChat->isDark());
+        color = IrcFormat::nickColor(nick, darkBackgroundFor(s));
     return QString("<b style=\"color:%1\">%2</b>").arg(color.name(), nick.toHtmlEscaped());
 }
 
@@ -2129,8 +2363,16 @@ void MainWindow::configureSession(Session* s)
     connect(&dlg, &ServerDialog::registerFingerprint, this, [this, s](const QString& sha1, const QString& sha512) {
         registerFingerprint(s, sha1, sha512);
     });
-    if (dlg.exec() != QDialog::Accepted)
+    connect(&dlg, &ServerDialog::wallpaperPreview, this, [this, s](const QString& path, int opacityPercent) {
+        previewWallpaper(s, path, opacityPercent);
+    });
+    const bool accepted = dlg.exec() == QDialog::Accepted;
+    if (!accepted) {
+        // Cancel: the window goes back to the saved picture and opacity
+        endWallpaperPreview(s);
         return;
+    }
+    fPreviewSession = nullptr;      // (OK: what was shown is saved below)
     s->profile() = dlg.result();
     s->server->name = s->profile().name;
     s->conn->setProfile(s->profile());
@@ -2139,6 +2381,7 @@ void MainWindow::configureSession(Session* s)
     updateTreeItem(s->server);
     if (fActive && fActive->session == s) {
         applyAppearance();
+        syncBufferColors(fActive);
         fChat->setLines(fActive->lines);
         refreshTopic();
     }

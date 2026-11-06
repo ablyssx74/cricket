@@ -37,6 +37,7 @@ struct ServerConfig {
     QString backgroundImagePath;           // the wallpaper picture shown now (put there by the Wallpaper tab)
     int backgroundOpacity = 30;
     bool wallpaperOn = false;              // change the picture now and then
+    bool wallpaperShow = true;             // the picture is shown (off: its settings stay, but nothing is drawn and none is fetched)
     QStringList wallpaperSources = {"folders"};   // any of: folders, bing, wikimedia, wallhaven, picsum, artic
     QStringList wallpaperFolders;
     int wallpaperInterval = 2;             // index into Wallpaper::intervalMinutes()

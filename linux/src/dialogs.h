@@ -36,12 +36,15 @@ signals:
     // Emitted after a CertFP keypair is generated; the window forwards it to
     // NickServ if the network is connected.
     void registerFingerprint(const QString& sha1, const QString& sha512);
+    // The picture or its opacity changed in the Wallpaper tab: the window shows it at once (nothing is saved until OK)
+    void wallpaperPreview(const QString& path, int opacityPercent);
 
 private:
     void generateCertificate();
     void addWallpaperFolder();
     void changeWallpaperNow();
     void showWallpaperCredit();
+    void previewWallpaper();
     void sourcesChanged();
     QStringList wallpaperSourceKeys() const;
     void accept() override;
@@ -57,7 +60,7 @@ private:
     QPlainTextEdit *fAutojoin, *fAutocmd, *fIgnored;
     QCheckBox *fEmoticons, *fColorCodes;
     QSlider* fBgOpacity;
-    QCheckBox *fWpOn, *fWpRandom;
+    QCheckBox *fWpOn, *fWpRandom, *fWpShow;
     QList<QCheckBox*> fWpSources;
     QGroupBox* fWpFolderBox;
     QListWidget* fWpFolders;

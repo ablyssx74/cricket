@@ -378,6 +378,7 @@ struct ServerConfig {
     bool enableEmoticons;    
     std::string backgroundImagePath; 
     int32 backgroundOpacity;     
+    bool wallpaperShow = true;                                  // off: the picture is kept but not shown
     bool wallpaperOn = false;                                   // change the picture now and then
     std::vector<std::string> wallpaperSources = {"folders"};    // any of: folders, bing, wikimedia, wallhaven, picsum, artic
     std::vector<std::string> wallpaperFolders;
@@ -484,8 +485,37 @@ struct SharedWallpaper {
     bool     cacheLight = false;
     bool     resizing = false;          // the window is being resized: the picture of the old size is stretched
     uint32   serial = 0;                // changes with every new cache
+    int      textMode = 0;              // 0: the text has the theme's colors; 1: the picture is light but the theme's text is
+                                        // light: the text is dark; -1: the picture is dark but the theme's text is dark: light
 };
 static SharedWallpaper gWall;
+
+// ---- the text over a picture ----
+// The theme's text colors are made for the theme's own background. Over a picture that is of the other kind (a dark
+// theme with a light picture) the text cannot be read, so while the picture is showing its colors are changed to the
+// other kind: a light color to a dark one of the same hue (white to a near black), or the other way round.
+static float InkLuma(rgb_color c) { return 0.2126f * c.red + 0.7152f * c.green + 0.0722f * c.blue; }
+
+static rgb_color WallInk(rgb_color c) {
+    if (gWall.textMode == 0) return c;
+    const float y = InkLuma(c);
+    const int hi = std::max(c.red, std::max(c.green, c.blue)), lo = std::min(c.red, std::min(c.green, c.blue));
+    const bool gray = (hi - lo) < 30;          // (plain text, no hue to keep)
+    rgb_color out = c;
+    if (gWall.textMode > 0) {
+        if (y < 110.0f) return c;
+        if (gray && y > 200.0f) { out.red = out.green = out.blue = 26; return out; }
+        out.red = (uint8)(c.red * 0.42f); out.green = (uint8)(c.green * 0.42f); out.blue = (uint8)(c.blue * 0.42f);
+    } else {
+        if (y > 150.0f) return c;
+        if (gray && y < 55.0f) { out.red = out.green = out.blue = 232; return out; }
+        out.red = (uint8)(c.red + (255 - c.red) * 0.55f); out.green = (uint8)(c.green + (255 - c.green) * 0.55f);
+        out.blue = (uint8)(c.blue + (255 - c.blue) * 0.55f);
+    }
+    return out;
+}
+
+static rgb_color UiInk(color_which which) { return WallInk(ui_color(which)); }
 
 static bool IsWallpaperPane(const BView* view) {
     return view != nullptr && (view == gWall.panes[0] || view == gWall.panes[1]);
@@ -494,6 +524,15 @@ static bool IsWallpaperPane(const BView* view) {
 // A scroll bar beside a list that shows the wallpaper shows it under its thumb too
 static bool IsWallpaperBar(const BScrollBar* bar) {
     return bar != nullptr && IsWallpaperPane(bar->Target());
+}
+
+// The text color of a view that shows the picture behind its text (a list, the topic bar, the input box); another view
+// (a settings window's list) keeps the theme's color.
+static rgb_color PaneInk(const BView* view, rgb_color c) {
+    if (gWall.textMode == 0 || view == nullptr) return c;
+    if (IsWallpaperPane(view) || view == gWall.bars[0].control || view == gWall.bars[1].control)
+        return WallInk(c);
+    return c;
 }
 
 static bool WallpaperActive() {
@@ -508,6 +547,10 @@ static BPoint ViewWindowPos(BView* view, BPoint point) {
 // The picture or its dimming changed: the lists show it (they draw their own background then) or not
 static void WallpaperChanged() {
     const bool on = gWall.source != nullptr;
+    if (!on) {
+        gWall.textMode = 0;             // (no picture: the theme's own text colors; a new picture is looked at again)
+        gWall.cacheSource = nullptr;
+    }
     for (int i = 0; i < 2; i++) {
         BView* pane = gWall.panes[i];
         if (pane == nullptr || pane->Window() == nullptr) continue;
@@ -530,6 +573,10 @@ static void WallpaperChanged() {
     if (topic != nullptr && topic->Window() != nullptr && topic->LockLooper()) {
         BTextView* text = topic->TextView();
         if (text != nullptr) {
+            // the text of the bar is dark over a light picture and light over a dark one (the text there already, and what is typed)
+            const rgb_color ink = (on && cfg.roundedEdges) ? WallInk(ui_color(B_DOCUMENT_TEXT_COLOR)) : ui_color(B_DOCUMENT_TEXT_COLOR);
+            text->SetFontAndColor(0, text->TextLength(), nullptr, 0, &ink);
+            text->SetFontAndColor(nullptr, 0, &ink);
             if (on && cfg.roundedEdges) {
                 text->SetViewColor(B_TRANSPARENT_COLOR);
                 text->SetDrawingMode(B_OP_ALPHA);
@@ -581,6 +628,49 @@ static BBitmap* WallpaperPicture(int32 w, int32 h, bool light) {
     v->Sync();
     off->Unlock();
     gWall.cache = off;
+
+    // How light the picture is as it is seen: the mean color of the picture drawn small, with the dimming over it, as a
+    // relative luminance. A light picture gets dark text and a dark one light text, whichever the theme is.
+    {
+        BBitmap* small = new BBitmap(BRect(0, 0, 31, 31), B_RGB32, true);
+        if (small->InitCheck() == B_OK && small->Lock()) {
+            BView* sv = new BView(BRect(0, 0, 31, 31), "wallpaper_sample", B_FOLLOW_NONE, 0);
+            small->AddChild(sv);
+            sv->SetDrawingMode(B_OP_COPY);
+            sv->DrawBitmap(gWall.source, BRect(0, 0, 31, 31));
+            sv->Sync();
+            small->Unlock();
+            const uint8* bits = (const uint8*)small->Bits();
+            const int32 stride = small->BytesPerRow();
+            double sum[3] = { 0, 0, 0 };
+            for (int32 y = 0; y < 32; y++) {
+                for (int32 x = 0; x < 32; x++) {
+                    const uint8* p = bits + y * stride + x * 4;      // (blue, green, red, alpha)
+                    sum[0] += p[2]; sum[1] += p[1]; sum[2] += p[0];
+                }
+            }
+            // (as it is seen: the dimming laid over the picture, black over a dark theme and white over a light one; this is
+            // done again with every change of the dimming, so the slider moves the text from dark to light and back)
+            const double veil = gWall.dim > 0 ? gWall.dim / 100.0 : 0.0;
+            const double veilColor = light ? 255.0 : 0.0;
+            double lin[3];
+            for (int i = 0; i < 3; i++) {
+                const double seen = (sum[i] / (32 * 32)) * (1.0 - veil) + veilColor * veil;
+                const double c = seen / 255.0;
+                lin[i] = c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+            }
+            const double relative = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+            const bool pictureLight = relative > 0.25;
+            const int mode = (pictureLight == light) ? 0 : (pictureLight ? 1 : -1);
+            if (mode != gWall.textMode) {
+                gWall.textMode = mode;
+                // (this runs while a view is drawn: the window is told, and draws everything again with the new colors)
+                if (gWall.canvas != nullptr && gWall.canvas->Window() != nullptr)
+                    gWall.canvas->Window()->PostMessage('wtmc');
+            }
+        }
+        delete small;
+    }
     return off;
 }
 
@@ -643,7 +733,9 @@ static void PaintWallpaperBehind(BView* list, BRect updateRect) {
 }
 
 // The background of a list row. A selected row is a rounded pill when Rounded Edges is on.
-static void FillListRowBackground(BView* owner, BRect rect, bool selected) {
+// textRight: where the row's text ends (-1: not known). The rounded highlight of a selected row then ends a little after the
+// text and does not run on across the whole list; without it, and in the flat style, the row is highlighted over its whole width.
+static void FillListRowBackground(BView* owner, BRect rect, bool selected, float textRight = -1.0f) {
     // The row is the whole width of the list: the items are made that wide (see
     // WideRowItem below), but a row is drawn over the visible width in any case
     rect.left = owner->Bounds().left;
@@ -656,6 +748,8 @@ static void FillListRowBackground(BView* owner, BRect rect, bool selected) {
     if (cfg.roundedEdges) {
         BRect pill = rect;
         pill.InsetBy(2.0f, 1.0f);
+        if (textRight > 0.0f && textRight + 22.0f < pill.right)
+            pill.right = textRight + 22.0f;
         owner->PushState();
         owner->SetDrawingMode(B_OP_ALPHA);
         owner->SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
@@ -687,8 +781,14 @@ void ensure_config_dir() {
     }
 }
 
+// The picture a profile shows: none when the profile has none, or when it is set not to show it
+static const char* PictureToShow(const ServerConfig& srv) {
+    return (srv.wallpaperShow && !srv.backgroundImagePath.empty()) ? srv.backgroundImagePath.c_str() : nullptr;
+}
+
 // The wallpaper settings of a server profile from its JSON object (names as in the Linux and Qt versions)
 static void LoadWallpaperSettings(const json& s, ServerConfig& srv) {
+    srv.wallpaperShow = s.value("wallpaper_show", true);
     srv.wallpaperOn = s.value("wallpaper_on", false);
     srv.wallpaperSources.clear();
     srv.wallpaperFolders.clear();
@@ -763,6 +863,7 @@ void save_config() {
       
         s["background_image"] = srv.backgroundImagePath;         
         s["bg_opacity"] = srv.backgroundOpacity; 
+        s["wallpaper_show"] = srv.wallpaperShow;
         s["wallpaper_on"] = srv.wallpaperOn;
         s["wallpaper_sources"] = srv.wallpaperSources;
         s["wallpaper_folders"] = srv.wallpaperFolders;
@@ -856,6 +957,7 @@ void save_config() {
         s["background_image"] = srv.backgroundImagePath;
         
         s["bg_opacity"] = srv.backgroundOpacity; 
+        s["wallpaper_show"] = srv.wallpaperShow;
         s["wallpaper_on"] = srv.wallpaperOn;
         s["wallpaper_sources"] = srv.wallpaperSources;
         s["wallpaper_folders"] = srv.wallpaperFolders;
@@ -1931,15 +2033,15 @@ public:
     }
 
     virtual void DrawItem(BView* owner, BRect frame, bool complete = false) override {
-        FillListRowBackground(owner, frame, IsSelected());
+        FillListRowBackground(owner, frame, IsSelected(), frame.left + 4 + owner->StringWidth(Text()));
 
         if (IsSelected()) {
             owner->SetHighColor(ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR));
         } else if (fIsAway) {
             rgb_color awayColor = { 140, 140, 140, 255 }; 
-            owner->SetHighColor(awayColor);
+            owner->SetHighColor(PaneInk(owner, awayColor));
         } else {
-            owner->SetHighColor(ui_color(B_LIST_ITEM_TEXT_COLOR));
+            owner->SetHighColor(PaneInk(owner, ui_color(B_LIST_ITEM_TEXT_COLOR)));
         }
 
         font_height fh;
@@ -2483,7 +2585,7 @@ public:
             font_height fh;
             GetFontHeight(&fh);
             float y = (Bounds().Height() - (fh.ascent + fh.descent)) / 2.0f + fh.ascent;
-            SetHighColor(ui_color(B_DOCUMENT_TEXT_COLOR));
+            SetHighColor(PaneInk(this, ui_color(B_DOCUMENT_TEXT_COLOR)));
             DrawString(text, BPoint(4.0f, y));
         }
     }
@@ -3658,6 +3760,9 @@ void CustomChatView::Draw(BRect updateRect) {
                       (0.7152f * systemBgColor.green) + 
                       (0.0722f * systemBgColor.blue);
     bool isLightTheme = (luminance > 128.0f);
+    // (over a picture of the other kind the text is of the other kind: dark text means "light theme" below)
+    if (gWall.textMode > 0) isLightTheme = true;
+    else if (gWall.textMode < 0) isLightTheme = false;
 
     // --- BOX MODE (Rounded Edges): the picture of the whole box, outline and corners included ---
     BBitmap* boxPicture = nullptr;
@@ -3838,7 +3943,7 @@ void CustomChatView::Draw(BRect updateRect) {
                             (renderColor.red == 0   && renderColor.green == 0   && renderColor.blue == 0)) {
                             renderColor = systemTextColor;
                         }
-                        SetHighColor(renderColor);
+                        SetHighColor(WallInk(renderColor));       // (over a picture of the other kind than the theme's)
                         
                         // Draw text over the highlighted background tint layer safely
                         DrawString(frag->subText.String(), BPoint(currentX, currentY + fLineHeight - 2.0f));
@@ -4813,7 +4918,7 @@ public:
             owner->FillRect(itemRect, B_SOLID_LOW);
         } else {
             owner->SetLowColor(ui_color(B_LIST_BACKGROUND_COLOR));
-            owner->SetHighColor(ui_color(B_LIST_ITEM_TEXT_COLOR));
+            owner->SetHighColor(PaneInk(owner, ui_color(B_LIST_ITEM_TEXT_COLOR)));
             owner->FillRect(itemRect, B_SOLID_LOW);
         }
 
@@ -4847,7 +4952,7 @@ public:
         if (IsSelected()) {
             owner->SetHighColor(ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR));
         } else {
-            owner->SetHighColor(ui_color(B_LIST_ITEM_TEXT_COLOR));
+            owner->SetHighColor(PaneInk(owner, ui_color(B_LIST_ITEM_TEXT_COLOR)));
         }
         
         // Extract the exact layout width directly via the parent window frame.
@@ -5220,16 +5325,19 @@ public:
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
         owner->PushState();
 
-        FillListRowBackground(owner, itemRect, IsSelected());
+        BString pillLabel = Text();
+        if (fAutoJoin) pillLabel << " [A]";
+        FillListRowBackground(owner, itemRect, IsSelected(),
+            itemRect.left + 20 - LevelIndentTrim(this) + owner->StringWidth(pillLabel.String()));
         owner->SetLowColor(ui_color(IsSelected() ? B_LIST_SELECTED_BACKGROUND_COLOR : B_LIST_BACKGROUND_COLOR));
-        owner->SetHighColor(ui_color(IsSelected() ? B_LIST_SELECTED_ITEM_TEXT_COLOR : B_LIST_ITEM_TEXT_COLOR));
+        owner->SetHighColor(IsSelected() ? ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR) : PaneInk(owner, ui_color(B_LIST_ITEM_TEXT_COLOR)));
 
         BFont dynamicFont;
         owner->GetFont(&dynamicFont);
 
         if (fHasUnread && !IsSelected()) {
             dynamicFont.SetFace(B_BOLD_FACE);
-            owner->SetHighColor(ui_color(B_LINK_TEXT_COLOR)); 
+            owner->SetHighColor(PaneInk(owner, ui_color(B_LINK_TEXT_COLOR))); 
         } else {
             dynamicFont.SetFace(B_REGULAR_FACE);
         }
@@ -5388,29 +5496,12 @@ public:
 
     void DrawItem(BView* owner, BRect itemRect, bool drawEverything) override {
         owner->PushState();
-        
-        FillListRowBackground(owner, itemRect, IsSelected());
-        owner->SetLowColor(ui_color(IsSelected() ? B_LIST_SELECTED_BACKGROUND_COLOR : B_LIST_BACKGROUND_COLOR));
-        owner->SetHighColor(ui_color(IsSelected() ? B_LIST_SELECTED_ITEM_TEXT_COLOR : B_LIST_ITEM_TEXT_COLOR));
 
-        BFont dynamicFont;
-        owner->GetFont(&dynamicFont);
-        owner->SetFont(&dynamicFont);
-
-        font_height fh;
-        dynamicFont.GetHeight(&fh);
-        float textBaseline = itemRect.top + fh.ascent + (itemRect.Height() - (fh.ascent + fh.descent + fh.leading)) / 2.0f;
-        
-        float leftPadding = fIsChannel ? 24.0f : 4.0f;
-        leftPadding -= LevelIndentTrim(this);
-        owner->MovePenTo(itemRect.left + leftPadding, textBaseline);
-        
+        // (what the row says is worked out first: the highlight ends where the text does)
         BString displayString = Text();
         if (!fIsChannel) {
-
             bool liveAutoConnect = false;
             bool liveAutoReconnect = false;
-
             if (fIsCustom) {
                 if (fConfigIndex < cfg.customServers.size()) {
                     liveAutoConnect = cfg.customServers[fConfigIndex].autoConnect;
@@ -5422,10 +5513,25 @@ public:
                     liveAutoReconnect = cfg.servers[fConfigIndex].autoReconnect;
                 }
             }
-
             if (liveAutoConnect) displayString << " [AC]";
-            if (liveAutoReconnect) displayString << " [AR]"; 
+            if (liveAutoReconnect) displayString << " [AR]";
         }
+        float leftPadding = fIsChannel ? 24.0f : 4.0f;
+        leftPadding -= LevelIndentTrim(this);
+
+        FillListRowBackground(owner, itemRect, IsSelected(), itemRect.left + leftPadding + owner->StringWidth(displayString.String()));
+        owner->SetLowColor(ui_color(IsSelected() ? B_LIST_SELECTED_BACKGROUND_COLOR : B_LIST_BACKGROUND_COLOR));
+        owner->SetHighColor(IsSelected() ? ui_color(B_LIST_SELECTED_ITEM_TEXT_COLOR) : PaneInk(owner, ui_color(B_LIST_ITEM_TEXT_COLOR)));
+
+        BFont dynamicFont;
+        owner->GetFont(&dynamicFont);
+        owner->SetFont(&dynamicFont);
+
+        font_height fh;
+        dynamicFont.GetHeight(&fh);
+        float textBaseline = itemRect.top + fh.ascent + (itemRect.Height() - (fh.ascent + fh.descent + fh.leading)) / 2.0f;
+        
+        owner->MovePenTo(itemRect.left + leftPadding, textBaseline);
         owner->DrawString(displayString.String());
 
         owner->PopState();
@@ -5446,7 +5552,10 @@ private:
 
 class ServerConfigWindow : public BWindow {
 public:
-    virtual ~ServerConfigWindow() { delete fDccDirPanel; }
+    virtual ~ServerConfigWindow() {
+        PreviewWallpaper(true);         // (what was tried out and not saved goes: the saved picture and dimming are shown again)
+        delete fDccDirPanel;
+    }
 
     ServerConfigWindow(BWindow* parent, ServerTreeItem* item, size_t serverIdx, bool isCustom = false)
         : BWindow(BRect(0, 0, 450, 600), "Server Properties", B_MODAL_WINDOW_LOOK, 
@@ -5522,11 +5631,14 @@ public:
         fBgOpacitySlider->SetValue(srv.backgroundOpacity);
         fBgOpacitySlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
         fBgOpacitySlider->SetHashMarkCount(11); 
+        fBgOpacitySlider->SetModificationMessage(new BMessage('bgsl'));     // (the window shows the dimming while the slider moves)
 
         // --- Wallpaper tab controls ---
         fWpCurrentPicture = srv.backgroundImagePath;
         fWpIndex = srv.wallpaperIndex;
         fWpIntervalIndex = srv.wallpaperInterval;
+        fWpShowCheck = new BCheckBox("wp_show", "Show the wallpaper", new BMessage('wpsh'));
+        fWpShowCheck->SetValue(srv.wallpaperShow ? B_CONTROL_ON : B_CONTROL_OFF);
         fWpOnCheck = new BCheckBox("wp_on", "Change the wallpaper automatically", nullptr);
         fWpOnCheck->SetValue(srv.wallpaperOn ? B_CONTROL_ON : B_CONTROL_OFF);
         {
@@ -6162,6 +6274,7 @@ public:
             .End();
         BLayoutBuilder::Group<>(wallpaperTab, B_VERTICAL, 6)
             .SetInsets(10)
+            .Add(fWpShowCheck)
             .Add(fWpOnCheck)
             .Add(wpSourceBox)
             .Add(wpFolderBox, 1.0)
@@ -6986,6 +7099,12 @@ public:
             case 'wpnn':
                 fWpCurrentPicture.clear();
                 UpdateWallpaperStatus();
+                PreviewWallpaper(false);
+                break;
+
+            case 'bgsl':
+            case 'wpsh':
+                PreviewWallpaper(false);
                 break;
 
             case 'wpnw': {
@@ -7038,6 +7157,7 @@ public:
                 if (path != nullptr) fWpCurrentPicture = path;
                 fWpIndex = next;
                 UpdateWallpaperStatus();
+                PreviewWallpaper(false);        // (the new picture is shown in the window at once, not when this one is closed)
                 break;
             }
 
@@ -7081,6 +7201,7 @@ public:
 	            // 2. Flush Appearance, Wallpaper, and Dimming Level Data
 	            srv.backgroundImagePath = fWpCurrentPicture;
 	            srv.backgroundOpacity = fBgOpacitySlider->Value(); 
+	            srv.wallpaperShow = (fWpShowCheck->Value() == B_CONTROL_ON);
 	            srv.wallpaperOn = (fWpOnCheck->Value() == B_CONTROL_ON);
 	            srv.wallpaperSources = WallpaperSourceKeys();
 	            srv.wallpaperFolders.clear();
@@ -7269,6 +7390,7 @@ private:
 	// Appearance & Custom Draw
 	BSlider*					fBgOpacitySlider;
 	// Wallpaper tab
+	BCheckBox*					fWpShowCheck = nullptr;
 	BCheckBox*					fWpOnCheck = nullptr;
 	std::vector<std::string>	fWpSourceKeys;
 	std::vector<BCheckBox*>		fWpSourceChecks;
@@ -7282,6 +7404,21 @@ private:
 	BButton*					fWpClearBtn = nullptr;
 	BTextView*					fWpStatusView = nullptr;
 	BFilePanel*					fWpFolderPanel = nullptr;
+	// Shows the picture and the dimming chosen in this window on the server that is on screen, before they are saved (revert:
+	// the saved ones, which is what is wanted when the window closes).
+	void PreviewWallpaper(bool revert) {
+		if (fParentWindow == nullptr) return;
+		if (fIsCustom ? fServerIdx >= cfg.customServers.size() : fServerIdx >= cfg.servers.size()) return;
+		ServerConfig& srv = GetActiveConfig();
+		BMessage preview('wpvw');
+		preview.AddString("server", srv.name.c_str());
+		const char* shownPicture = revert ? PictureToShow(srv)
+			: ((fWpShowCheck == nullptr || fWpShowCheck->Value() == B_CONTROL_ON) ? fWpCurrentPicture.c_str() : "");
+		preview.AddString("path", shownPicture != nullptr ? shownPicture : "");
+		preview.AddInt32("dim", revert ? srv.backgroundOpacity : (fBgOpacitySlider != nullptr ? fBgOpacitySlider->Value() : srv.backgroundOpacity));
+		fParentWindow->PostMessage(&preview);
+	}
+
 	std::string					fWpCurrentPicture;
 	int32						fWpIndex = 0;
 	int32						fWpIntervalIndex = 2;
@@ -8805,7 +8942,7 @@ public:
 	            for (size_t i = 0; i < cfg.servers.size(); i++) {
 	                if (cfg.servers[i].name == targetServerName) {
 	                    if (!cfg.servers[i].backgroundImagePath.empty()) {
-	                        fCustomChatLog->SetBackgroundImage(cfg.servers[i].backgroundImagePath.c_str());
+	                        fCustomChatLog->SetBackgroundImage(PictureToShow(cfg.servers[i]));
 	                        fCustomChatLog->SetBackgroundDimming(cfg.servers[i].backgroundOpacity);
 	                    }
 	                    found = true;
@@ -8816,7 +8953,7 @@ public:
 	                for (size_t i = 0; i < cfg.customServers.size(); i++) {
 	                    if (cfg.customServers[i].name == targetServerName) {
 	                        if (!cfg.customServers[i].backgroundImagePath.empty()) {
-	                            fCustomChatLog->SetBackgroundImage(cfg.customServers[i].backgroundImagePath.c_str());
+	                            fCustomChatLog->SetBackgroundImage(PictureToShow(cfg.customServers[i]));
 	                            fCustomChatLog->SetBackgroundDimming(cfg.customServers[i].backgroundOpacity);
 	                        }
 	                        break;
@@ -15094,7 +15231,7 @@ public:
 					fCustomChatLog->SetLineHeight(activeSrv->chatLogFontSize + 4.0f);
 
 					if (!activeSrv->backgroundImagePath.empty()) {
-						fCustomChatLog->SetBackgroundImage(activeSrv->backgroundImagePath.c_str());
+						fCustomChatLog->SetBackgroundImage(PictureToShow(*activeSrv));
 						fCustomChatLog->SetBackgroundDimming(activeSrv->backgroundOpacity);
 					} else {
 						fCustomChatLog->SetBackgroundImage(nullptr);
@@ -15417,6 +15554,36 @@ public:
 
 
         	
+      case 'wpvw': {
+        // the settings window tries a picture or a dimming out: it shows on the server that is on screen
+        const char* name = nullptr;
+        const char* path = nullptr;
+        int32 dim = 30;
+        message->FindString("server", &name);
+        message->FindString("path", &path);
+        message->FindInt32("dim", &dim);
+        if (name == nullptr || path == nullptr) break;
+        ServerTreeItem* shown = nullptr;
+        if (fChannelTree != nullptr && fActiveBufferItem != nullptr) {
+            BListItem* top = fChannelTree->Superitem(fActiveBufferItem);
+            shown = dynamic_cast<ServerTreeItem*>(top != nullptr ? top : fActiveBufferItem);
+        }
+        if (fCustomChatLog != nullptr && shown != nullptr && BString(shown->Text()) == BString(name)) {
+            fCustomChatLog->SetBackgroundImage(path[0] != '\0' ? path : nullptr);
+            fCustomChatLog->SetBackgroundDimming(dim);
+            fCustomChatLog->Invalidate();
+        }
+        break;
+      }
+
+      case 'wtmc': {
+        // the picture turned out to be light or dark, so the text colors changed: draw everything with them
+        WallpaperChanged();
+        if (fCustomChatLog != nullptr) fCustomChatLog->Invalidate();
+        for (size_t i = 0; i < fRoundFrames.size(); i++) fRoundFrames[i]->Invalidate();
+        break;
+      }
+
       case 'wptk': {
         // a profile that changes its wallpaper is due when its interval has passed, or when it has no picture (any more)
         std::vector<ServerConfig*> all;
@@ -15425,7 +15592,7 @@ public:
         const time_t now = time(nullptr);
         for (size_t i = 0; i < all.size(); i++) {
             ServerConfig* srv = all[i];
-            if (!srv->wallpaperOn || fWallpaperBusy.count(srv->name) > 0) continue;
+            if (!srv->wallpaperOn || !srv->wallpaperShow || fWallpaperBusy.count(srv->name) > 0) continue;
             const std::vector<int>& minutes = CricketWallpaper::IntervalMinutes();
             int32 at = srv->wallpaperInterval;
             if (at < 0) at = 0;
@@ -15503,7 +15670,7 @@ public:
         }
         if (fCustomChatLog != nullptr && shown != nullptr
             && BString(shown->Text()) == BString(name)) {
-            fCustomChatLog->SetBackgroundImage(path);
+            fCustomChatLog->SetBackgroundImage(target->wallpaperShow ? path : nullptr);
             fCustomChatLog->SetBackgroundDimming(target->backgroundOpacity);
             fCustomChatLog->Invalidate();
         }
@@ -15628,7 +15795,7 @@ public:
             if (bgPath.empty()) {
                 fCustomChatLog->SetBackgroundImage(nullptr);
             } else {
-                fCustomChatLog->SetBackgroundImage(bgPath.c_str());
+                fCustomChatLog->SetBackgroundImage(activeSrv != nullptr ? PictureToShow(*activeSrv) : bgPath.c_str());
             }
 
             fCustomChatLog->SetBackgroundDimming(dimmingLevel);
@@ -16060,7 +16227,7 @@ public:
 
                         for (const auto& srv : cfg.servers) {
                             if (BString(srv.name.c_str()) == currentServerName) {
-                                fCustomChatLog->SetBackgroundImage(srv.backgroundImagePath.c_str());
+                                fCustomChatLog->SetBackgroundImage(PictureToShow(srv));
                                 fCustomChatLog->SetBackgroundDimming(srv.backgroundOpacity);
                                 bgFound = true;
                                 break;
@@ -16070,7 +16237,7 @@ public:
                         if (!bgFound) {
                             for (const auto& srv : cfg.customServers) {
                                 if (BString(srv.name.c_str()) == currentServerName) {
-                                    fCustomChatLog->SetBackgroundImage(srv.backgroundImagePath.c_str());
+                                    fCustomChatLog->SetBackgroundImage(PictureToShow(srv));
                                     fCustomChatLog->SetBackgroundDimming(srv.backgroundOpacity);
                                     break;
                                 }
