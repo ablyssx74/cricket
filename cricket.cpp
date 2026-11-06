@@ -1714,17 +1714,22 @@ static int32 BackgroundUpdateChecker(void* data) {
         int32 curMajor = 0, curMinor = 0, curRevision = 0;
         int32 remMajor = 0, remMinor = 0, remRevision = 0;
 
-        // --- sscanf Pattern Matching ---
-        // Looks for a 'v' immediately followed by a number, bypassing words like "HaikuDVR" or "Version"
-        if (sscanf(currentVersionStr.String(), "%*[^v]v%d.%d.%d", &curMajor, &curMinor, &curRevision) != 3) {
-            // Fallback: search for raw dot-separated numbers anywhere if 'v' isn't found
-            sscanf(currentVersionStr.String(), "%*[^0-9]%d.%d.%d", &curMajor, &curMinor, &curRevision);
-        }
-
-        // Parse the remote string from GitHub using the same pattern rules
-        if (sscanf(remoteVersionStr.String(), "%*[^v]v%d.%d.%d", &remMajor, &remMinor, &remRevision) != 3) {
-            sscanf(remoteVersionStr.String(), "%*[^0-9]%d.%d.%d", &remMajor, &remMinor, &remRevision);
-        }
+        // The first number of the form X.Y.Z in each text: "Cricket IRC Client v.0.0.82 (Haiku OS)", and the VERSION file of
+        // GitHub ("0.0.83", with or without a "v" in front). (A text that starts with the number must work too: the old
+        // pattern needed a letter before it, so "0.0.83" was read as 0.0.0 and no update was ever announced.)
+        auto parseVersion = [](const char* text, int32& major, int32& minor, int32& revision) {
+            for (const char* p = text; *p != '\0'; p++) {
+                if (*p < '0' || *p > '9') continue;
+                int a = 0, b = 0, c = 0;
+                if (sscanf(p, "%d.%d.%d", &a, &b, &c) == 3) {
+                    major = a; minor = b; revision = c;
+                    return;
+                }
+                while (p[1] >= '0' && p[1] <= '9') p++;      // (this number is not the start of X.Y.Z: go on after it)
+            }
+        };
+        parseVersion(currentVersionStr.String(), curMajor, curMinor, curRevision);
+        parseVersion(remoteVersionStr.String(), remMajor, remMinor, remRevision);
 
         // Log the cleaned string results visually just for your debug logs
         if (cfg.debugEnable) {
@@ -15489,8 +15494,15 @@ public:
         target->wallpaperIndex = next;
         save_config();
         // (the picture shows at once when this server is the one on screen)
-        if (fCustomChatLog != nullptr && fCurrentServerNode != nullptr
-            && BString(fCurrentServerNode->Text()) == BString(name)) {
+        // (the server on screen is the one of the selected line of the list: fCurrentServerNode is also set to the server
+        // that a message came from last, so while you look at one server it can name another)
+        ServerTreeItem* shown = nullptr;
+        if (fChannelTree != nullptr && fActiveBufferItem != nullptr) {
+            BListItem* top = fChannelTree->Superitem(fActiveBufferItem);
+            shown = dynamic_cast<ServerTreeItem*>(top != nullptr ? top : fActiveBufferItem);
+        }
+        if (fCustomChatLog != nullptr && shown != nullptr
+            && BString(shown->Text()) == BString(name)) {
             fCustomChatLog->SetBackgroundImage(path);
             fCustomChatLog->SetBackgroundDimming(target->backgroundOpacity);
             fCustomChatLog->Invalidate();
