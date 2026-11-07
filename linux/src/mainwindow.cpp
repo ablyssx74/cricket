@@ -197,10 +197,27 @@ private:
     QScrollBar* fSource;
 };
 
-// Draws the items of a list without the style's focus outline, which would be a box inside the rounded selection.
+// Draws the items of a list without the style's focus outline, which would be a box inside the rounded selection. The selection itself
+// is the pill that RoundedSelectionTree draws: the style must not draw its own (Breeze draws an outline around the whole row even when
+// its fill is made invisible), so a selected item is drawn as an unselected one, with the color of selected text.
 class NoFocusDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        if (!cfg.roundedEdges || !(option.state & QStyle::State_Selected)) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+        QStyleOptionViewItem opt = option;
+        initStyleOption(&opt, index);
+        opt.state &= ~(QStyle::State_Selected | QStyle::State_HasFocus | QStyle::State_MouseOver);
+        opt.palette.setColor(QPalette::Text, option.palette.color(QPalette::HighlightedText));
+        opt.palette.setColor(QPalette::WindowText, option.palette.color(QPalette::HighlightedText));
+        QStyle* style = option.widget ? option.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, option.widget);
+    }
 
 protected:
     void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override
