@@ -116,6 +116,7 @@ enum {
 	MSG_DISCONNECT_SERVER = 'dscr',
 	MSG_TOGGLE_CUSTOM_DRAW = 'tgcd',
 	MSG_CLEAR_CUSTOM_BUFFER = 'clcb',
+	MSG_TOGGLE_FULLSCREEN = 'fscr',
 	MSG_TOPIC_CHANGED = 'tpch',
 	MSG_CONTEXT_SET_AWAY = 'cxaw', 
 	MSG_USER_LIST_CONTEXT_CLICK = 'ulcx',
@@ -334,6 +335,9 @@ public:
 // Forward Declarations 
 class CricketWindow; 
 class ServerTreeItem; 
+
+// true while the main window fills the screen (the chat area's menu marks its Fullscreen item from it)
+static bool gMainWindowFullScreen = false;
 
 static std::map<void*, SSL*> gServerSslHandles;
 static std::map<void*, int>  gServerRawSockets;
@@ -4350,8 +4354,15 @@ void CustomChatView::MouseDown(BPoint point) {
         // Add the Clear option tied to our unique identifier token constant
         BMenuItem* clearItem = new BMenuItem("Clear Buffer", new BMessage(MSG_CLEAR_CUSTOM_BUFFER));
         contextMenu->AddItem(clearItem);
+
+        // Fullscreen: a toggle with a checkmark, handled by the window
+        contextMenu->AddSeparatorItem();
+        BMenuItem* fullScreenItem = new BMenuItem("Fullscreen", new BMessage(MSG_TOGGLE_FULLSCREEN));
+        fullScreenItem->SetMarked(gMainWindowFullScreen);
+        contextMenu->AddItem(fullScreenItem);
         
         contextMenu->SetTargetForItems(this);
+        fullScreenItem->SetTarget(Window());
         { BPoint where = ConvertToScreen(point); RoundMenus::BeginPopup(contextMenu, where); contextMenu->Go(where, true, true, true); }
         return;
     }
@@ -8621,6 +8632,8 @@ private:
 class CricketWindow : public BWindow {
 private:
 SpellPopup* fSpellPopup = nullptr;
+    BRect fSavedFrame = BRect(0, 0, -1, -1);          // where the window was before Fullscreen (invalid when not in it)
+    window_look fSavedLook = B_DOCUMENT_WINDOW_LOOK;
     BMessageRunner* fWallpaperRunner = nullptr;
     std::map<std::string, time_t> fWallpaperLast;     // server name -> when its picture was asked for last
     std::set<std::string> fWallpaperBusy;             // server names a picture is being got for
@@ -13592,6 +13605,28 @@ public:
     void MessageReceived(BMessage* message) override {
         switch (message->what) {
         	
+        case MSG_TOGGLE_FULLSCREEN: {
+            // As Haiku's Terminal does it: no border, the size of the screen, and neither movable nor resizable
+            // until it is turned off, when the window goes back to where it was.
+            if (!fSavedFrame.IsValid()) {
+                BScreen screen(this);
+                fSavedFrame = Frame();
+                fSavedLook = Look();
+                SetLook(B_NO_BORDER_WINDOW_LOOK);
+                ResizeTo(screen.Frame().Width() + 1, screen.Frame().Height() + 1);
+                MoveTo(screen.Frame().left, screen.Frame().top);
+                SetFlags(Flags() | (B_NOT_RESIZABLE | B_NOT_MOVABLE));
+                gMainWindowFullScreen = true;
+            } else {
+                SetFlags(Flags() & ~(B_NOT_RESIZABLE | B_NOT_MOVABLE));
+                ResizeTo(fSavedFrame.Width(), fSavedFrame.Height());
+                MoveTo(fSavedFrame.left, fSavedFrame.top);
+                SetLook(fSavedLook);
+                fSavedFrame = BRect(0, 0, -1, -1);
+                gMainWindowFullScreen = false;
+            }
+            break;
+        }
 
         case MSG_SHOW_SPELLCHECK_POPUP: {
             if (!cfg.enableSpellCheck) {

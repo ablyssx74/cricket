@@ -11,7 +11,9 @@
 #include <QImage>
 #include <QImageReader>
 #include <QtMath>
+#include <QMainWindow>
 #include <QMenu>
+#include <QMenuBar>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QScrollBar>
@@ -194,6 +196,21 @@ void ChatView::contextMenuEvent(QContextMenuEvent* e)
         menu->addAction(tr("Search for \"%1\"").arg(shown), this, [this, selected]() { emit searchRequested(selected); });
         menu->addAction(tr("Translate \"%1\"").arg(shown), this, [this, selected]() { emit translateRequested(selected); });
     }
+    // Fullscreen: a toggle with a checkmark (the window keeps being maximized, or not, as it was)
+    menu->addSeparator();
+    QAction* fullScreen = menu->addAction(tr("Fullscreen"));
+    fullScreen->setCheckable(true);
+    fullScreen->setChecked(window()->isFullScreen());
+    connect(fullScreen, &QAction::toggled, this, [this](bool on) {
+        QWidget* top = window();
+        if (on)
+            top->setWindowState(top->windowState() | Qt::WindowFullScreen);
+        else
+            top->setWindowState(top->windowState() & ~Qt::WindowFullScreen);
+        // the menu bar is out of the way while the window fills the screen
+        if (QMainWindow* main = qobject_cast<QMainWindow*>(top))
+            main->menuBar()->setVisible(!on);
+    });
     menu->exec(e->globalPos());
     delete menu;
 }
