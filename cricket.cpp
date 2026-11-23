@@ -321,6 +321,9 @@ static void CaptureSubmenu(BMenu* submenu)
 class RoundSubMenu : public BMenu {
 public:
     RoundSubMenu(const char* name) : BMenu(name) {}
+    // A newer libbe's BMenu has its own SetFont(), so this class's vtable asks for BMenu::SetFont, which an older libbe (RenkuOS)
+    // does not have ("Could not resolve symbol BMenu::SetFont"). BView::SetFont is the one both have.
+    void SetFont(const BFont* font, uint32 mask = B_FONT_ALL) override { BView::SetFont(font, mask); }
     virtual void AttachedToWindow() override {
         BMenu::AttachedToWindow();
         BMenu* root = this;
